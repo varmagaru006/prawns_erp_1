@@ -11,6 +11,7 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [lots, setLots] = useState([]);
   const [batches, setBatches] = useState([]);
+  const [livePrices, setLivePrices] = useState([]);
 
   useEffect(() => {
     fetchData();
