@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { moduleConfig, isModuleAccessible } from '../config/moduleConfig';
 import { Button } from './ui/button';
 import { 
   LayoutDashboard, 
@@ -12,7 +13,11 @@ import {
   Bell,
   LogOut,
   Menu,
-  X
+  X,
+  ClipboardCheck,
+  Snowflake,
+  Ship,
+  Receipt
 } from 'lucide-react';
 
 const Layout = () => {
@@ -26,19 +31,39 @@ const Layout = () => {
     navigate('/login');
   };
 
+  const iconMap = {
+    LayoutDashboard,
+    ShoppingCart,
+    Users,
+    Package,
+    Factory,
+    Box,
+    ClipboardCheck,
+    Snowflake,
+    Ship,
+    Receipt,
+    Bell
+  };
+
   const navigation = [
-    { name: 'Dashboard', path: '/', icon: LayoutDashboard, roles: '*' },
-    { name: 'Procurement', path: '/procurement', icon: ShoppingCart, roles: ['admin', 'owner', 'procurement_manager'] },
-    { name: 'Agents', path: '/agents', icon: Users, roles: ['admin', 'owner', 'procurement_manager'] },
-    { name: 'Pre-Processing', path: '/preprocessing', icon: Package, roles: ['admin', 'owner', 'production_supervisor'] },
-    { name: 'Production', path: '/production', icon: Factory, roles: ['admin', 'owner', 'production_supervisor'] },
-    { name: 'Finished Goods', path: '/finished-goods', icon: Box, roles: ['admin', 'owner', 'qc_officer', 'sales_manager'] },
-    { name: 'Notifications', path: '/notifications', icon: Bell, roles: '*' },
+    { name: 'Dashboard', path: '/', icon: 'LayoutDashboard', moduleKey: null },
+    { name: 'Procurement', path: '/procurement', icon: 'ShoppingCart', moduleKey: 'procurement' },
+    { name: 'Agents', path: '/agents', icon: 'Users', moduleKey: 'agents' },
+    { name: 'Pre-Processing', path: '/preprocessing', icon: 'Package', moduleKey: 'preprocessing' },
+    { name: 'Production', path: '/production', icon: 'Factory', moduleKey: 'production' },
+    { name: 'Quality Control', path: '/qc', icon: 'ClipboardCheck', moduleKey: 'qc' },
+    { name: 'Cold Storage', path: '/cold-storage', icon: 'Snowflake', moduleKey: 'coldStorage' },
+    { name: 'Finished Goods', path: '/finished-goods', icon: 'Box', moduleKey: 'finishedGoods' },
+    { name: 'Sales & Dispatch', path: '/sales', icon: 'Ship', moduleKey: 'sales' },
+    { name: 'Accounts', path: '/accounts', icon: 'Receipt', moduleKey: 'accounts' },
+    { name: 'Notifications', path: '/notifications', icon: 'Bell', moduleKey: 'notifications' },
   ];
 
-  const visibleNav = navigation.filter(item => 
-    item.roles === '*' || item.roles.includes(user?.role)
-  );
+  // Filter navigation based on module configuration and user role
+  const visibleNav = navigation.filter(item => {
+    if (!item.moduleKey) return true; // Dashboard is always visible
+    return isModuleAccessible(item.moduleKey, user?.role);
+  });
 
   return (
     <div className="min-h-screen bg-slate-50">
