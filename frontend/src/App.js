@@ -40,6 +40,10 @@ function AppRoutes() {
         <Route path="preprocessing" element={<PreProcessing />} />
         <Route path="production" element={<Production />} />
         <Route path="finished-goods" element={<FinishedGoods />} />
+        <Route path="qc" element={<QualityControl />} />
+        <Route path="cold-storage" element={<ColdStorage />} />
+        <Route path="sales" element={<Sales />} />
+        <Route path="accounts" element={<Accounts />} />
         <Route path="notifications" element={<Notifications />} />
       </Route>
     </Routes>
