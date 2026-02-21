@@ -8,7 +8,7 @@ import Production from './pages/Production';
 import FinishedGoods from './pages/FinishedGoods';
 import Agents from './pages/Agents';
 import Notifications from './pages/Notifications';
-import QualityControl from './pages/QualityControl';
+// import QualityControl from './pages/QualityControl';
 // import ColdStorage from './pages/ColdStorage';
 import Sales from './pages/Sales';
 import Accounts from './pages/Accounts';
