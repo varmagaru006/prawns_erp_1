@@ -155,7 +155,7 @@ const QualityControl = () => {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="temperature_c">Temperature (°C)</Label>
+                    <Label htmlFor="temperature_c">Temperature (C)</Label>
                     <Input
                       id="temperature_c"
                       type="number"
