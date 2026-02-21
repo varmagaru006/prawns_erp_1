@@ -109,6 +109,19 @@ class ShipmentStatus(str, Enum):
     confirmed = "confirmed"
     in_transit = "in_transit"
     delivered = "delivered"
+
+class ApprovalStatus(str, Enum):
+    pending = "pending"
+    approved = "approved"
+    rejected = "rejected"
+
+class PriceCategory(str, Enum):
+    vannamei_30_40 = "Vannamei 30/40"
+    vannamei_40_60 = "Vannamei 40/60"
+    vannamei_60_80 = "Vannamei 60/80"
+    black_tiger_20_30 = "Black Tiger 20/30"
+    black_tiger_30_40 = "Black Tiger 30/40"
+
     cancelled = "cancelled"
 
 
