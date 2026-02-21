@@ -154,29 +154,68 @@ const AdminPanel = () => {
               <CardTitle>Photo Tracking - All Stages</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="max-h-[600px] overflow-y-auto space-y-3">
+              <div className="max-h-[600px] overflow-y-auto space-y-4">
                 {photos.map((photo, index) => (
                   <div key={index} className="border rounded-lg p-4 bg-slate-50 hover:bg-slate-100 transition-colors">
-                    <div className="flex items-center justify-between mb-2">
-                      <div>
-                        <p className="font-medium text-slate-800">{photo.entity_display}</p>
-                        <p className="text-sm text-slate-500">Stage: <span className="capitalize font-medium">{photo.stage}</span></p>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      {/* Photo Preview */}
+                      <div className="md:col-span-1">
+                        {photo.photo_url ? (
+                          <img
+                            src={photo.photo_url}
+                            alt={photo.entity_display}
+                            className="w-full h-48 object-cover rounded-lg border border-slate-300"
+                            onError={(e) => {
+                              e.target.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="100" height="100"%3E%3Crect fill="%23ddd" width="100" height="100"/%3E%3Ctext fill="%23999" x="50%25" y="50%25" text-anchor="middle" dy=".3em"%3ENo Image%3C/text%3E%3C/svg%3E';
+                            }}
+                          />
+                        ) : (
+                          <div className="w-full h-48 flex items-center justify-center bg-slate-200 rounded-lg border border-slate-300">
+                            <Image className="h-12 w-12 text-slate-400" />
+                          </div>
+                        )}
                       </div>
-                      <span className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded-full">
-                        {photo.uploader_name}
-                      </span>
+                      
+                      {/* Photo Details */}
+                      <div className="md:col-span-2">
+                        <div className="flex items-center justify-between mb-2">
+                          <div>
+                            <p className="font-medium text-slate-800">{photo.entity_display}</p>
+                            <p className="text-sm text-slate-500">
+                              Stage: <span className="capitalize font-medium">{photo.stage}</span>
+                            </p>
+                          </div>
+                          <span className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded-full">
+                            {photo.uploader_name}
+                          </span>
+                        </div>
+                        
+                        <div className="grid grid-cols-2 gap-2 mb-2">
+                          {photo.count_per_kg_visible && (
+                            <div className="text-sm">
+                              <span className="font-semibold text-slate-700">Count/KG:</span>
+                              <span className="ml-1 text-slate-600">{photo.count_per_kg_visible}</span>
+                            </div>
+                          )}
+                          {photo.tray_count_visible && (
+                            <div className="text-sm">
+                              <span className="font-semibold text-slate-700">Trays:</span>
+                              <span className="ml-1 text-slate-600">{photo.tray_count_visible}</span>
+                            </div>
+                          )}
+                        </div>
+                        
+                        <p className="text-xs text-slate-400">
+                          Uploaded: {new Date(photo.created_at).toLocaleString()}
+                        </p>
+                        
+                        {photo.notes && (
+                          <p className="text-sm text-slate-600 mt-2 italic">
+                            Note: {photo.notes}
+                          </p>
+                        )}
+                      </div>
                     </div>
-                    {photo.count_per_kg_visible && (
-                      <p className="text-sm text-slate-600 mb-1">
-                        <strong>Count/KG:</strong> {photo.count_per_kg_visible}
-                      </p>
-                    )}
-                    {photo.tray_count_visible && (
-                      <p className="text-sm text-slate-600 mb-1">
-                        <strong>Trays:</strong> {photo.tray_count_visible}
-                      </p>
-                    )}
-                    <p className="text-xs text-slate-400">{new Date(photo.created_at).toLocaleString()}</p>
                   </div>
                 ))}
               </div>
