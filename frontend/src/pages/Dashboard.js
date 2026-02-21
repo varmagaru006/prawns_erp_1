@@ -14,6 +14,13 @@ const Dashboard = () => {
 
   useEffect(() => {
     fetchData();
+    
+    // Auto-refresh every 30 seconds
+    const interval = setInterval(() => {
+      fetchData();
+    }, 30000);
+    
+    return () => clearInterval(interval);
   }, []);
 
   const fetchData = async () => {
