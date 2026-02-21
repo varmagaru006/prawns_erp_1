@@ -708,6 +708,127 @@ class TraceabilityRecord(BaseModel):
     total_tray_count: int = 0
     photos_count: int = 0
 
+
+# ============================================================================
+# WASTAGE TRACKING MODELS (v4.0)
+# ============================================================================
+
+class YieldBenchmark(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    species: Species
+    process_type: str  # 'gate_ice', 'heading', 'peeling', 'deveining', etc.
+    min_yield_pct: Optional[float] = None
+    optimal_yield_pct: Optional[float] = None
+    max_yield_pct: Optional[float] = None
+    tolerance_pct: Optional[float] = None  # For glazing/breading
+    reference_rate_per_kg: Optional[float] = None
+    description: Optional[str] = None
+    is_active: bool = True
+    set_by: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: Optional[datetime] = None
+
+class YieldBenchmarkCreate(BaseModel):
+    species: Species
+    process_type: str
+    min_yield_pct: Optional[float] = None
+    optimal_yield_pct: Optional[float] = None
+    max_yield_pct: Optional[float] = None
+    tolerance_pct: Optional[float] = None
+    reference_rate_per_kg: Optional[float] = None
+    description: Optional[str] = None
+
+class MarketRate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    species: Species
+    product_form: Optional[str] = None  # NULL = raw/unprocessed
+    size_value: Optional[str] = None  # NULL = all sizes
+    rate_per_kg_inr: float
+    rate_per_kg_usd: Optional[float] = None
+    effective_from: date
+    effective_to: Optional[date] = None  # NULL = currently active
+    remarks: Optional[str] = None
+    set_by: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class MarketRateCreate(BaseModel):
+    species: Species
+    product_form: Optional[str] = None
+    size_value: Optional[str] = None
+    rate_per_kg_inr: float
+    rate_per_kg_usd: Optional[float] = None
+    effective_from: date
+    effective_to: Optional[date] = None
+    remarks: Optional[str] = None
+
+class LotStageWastage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    lot_id: str
+    stage_sequence: int
+    stage_name: str
+    process_type: str
+    source_entity_type: Optional[str] = None
+    source_entity_id: Optional[str] = None
+    input_weight_kg: float
+    output_weight_kg: float
+    wastage_kg: float = 0  # Calculated: input - output
+    yield_pct: float = 0  # Calculated: (output / input) * 100
+    min_yield_pct: Optional[float] = None
+    optimal_yield_pct: Optional[float] = None
+    threshold_status: str = "info"  # green | amber | red | info
+    rate_per_kg_used: Optional[float] = None
+    revenue_loss_inr: float = 0
+    gradedown_kg: float = 0
+    gradedown_rate_gap: float = 0
+    gradedown_loss_inr: float = 0
+    target_glaze_pct: Optional[float] = None
+    actual_glaze_pct: Optional[float] = None
+    glaze_variance_pct: Optional[float] = None
+    glaze_revenue_gap_inr: float = 0
+    byproduct_revenue_inr: float = 0
+    net_loss_inr: float = 0
+    is_alert: bool = False
+    alert_acknowledged: bool = False
+    alert_ack_by: Optional[str] = None
+    alert_ack_at: Optional[datetime] = None
+    recorded_by: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: Optional[datetime] = None
+
+class LotStageWastageCreate(BaseModel):
+    lot_id: str
+    stage_sequence: int
+    stage_name: str
+    process_type: str
+    source_entity_type: Optional[str] = None
+    source_entity_id: Optional[str] = None
+    input_weight_kg: float
+    output_weight_kg: float
+
+class WastageDashboardStats(BaseModel):
+    today_wastage_kg: float = 0
+    today_lots_count: int = 0
+    month_revenue_loss_inr: float = 0
+    month_lots_count: int = 0
+    active_red_alerts: int = 0
+    byproduct_revenue_inr: float = 0
+
+class WastageBreachAlert(BaseModel):
+    id: str
+    lot_id: str
+    lot_number: str
+    stage_name: str
+    species: str
+    actual_yield_pct: float
+    min_threshold_pct: float
+    variance_pct: float
+    loss_inr: float
+    created_at: datetime
+
+
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> User:
     try:
         token = credentials.credentials
