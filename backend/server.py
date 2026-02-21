@@ -1348,6 +1348,23 @@ async def create_preprocessing_batch(batch_data: PreprocessingBatchCreate, curre
     
     await db.preprocessing_batches.insert_one(batch_dict)
     await create_audit_log(current_user.id, "CREATE_BATCH", "preprocessing", {"batch_id": batch.id})
+    
+    # Auto-create wastage record for this preprocessing stage
+    stage_sequence_map = {"heading": 1, "peeling": 2, "deveining": 3, "grading": 4}
+    stage_sequence = stage_sequence_map.get(batch.process_type, 5)
+    
+    await create_wastage_record(
+        lot_id=batch.procurement_lot_id,
+        stage_sequence=stage_sequence,
+        stage_name=batch.process_type.capitalize(),
+        process_type=batch.process_type,
+        input_weight_kg=batch.input_weight_kg,
+        output_weight_kg=batch.output_weight_kg,
+        source_entity_type="preprocessing_batch",
+        source_entity_id=batch.id,
+        recorded_by=current_user.id
+    )
+    
     return batch
 
 @api_router.get("/preprocessing/batches", response_model=List[PreprocessingBatch])
