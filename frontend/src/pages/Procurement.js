@@ -148,6 +148,25 @@ const Procurement = () => {
     );
   };
 
+  const getYieldBadge = (yieldPct, thresholdStatus) => {
+    const styles = {
+      green: 'bg-green-100 text-green-800 border-green-300',
+      amber: 'bg-yellow-100 text-yellow-800 border-yellow-300',
+      red: 'bg-red-100 text-red-800 border-red-300',
+      info: 'bg-gray-100 text-gray-800 border-gray-300'
+    };
+    return (
+      <span className={`px-2 py-1 rounded border text-xs font-semibold ${styles[thresholdStatus] || styles.info}`}>
+        {yieldPct ? `${yieldPct.toFixed(1)}%` : 'N/A'}
+      </span>
+    );
+  };
+
+  const handleViewWastage = (lot) => {
+    setSelectedLotWastage({ lot, wastage: wastageData[lot.id] || [] });
+    setViewWastageDialog(true);
+  };
+
   return (
     <div className="space-y-6" data-testid="procurement-page">
       <div className="flex items-center justify-between">
