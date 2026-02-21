@@ -5,7 +5,7 @@ import Dashboard from './pages/Dashboard';
 import Procurement from './pages/Procurement';
 import PreProcessing from './pages/PreProcessing';
 import Production from './pages/Production';
-import FinishedGoods from './pages/Finished Goods';
+import FinishedGoods from './pages/FinishedGoods';
 import Agents from './pages/Agents';
 import Notifications from './pages/Notifications';
 import QualityControl from './pages/QualityControl';
