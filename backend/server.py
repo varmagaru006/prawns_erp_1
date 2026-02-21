@@ -98,6 +98,20 @@ class QCStatus(str, Enum):
     failed = "failed"
     on_hold = "on_hold"
 
+class StorageStatus(str, Enum):
+    occupied = "occupied"
+    empty = "empty"
+    reserved = "reserved"
+    maintenance = "maintenance"
+
+class ShipmentStatus(str, Enum):
+    draft = "draft"
+    confirmed = "confirmed"
+    in_transit = "in_transit"
+    delivered = "delivered"
+    cancelled = "cancelled"
+
+
 # Models
 class User(BaseModel):
     model_config = ConfigDict(extra="ignore")
