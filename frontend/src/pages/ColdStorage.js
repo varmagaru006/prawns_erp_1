@@ -119,7 +119,7 @@ const ColdStorage = () => {
               </CardHeader>
               <CardContent>
                 <div className=\"text-2xl font-bold text-blue-600\">
-                  {chamber.setpoint_temperature_c}°C
+                  {chamber.setpoint_temperature_c}00b0C
                 </div>
               </CardContent>
             </Card>
@@ -129,7 +129,7 @@ const ColdStorage = () => {
               </CardHeader>
               <CardContent>
                 <div className=\"text-2xl font-bold text-green-600\">
-                  {chamberLogs[0]?.temperature_c || '--'}°C
+                  {chamberLogs[0]?.temperature_c || '--'}00b0C
                 </div>
               </CardContent>
             </Card>
@@ -169,7 +169,7 @@ const ColdStorage = () => {
                       <CheckCircle className=\"h-5 w-5 text-green-600\" />
                     )}
                     <div>
-                      <p className=\"font-medium text-slate-800\">{log.temperature_c}°C</p>
+                      <p className=\"font-medium text-slate-800\">{log.temperature_c}00b0C</p>
                       <p className=\"text-xs text-slate-500\">
                         {new Date(log.recorded_at).toLocaleString()}
                       </p>
