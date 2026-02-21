@@ -1239,6 +1239,21 @@ async def create_procurement_lot(lot_data: ProcurementLotCreate, current_user: U
     
     await db.procurement_lots.insert_one(lot_dict)
     await create_audit_log(current_user.id, "CREATE_LOT", "procurement", {"lot_id": lot.id})
+    
+    # Auto-create gate_ice wastage record
+    if lot.gross_weight_kg > 0:
+        await create_wastage_record(
+            lot_id=lot.id,
+            stage_sequence=0,
+            stage_name="Gate Ice Deduction",
+            process_type="gate_ice",
+            input_weight_kg=lot.gross_weight_kg,
+            output_weight_kg=lot.net_weight_kg,
+            source_entity_type="procurement_lot",
+            source_entity_id=lot.id,
+            recorded_by=current_user.id
+        )
+    
     return lot
 
 @api_router.get("/procurement/lots", response_model=List[ProcurementLot])
