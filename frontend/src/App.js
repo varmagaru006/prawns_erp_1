@@ -16,11 +16,24 @@ import AdminPanel from './pages/AdminPanel';
 import Layout from './components/Layout';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { Toaster } from './components/ui/sonner';
+import { canAccessDashboard } from './config/moduleConfig';
 import './App.css';
 
 const PrivateRoute = ({ children }) => {
   const { user } = useAuth();
   return user ? children : <Navigate to="/login" />;
+};
+
+const DashboardRoute = () => {
+  const { user } = useAuth();
+  
+  // Check if user has dashboard access
+  if (user && canAccessDashboard(user.role)) {
+    return <Dashboard />;
+  }
+  
+  // Redirect workers to their first accessible page
+  return <Navigate to="/procurement" replace />;
 };
 
 function AppRoutes() {
@@ -35,7 +48,7 @@ function AppRoutes() {
           </PrivateRoute>
         }
       >
-        <Route index element={<Dashboard />} />
+        <Route index element={<DashboardRoute />} />
         <Route path="procurement" element={<Procurement />} />
         <Route path="agents" element={<Agents />} />
         <Route path="preprocessing" element={<PreProcessing />} />
