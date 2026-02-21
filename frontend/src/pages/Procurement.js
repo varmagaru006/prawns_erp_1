@@ -73,7 +73,7 @@ const Procurement = () => {
         photoFormData.append('count_per_kg_visible', formData.count_per_kg);
         photoFormData.append('tray_count_visible', formData.no_of_trays.toString());
         
-        await axios.post(`${API}/admin/photos`, photoFormData, {
+        await axios.post(`${API}/upload-file`, photoFormData, {
           headers: { 'Content-Type': 'multipart/form-data' }
         });
       }
