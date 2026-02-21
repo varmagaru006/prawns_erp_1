@@ -18,7 +18,9 @@ import {
   Snowflake,
   Ship,
   Receipt,
-  Settings
+  Settings,
+  TrendingDown,
+  Target
 } from 'lucide-react';
 
 const Layout = () => {
