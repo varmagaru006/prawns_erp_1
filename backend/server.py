@@ -1850,6 +1850,350 @@ async def upload_file(
     return {"photo_url": photo_url, "photo_id": photo.id, "message": "File uploaded successfully"}
 
 
+# ============================================================================
+# WASTAGE TRACKING ENDPOINTS (v4.0)
+# ============================================================================
+
+# Yield Benchmarks CRUD
+@api_router.post("/yield-benchmarks", response_model=YieldBenchmark)
+async def create_yield_benchmark(
+    benchmark_data: YieldBenchmarkCreate,
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.role not in ['admin', 'owner']:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    benchmark = YieldBenchmark(**benchmark_data.model_dump(), set_by=current_user.id)
+    benchmark_dict = benchmark.model_dump()
+    benchmark_dict['created_at'] = benchmark_dict['created_at'].isoformat()
+    if benchmark_dict.get('updated_at'):
+        benchmark_dict['updated_at'] = benchmark_dict['updated_at'].isoformat()
+    
+    await db.yield_benchmarks.insert_one(benchmark_dict)
+    return benchmark
+
+@api_router.get("/yield-benchmarks", response_model=List[YieldBenchmark])
+async def get_yield_benchmarks(current_user: User = Depends(get_current_user)):
+    benchmarks = await db.yield_benchmarks.find({}, {"_id": 0}).to_list(1000)
+    return benchmarks
+
+@api_router.get("/yield-benchmarks/{benchmark_id}", response_model=YieldBenchmark)
+async def get_yield_benchmark(benchmark_id: str, current_user: User = Depends(get_current_user)):
+    benchmark = await db.yield_benchmarks.find_one({"id": benchmark_id}, {"_id": 0})
+    if not benchmark:
+        raise HTTPException(status_code=404, detail="Benchmark not found")
+    return benchmark
+
+@api_router.put("/yield-benchmarks/{benchmark_id}", response_model=YieldBenchmark)
+async def update_yield_benchmark(
+    benchmark_id: str,
+    benchmark_data: YieldBenchmarkCreate,
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.role not in ['admin', 'owner']:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    update_dict = benchmark_data.model_dump()
+    update_dict['updated_at'] = datetime.now(timezone.utc).isoformat()
+    
+    result = await db.yield_benchmarks.update_one(
+        {"id": benchmark_id},
+        {"$set": update_dict}
+    )
+    
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Benchmark not found")
+    
+    updated = await db.yield_benchmarks.find_one({"id": benchmark_id}, {"_id": 0})
+    return updated
+
+@api_router.delete("/yield-benchmarks/{benchmark_id}")
+async def delete_yield_benchmark(benchmark_id: str, current_user: User = Depends(get_current_user)):
+    if current_user.role not in ['admin', 'owner']:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    result = await db.yield_benchmarks.delete_one({"id": benchmark_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Benchmark not found")
+    
+    return {"message": "Benchmark deleted successfully"}
+
+# Market Rates CRUD
+@api_router.post("/market-rates", response_model=MarketRate)
+async def create_market_rate(
+    rate_data: MarketRateCreate,
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.role not in ['admin', 'owner']:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    rate = MarketRate(**rate_data.model_dump(), set_by=current_user.id)
+    rate_dict = rate.model_dump()
+    rate_dict['created_at'] = rate_dict['created_at'].isoformat()
+    rate_dict['effective_from'] = rate_dict['effective_from'].isoformat()
+    if rate_dict.get('effective_to'):
+        rate_dict['effective_to'] = rate_dict['effective_to'].isoformat()
+    
+    await db.market_rates.insert_one(rate_dict)
+    return rate
+
+@api_router.get("/market-rates", response_model=List[MarketRate])
+async def get_market_rates(current_user: User = Depends(get_current_user)):
+    rates = await db.market_rates.find({}, {"_id": 0}).sort("effective_from", -1).to_list(1000)
+    return rates
+
+@api_router.get("/market-rates/active", response_model=List[MarketRate])
+async def get_active_market_rates(current_user: User = Depends(get_current_user)):
+    today = date.today().isoformat()
+    rates = await db.market_rates.find({
+        "effective_from": {"$lte": today},
+        "$or": [
+            {"effective_to": None},
+            {"effective_to": {"$gte": today}}
+        ]
+    }, {"_id": 0}).to_list(1000)
+    return rates
+
+# Lot Stage Wastage
+@api_router.post("/lot-stage-wastage", response_model=LotStageWastage)
+async def create_lot_stage_wastage(
+    wastage_data: LotStageWastageCreate,
+    current_user: User = Depends(get_current_user)
+):
+    # Calculate derived fields
+    wastage_kg = wastage_data.input_weight_kg - wastage_data.output_weight_kg
+    yield_pct = (wastage_data.output_weight_kg / wastage_data.input_weight_kg * 100) if wastage_data.input_weight_kg > 0 else 0
+    
+    # Look up benchmark thresholds
+    lot = await db.procurement_lots.find_one({"id": wastage_data.lot_id}, {"_id": 0})
+    if not lot:
+        raise HTTPException(status_code=404, detail="Lot not found")
+    
+    benchmark = await db.yield_benchmarks.find_one({
+        "species": lot['species'],
+        "process_type": wastage_data.process_type,
+        "is_active": True
+    }, {"_id": 0})
+    
+    # Calculate threshold status
+    threshold_status = "info"
+    min_yield_pct = None
+    optimal_yield_pct = None
+    
+    if benchmark:
+        min_yield_pct = benchmark.get('min_yield_pct')
+        optimal_yield_pct = benchmark.get('optimal_yield_pct')
+        
+        if min_yield_pct and optimal_yield_pct:
+            if yield_pct >= optimal_yield_pct:
+                threshold_status = "green"
+            elif yield_pct >= min_yield_pct:
+                threshold_status = "amber"
+            else:
+                threshold_status = "red"
+    
+    # Look up market rate
+    rate_per_kg = None
+    if benchmark and benchmark.get('reference_rate_per_kg'):
+        rate_per_kg = benchmark['reference_rate_per_kg']
+    else:
+        rate_per_kg = lot.get('rate_per_kg', 0)
+    
+    # Calculate revenue loss
+    revenue_loss_inr = wastage_kg * rate_per_kg if rate_per_kg else 0
+    
+    wastage = LotStageWastage(
+        **wastage_data.model_dump(),
+        wastage_kg=wastage_kg,
+        yield_pct=round(yield_pct, 2),
+        min_yield_pct=min_yield_pct,
+        optimal_yield_pct=optimal_yield_pct,
+        threshold_status=threshold_status,
+        rate_per_kg_used=rate_per_kg,
+        revenue_loss_inr=revenue_loss_inr,
+        net_loss_inr=revenue_loss_inr,
+        is_alert=(threshold_status == "red"),
+        recorded_by=current_user.id
+    )
+    
+    wastage_dict = wastage.model_dump()
+    wastage_dict['created_at'] = wastage_dict['created_at'].isoformat()
+    if wastage_dict.get('updated_at'):
+        wastage_dict['updated_at'] = wastage_dict['updated_at'].isoformat()
+    if wastage_dict.get('alert_ack_at'):
+        wastage_dict['alert_ack_at'] = wastage_dict['alert_ack_at'].isoformat()
+    
+    await db.lot_stage_wastage.insert_one(wastage_dict)
+    
+    # Create alert notification if red
+    if wastage.is_alert:
+        notification = Notification(
+            title=f"🔴 Yield Alert: {wastage.stage_name} below minimum threshold",
+            message=f"Lot {lot['lot_number']} {wastage.stage_name}: {yield_pct:.2f}% yield (min: {min_yield_pct}%)\nWastage: {wastage_kg:.2f} kg | Revenue loss: ₹{revenue_loss_inr:.2f}",
+            type="alert",
+            priority="urgent",
+            target_roles=['admin', 'owner', 'production_supervisor'],
+            created_by=current_user.id
+        )
+        notif_dict = notification.model_dump()
+        notif_dict['created_at'] = notif_dict['created_at'].isoformat()
+        await db.notifications.insert_one(notif_dict)
+    
+    return wastage
+
+@api_router.get("/lot-stage-wastage/{lot_id}", response_model=List[LotStageWastage])
+async def get_lot_wastage(lot_id: str, current_user: User = Depends(get_current_user)):
+    wastage_records = await db.lot_stage_wastage.find(
+        {"lot_id": lot_id},
+        {"_id": 0}
+    ).sort("stage_sequence", 1).to_list(1000)
+    return wastage_records
+
+# Wastage Dashboard
+@api_router.get("/wastage/dashboard-stats", response_model=WastageDashboardStats)
+async def get_wastage_dashboard_stats(current_user: User = Depends(get_current_user)):
+    today = date.today()
+    month_start = date(today.year, today.month, 1)
+    
+    # Today's wastage
+    today_wastage = await db.lot_stage_wastage.aggregate([
+        {
+            "$match": {
+                "created_at": {"$regex": f"^{today.isoformat()}"}
+            }
+        },
+        {
+            "$group": {
+                "_id": None,
+                "total_wastage_kg": {"$sum": "$wastage_kg"},
+                "unique_lots": {"$addToSet": "$lot_id"}
+            }
+        }
+    ]).to_list(1)
+    
+    today_wastage_kg = today_wastage[0]['total_wastage_kg'] if today_wastage else 0
+    today_lots_count = len(today_wastage[0]['unique_lots']) if today_wastage else 0
+    
+    # This month's revenue loss
+    month_loss = await db.lot_stage_wastage.aggregate([
+        {
+            "$match": {
+                "created_at": {"$regex": f"^{month_start.isoformat()[:7]}"}
+            }
+        },
+        {
+            "$group": {
+                "_id": None,
+                "total_loss": {"$sum": "$net_loss_inr"},
+                "byproduct_revenue": {"$sum": "$byproduct_revenue_inr"},
+                "unique_lots": {"$addToSet": "$lot_id"}
+            }
+        }
+    ]).to_list(1)
+    
+    month_revenue_loss = month_loss[0]['total_loss'] if month_loss else 0
+    byproduct_revenue = month_loss[0]['byproduct_revenue'] if month_loss else 0
+    month_lots_count = len(month_loss[0]['unique_lots']) if month_loss else 0
+    
+    # Active red alerts
+    active_alerts = await db.lot_stage_wastage.count_documents({
+        "is_alert": True,
+        "alert_acknowledged": False
+    })
+    
+    return WastageDashboardStats(
+        today_wastage_kg=today_wastage_kg,
+        today_lots_count=today_lots_count,
+        month_revenue_loss_inr=month_revenue_loss,
+        month_lots_count=month_lots_count,
+        active_red_alerts=active_alerts,
+        byproduct_revenue_inr=byproduct_revenue
+    )
+
+@api_router.get("/wastage/breach-alerts", response_model=List[WastageBreachAlert])
+async def get_wastage_breach_alerts(current_user: User = Depends(get_current_user)):
+    alerts = await db.lot_stage_wastage.find({
+        "is_alert": True,
+        "alert_acknowledged": False
+    }, {"_id": 0}).sort("created_at", -1).to_list(100)
+    
+    result = []
+    for alert in alerts:
+        lot = await db.procurement_lots.find_one({"id": alert['lot_id']}, {"_id": 0, "lot_number": 1, "species": 1})
+        if lot:
+            variance_pct = alert['yield_pct'] - alert['min_yield_pct'] if alert.get('min_yield_pct') else 0
+            result.append(WastageBreachAlert(
+                id=alert['id'],
+                lot_id=alert['lot_id'],
+                lot_number=lot['lot_number'],
+                stage_name=alert['stage_name'],
+                species=lot['species'],
+                actual_yield_pct=alert['yield_pct'],
+                min_threshold_pct=alert.get('min_yield_pct', 0),
+                variance_pct=variance_pct,
+                loss_inr=alert['net_loss_inr'],
+                created_at=alert['created_at'] if isinstance(alert['created_at'], datetime) else datetime.fromisoformat(alert['created_at'])
+            ))
+    
+    return result
+
+@api_router.post("/wastage/acknowledge/{wastage_id}")
+async def acknowledge_wastage_alert(wastage_id: str, current_user: User = Depends(get_current_user)):
+    if current_user.role not in ['admin', 'owner', 'production_supervisor']:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    result = await db.lot_stage_wastage.update_one(
+        {"id": wastage_id},
+        {
+            "$set": {
+                "alert_acknowledged": True,
+                "alert_ack_by": current_user.id,
+                "alert_ack_at": datetime.now(timezone.utc).isoformat()
+            }
+        }
+    )
+    
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Wastage record not found")
+    
+    return {"message": "Alert acknowledged successfully"}
+
+@api_router.get("/wastage/stage-summary")
+async def get_stage_wastage_summary(current_user: User = Depends(get_current_user)):
+    # Get this month's stage-wise wastage
+    month_start = date.today().replace(day=1).isoformat()
+    
+    summary = await db.lot_stage_wastage.aggregate([
+        {
+            "$match": {
+                "created_at": {"$regex": f"^{month_start[:7]}"}
+            }
+        },
+        {
+            "$group": {
+                "_id": "$stage_name",
+                "total_input_kg": {"$sum": "$input_weight_kg"},
+                "total_wastage_kg": {"$sum": "$wastage_kg"},
+                "avg_yield_pct": {"$avg": "$yield_pct"},
+                "red_count": {
+                    "$sum": {"$cond": [{"$eq": ["$threshold_status", "red"]}, 1, 0]}
+                },
+                "amber_count": {
+                    "$sum": {"$cond": [{"$eq": ["$threshold_status", "amber"]}, 1, 0]}
+                },
+                "green_count": {
+                    "$sum": {"$cond": [{"$eq": ["$threshold_status", "green"]}, 1, 0]}
+                }
+            }
+        },
+        {"$sort": {"_id": 1}}
+    ]).to_list(100)
+    
+    return summary
+
+
+
+
 # Photo Tracker Endpoints
 @api_router.post("/admin/photos", response_model=PhotoTracker)
 async def upload_photo_tracking(photo_data: PhotoUpload, current_user: User = Depends(get_current_user)):
