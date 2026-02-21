@@ -273,6 +273,7 @@ class PreprocessingBatchCreate(BaseModel):
     process_type: ProcessType
     input_weight_kg: float
     output_weight_kg: float
+    no_of_trays: int = 0
     start_time: datetime
     end_time: Optional[datetime] = None
     workers: List[Worker] = []
