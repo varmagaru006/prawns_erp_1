@@ -200,6 +200,7 @@ class ProcurementLot(BaseModel):
     ice_weight_kg: float
     net_weight_kg: float
     no_of_tons: float
+    no_of_trays: int = 0
     rate_per_kg: float
     total_amount: float
     advance_paid: float = 0.0
@@ -210,10 +211,16 @@ class ProcurementLot(BaseModel):
     rejection_reason: Optional[str] = None
     payment_status: PaymentStatus = PaymentStatus.pending
     payments: List[ProcurementPayment] = []
+    photos: List[str] = []
+    is_update_pending_approval: bool = False
+    approval_status: ApprovalStatus = ApprovalStatus.approved
+    approval_notes: Optional[str] = None
+    approved_by: Optional[str] = None
     notes: Optional[str] = None
     attachments: List[str] = []
     created_by: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: Optional[datetime] = None
 
 class ProcurementLotCreate(BaseModel):
     agent_id: str
