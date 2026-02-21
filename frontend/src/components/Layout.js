@@ -58,6 +58,8 @@ const Layout = () => {
     { name: 'Finished Goods', path: '/finished-goods', icon: 'Box', moduleKey: 'finishedGoods' },
     { name: 'Sales & Dispatch', path: '/sales', icon: 'Ship', moduleKey: 'sales' },
     { name: 'Accounts', path: '/accounts', icon: 'Receipt', moduleKey: 'accounts' },
+    { name: 'Wastage Dashboard', path: '/admin/wastage-dashboard', icon: 'TrendingDown', moduleKey: 'wastageDashboard' },
+    { name: 'Yield Benchmarks', path: '/admin/yield-benchmarks', icon: 'Target', moduleKey: 'yieldBenchmarks' },
     { name: 'Admin Panel', path: '/admin', icon: 'Settings', moduleKey: 'admin' },
     { name: 'Notifications', path: '/notifications', icon: 'Bell', moduleKey: 'notifications' },
   ];
