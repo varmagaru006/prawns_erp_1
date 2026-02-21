@@ -468,7 +468,13 @@ const Procurement = () => {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {lots.map((lot) => (
+                    {lots.map((lot) => {
+                      const gateWastage = wastageData[lot.id]?.find(w => w.process_type === 'gate_ice');
+                      const icePercent = lot.gross_weight_kg > 0 
+                        ? ((lot.ice_weight_kg / lot.gross_weight_kg) * 100).toFixed(1) 
+                        : 0;
+                      
+                      return (
                       <TableRow key={lot.id} data-testid={`lot-row-${lot.id}`}>
                         <TableCell className="font-medium">{lot.lot_number}</TableCell>
                         <TableCell>{lot.agent_name}</TableCell>
@@ -476,6 +482,18 @@ const Procurement = () => {
                         <TableCell>{lot.count_per_kg || 'N/A'}</TableCell>
                         <TableCell>{lot.no_of_trays || 0}</TableCell>
                         <TableCell>{lot.net_weight_kg.toFixed(2)}</TableCell>
+                        <TableCell>
+                          <span className={`px-2 py-1 rounded text-xs font-semibold ${
+                            icePercent < 15 ? 'bg-green-100 text-green-800' :
+                            icePercent < 20 ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-red-100 text-red-800'
+                          }`}>
+                            {icePercent}%
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          {gateWastage ? getYieldBadge(gateWastage.yield_pct, gateWastage.threshold_status) : '-'}
+                        </TableCell>
                         <TableCell>₹{lot.total_amount.toFixed(2)}</TableCell>
                         <TableCell>₹{lot.balance_due.toFixed(2)}</TableCell>
                         <TableCell>{getStatusBadge(lot.payment_status)}</TableCell>
@@ -502,19 +520,30 @@ const Procurement = () => {
                           )}
                         </TableCell>
                         <TableCell>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => downloadReceipt(lot.id)}
-                            className="gap-1"
-                            data-testid={`download-receipt-${lot.id}`}
-                          >
-                            <Download size={14} />
-                            Receipt
-                          </Button>
+                          <div className="flex gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => downloadReceipt(lot.id)}
+                              className="gap-1"
+                              data-testid={`download-receipt-${lot.id}`}
+                            >
+                              <Download size={14} />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleViewWastage(lot)}
+                              className="gap-1"
+                              title="View Wastage"
+                            >
+                              <Package size={14} />
+                            </Button>
+                          </div>
                         </TableCell>
                       </TableRow>
-                    ))}
+                    );
+                    })}
                   </TableBody>
                 </Table>
               </div>
