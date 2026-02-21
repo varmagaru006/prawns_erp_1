@@ -858,6 +858,126 @@ def generate_lot_number() -> str:
 
 def generate_batch_number() -> str:
     now = datetime.now()
+
+
+# ============================================================================
+# WASTAGE TRACKING HELPER FUNCTIONS
+# ============================================================================
+
+async def create_wastage_record(
+    lot_id: str,
+    stage_sequence: int,
+    stage_name: str,
+    process_type: str,
+    input_weight_kg: float,
+    output_weight_kg: float,
+    source_entity_type: str,
+    source_entity_id: str,
+    recorded_by: str
+) -> dict:
+    """
+    Create a wastage record and return it
+    Auto-calculates yield, checks thresholds, creates alerts if needed
+    """
+    # Calculate derived fields
+    wastage_kg = input_weight_kg - output_weight_kg
+    yield_pct = (output_weight_kg / input_weight_kg * 100) if input_weight_kg > 0 else 0
+    
+    # Look up lot and benchmark
+    lot = await db.procurement_lots.find_one({"id": lot_id}, {"_id": 0})
+    if not lot:
+        return None
+    
+    benchmark = await db.yield_benchmarks.find_one({
+        "species": lot['species'],
+        "process_type": process_type,
+        "is_active": True
+    }, {"_id": 0})
+    
+    # Calculate threshold status
+    threshold_status = "info"
+    min_yield_pct = None
+    optimal_yield_pct = None
+    
+    if benchmark:
+        min_yield_pct = benchmark.get('min_yield_pct')
+        optimal_yield_pct = benchmark.get('optimal_yield_pct')
+        
+        if min_yield_pct and optimal_yield_pct:
+            if yield_pct >= optimal_yield_pct:
+                threshold_status = "green"
+            elif yield_pct >= min_yield_pct:
+                threshold_status = "amber"
+            else:
+                threshold_status = "red"
+    
+    # Look up market rate
+    rate_per_kg = None
+    if benchmark and benchmark.get('reference_rate_per_kg'):
+        rate_per_kg = benchmark['reference_rate_per_kg']
+    else:
+        rate_per_kg = lot.get('rate_per_kg', 0)
+    
+    # Calculate revenue loss
+    revenue_loss_inr = wastage_kg * rate_per_kg if rate_per_kg else 0
+    
+    # Create wastage record
+    wastage = {
+        "id": str(uuid.uuid4()),
+        "lot_id": lot_id,
+        "stage_sequence": stage_sequence,
+        "stage_name": stage_name,
+        "process_type": process_type,
+        "source_entity_type": source_entity_type,
+        "source_entity_id": source_entity_id,
+        "input_weight_kg": input_weight_kg,
+        "output_weight_kg": output_weight_kg,
+        "wastage_kg": wastage_kg,
+        "yield_pct": round(yield_pct, 2),
+        "min_yield_pct": min_yield_pct,
+        "optimal_yield_pct": optimal_yield_pct,
+        "threshold_status": threshold_status,
+        "rate_per_kg_used": rate_per_kg,
+        "revenue_loss_inr": revenue_loss_inr,
+        "gradedown_kg": 0,
+        "gradedown_rate_gap": 0,
+        "gradedown_loss_inr": 0,
+        "target_glaze_pct": None,
+        "actual_glaze_pct": None,
+        "glaze_variance_pct": None,
+        "glaze_revenue_gap_inr": 0,
+        "byproduct_revenue_inr": 0,
+        "net_loss_inr": revenue_loss_inr,
+        "is_alert": (threshold_status == "red"),
+        "alert_acknowledged": False,
+        "alert_ack_by": None,
+        "alert_ack_at": None,
+        "recorded_by": recorded_by,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": None
+    }
+    
+    await db.lot_stage_wastage.insert_one(wastage)
+    
+    # Create alert notification if red
+    if wastage["is_alert"]:
+        notification = {
+            "id": str(uuid.uuid4()),
+            "title": f"🔴 Yield Alert: {stage_name} below minimum threshold",
+            "message": f"Lot {lot['lot_number']} {stage_name}: {yield_pct:.2f}% yield (min: {min_yield_pct}%)\nWastage: {wastage_kg:.2f} kg | Revenue loss: ₹{revenue_loss_inr:.2f}",
+            "type": "alert",
+            "priority": "urgent",
+            "target_roles": ['admin', 'owner', 'production_supervisor'],
+            "link": f"/lot/{lot_id}/wastage",
+            "is_read": False,
+            "created_by": recorded_by,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        await db.notifications.insert_one(notification)
+    
+    return wastage
+
+
     date_str = now.strftime("%Y%m%d")
     counter = now.strftime("%H%M%S")
     return f"BATCH-{date_str}-{counter}"
