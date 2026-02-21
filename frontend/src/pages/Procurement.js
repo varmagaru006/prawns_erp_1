@@ -419,11 +419,14 @@ const Procurement = () => {
                       <TableHead>Lot Number</TableHead>
                       <TableHead>Agent</TableHead>
                       <TableHead>Species</TableHead>
+                      <TableHead>Count/KG</TableHead>
+                      <TableHead>Trays</TableHead>
                       <TableHead>Net Weight (KG)</TableHead>
                       <TableHead>Total Amount</TableHead>
                       <TableHead>Balance Due</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead>Grade</TableHead>
+                      <TableHead>Approval</TableHead>
                       <TableHead>Action</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -433,6 +436,8 @@ const Procurement = () => {
                         <TableCell className="font-medium">{lot.lot_number}</TableCell>
                         <TableCell>{lot.agent_name}</TableCell>
                         <TableCell>{lot.species}</TableCell>
+                        <TableCell>{lot.count_per_kg || 'N/A'}</TableCell>
+                        <TableCell>{lot.no_of_trays || 0}</TableCell>
                         <TableCell>{lot.net_weight_kg.toFixed(2)}</TableCell>
                         <TableCell>₹{lot.total_amount.toFixed(2)}</TableCell>
                         <TableCell>₹{lot.balance_due.toFixed(2)}</TableCell>
@@ -445,6 +450,19 @@ const Procurement = () => {
                           }`}>
                             {lot.freshness_grade}
                           </span>
+                        </TableCell>
+                        <TableCell>
+                          {lot.is_update_pending_approval ? (
+                            <span className="px-2 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-800">
+                              PENDING
+                            </span>
+                          ) : lot.approval_status === 'approved' ? (
+                            <span className="px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                              APPROVED
+                            </span>
+                          ) : (
+                            <span className="text-xs text-slate-400">N/A</span>
+                          )}
                         </TableCell>
                         <TableCell>
                           <Button
