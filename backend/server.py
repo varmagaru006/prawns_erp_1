@@ -1144,6 +1144,366 @@ async def get_dashboard_stats(current_user: User = Depends(get_current_user)):
         recent_activities=recent_activities
     )
 
+
+
+# QC Module endpoints
+@api_router.post("/qc/inspections", response_model=QCInspection)
+async def create_qc_inspection(inspection_data: QCInspectionCreate, current_user: User = Depends(get_current_user)):
+    inspection = QCInspection(
+        inspection_code=generate_inspection_code(),
+        entity_type=inspection_data.entity_type,
+        entity_id=inspection_data.entity_id,
+        qc_officer=inspection_data.qc_officer,
+        parameters=inspection_data.parameters,
+        overall_grade=inspection_data.overall_grade,
+        pass_fail=inspection_data.pass_fail,
+        failure_reason=inspection_data.failure_reason,
+        lab_report_ref=inspection_data.lab_report_ref,
+        notes=inspection_data.notes,
+        created_by=current_user.id
+    )
+    
+    inspection_dict = inspection.model_dump()
+    inspection_dict['created_at'] = inspection_dict['created_at'].isoformat()
+    inspection_dict['inspection_date'] = inspection_dict['inspection_date'].isoformat()
+    
+    await db.qc_inspections.insert_one(inspection_dict)
+    await create_audit_log(current_user.id, "CREATE_QC_INSPECTION", "qc", {"inspection_id": inspection.id})
+    return inspection
+
+@api_router.get("/qc/inspections", response_model=List[QCInspection])
+async def get_qc_inspections(current_user: User = Depends(get_current_user)):
+    inspections = await db.qc_inspections.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    for insp in inspections:
+        if isinstance(insp.get('created_at'), str):
+            insp['created_at'] = datetime.fromisoformat(insp['created_at'])
+        if isinstance(insp.get('inspection_date'), str):
+            insp['inspection_date'] = datetime.fromisoformat(insp['inspection_date'])
+    return inspections
+
+# Cold Storage endpoints
+@api_router.post("/cold-storage/chambers", response_model=ColdStorageChamber)
+async def create_chamber(chamber_data: ColdStorageChamberCreate, current_user: User = Depends(get_current_user)):
+    chamber = ColdStorageChamber(**chamber_data.model_dump())
+    chamber_dict = chamber.model_dump()
+    chamber_dict['created_at'] = chamber_dict['created_at'].isoformat()
+    
+    await db.cold_storage_chambers.insert_one(chamber_dict)
+    await create_audit_log(current_user.id, "CREATE_CHAMBER", "cold_storage", {"chamber_id": chamber.id})
+    return chamber
+
+@api_router.get("/cold-storage/chambers", response_model=List[ColdStorageChamber])
+async def get_chambers(current_user: User = Depends(get_current_user)):
+    chambers = await db.cold_storage_chambers.find({}, {"_id": 0}).to_list(1000)
+    for chamber in chambers:
+        if isinstance(chamber.get('created_at'), str):
+            chamber['created_at'] = datetime.fromisoformat(chamber['created_at'])
+    return chambers
+
+@api_router.post("/cold-storage/slots", response_model=ColdStorageSlot)
+async def create_slot(slot_data: ColdStorageSlotCreate, current_user: User = Depends(get_current_user)):
+    slot = ColdStorageSlot(**slot_data.model_dump())
+    slot_dict = slot.model_dump()
+    slot_dict['created_at'] = slot_dict['created_at'].isoformat()
+    if slot_dict.get('intake_date'):
+        slot_dict['intake_date'] = slot_dict['intake_date'].isoformat()
+    
+    await db.cold_storage_slots.insert_one(slot_dict)
+    return slot
+
+@api_router.get("/cold-storage/slots", response_model=List[ColdStorageSlot])
+async def get_slots(current_user: User = Depends(get_current_user)):
+    slots = await db.cold_storage_slots.find({}, {"_id": 0}).to_list(1000)
+    for slot in slots:
+        if isinstance(slot.get('created_at'), str):
+            slot['created_at'] = datetime.fromisoformat(slot['created_at'])
+        if slot.get('intake_date') and isinstance(slot['intake_date'], str):
+            slot['intake_date'] = datetime.fromisoformat(slot['intake_date'])
+    return slots
+
+@api_router.post("/cold-storage/inventory", response_model=ColdStorageInventory)
+async def add_to_inventory(inventory_data: ColdStorageInventoryCreate, current_user: User = Depends(get_current_user)):
+    intake_date = datetime.now(timezone.utc)
+    days_in_storage = 0
+    
+    inventory = ColdStorageInventory(
+        slot_id=inventory_data.slot_id,
+        fg_id=inventory_data.fg_id,
+        quantity_kg=inventory_data.quantity_kg,
+        carton_count=inventory_data.carton_count,
+        intake_date=intake_date,
+        days_in_storage=days_in_storage
+    )
+    
+    inventory_dict = inventory.model_dump()
+    inventory_dict['created_at'] = inventory_dict['created_at'].isoformat()
+    inventory_dict['intake_date'] = inventory_dict['intake_date'].isoformat()
+    
+    await db.cold_storage_inventory.insert_one(inventory_dict)
+    
+    # Update slot status
+    await db.cold_storage_slots.update_one(
+        {"id": inventory_data.slot_id},
+        {"$set": {
+            "status": "occupied",
+            "occupied_weight_kg": inventory_data.quantity_kg,
+            "fg_id": inventory_data.fg_id,
+            "intake_date": intake_date.isoformat()
+        }}
+    )
+    
+    return inventory
+
+@api_router.get("/cold-storage/inventory", response_model=List[ColdStorageInventory])
+async def get_inventory(current_user: User = Depends(get_current_user)):
+    inventory = await db.cold_storage_inventory.find({}, {"_id": 0}).to_list(1000)
+    for item in inventory:
+        if isinstance(item.get('created_at'), str):
+            item['created_at'] = datetime.fromisoformat(item['created_at'])
+        if isinstance(item.get('intake_date'), str):
+            item['intake_date'] = datetime.fromisoformat(item['intake_date'])
+        # Calculate days in storage
+        if item.get('intake_date'):
+            days = (datetime.now(timezone.utc) - item['intake_date']).days
+            item['days_in_storage'] = days
+    return inventory
+
+@api_router.post("/cold-storage/temperature-logs", response_model=TemperatureLog)
+async def log_temperature(log_data: TemperatureLogCreate, current_user: User = Depends(get_current_user)):
+    chamber = await db.cold_storage_chambers.find_one({"id": log_data.chamber_id}, {"_id": 0})
+    if not chamber:
+        raise HTTPException(status_code=404, detail="Chamber not found")
+    
+    setpoint = chamber.get('setpoint_temperature_c', -18.0)
+    temp_diff = abs(log_data.temperature_c - setpoint)
+    alert = temp_diff > 2.0
+    alert_reason = f"Temperature deviation: {temp_diff:.1f}°C from setpoint" if alert else None
+    
+    temp_log = TemperatureLog(
+        chamber_id=log_data.chamber_id,
+        temperature_c=log_data.temperature_c,
+        alert=alert,
+        alert_reason=alert_reason
+    )
+    
+    temp_log_dict = temp_log.model_dump()
+    temp_log_dict['recorded_at'] = temp_log_dict['recorded_at'].isoformat()
+    
+    await db.temperature_logs.insert_one(temp_log_dict)
+    return temp_log
+
+@api_router.get("/cold-storage/temperature-logs", response_model=List[TemperatureLog])
+async def get_temperature_logs(chamber_id: Optional[str] = None, current_user: User = Depends(get_current_user)):
+    query = {"chamber_id": chamber_id} if chamber_id else {}
+    logs = await db.temperature_logs.find(query, {"_id": 0}).sort("recorded_at", -1).limit(100).to_list(100)
+    for log in logs:
+        if isinstance(log.get('recorded_at'), str):
+            log['recorded_at'] = datetime.fromisoformat(log['recorded_at'])
+    return logs
+
+# Sales & Dispatch endpoints
+@api_router.post("/buyers", response_model=Buyer)
+async def create_buyer(buyer_data: BuyerCreate, current_user: User = Depends(get_current_user)):
+    buyer = Buyer(**buyer_data.model_dump())
+    buyer_dict = buyer.model_dump()
+    buyer_dict['created_at'] = buyer_dict['created_at'].isoformat()
+    
+    await db.buyers.insert_one(buyer_dict)
+    await create_audit_log(current_user.id, "CREATE_BUYER", "sales", {"buyer_id": buyer.id})
+    return buyer
+
+@api_router.get("/buyers", response_model=List[Buyer])
+async def get_buyers(current_user: User = Depends(get_current_user)):
+    buyers = await db.buyers.find({}, {"_id": 0}).to_list(1000)
+    for buyer in buyers:
+        if isinstance(buyer.get('created_at'), str):
+            buyer['created_at'] = datetime.fromisoformat(buyer['created_at'])
+    return buyers
+
+@api_router.post("/sales/orders", response_model=SalesOrder)
+async def create_sales_order(order_data: SalesOrderCreate, current_user: User = Depends(get_current_user)):
+    buyer = await db.buyers.find_one({"id": order_data.buyer_id}, {"_id": 0})
+    if not buyer:
+        raise HTTPException(status_code=404, detail="Buyer not found")
+    
+    total_value = order_data.quantity_kg * order_data.rate_per_kg_usd
+    
+    sales_order = SalesOrder(
+        order_number=generate_order_num(),
+        buyer_id=order_data.buyer_id,
+        buyer_name=buyer['company_name'],
+        quantity_kg=order_data.quantity_kg,
+        rate_per_kg_usd=order_data.rate_per_kg_usd,
+        currency=order_data.currency,
+        total_value_usd=total_value,
+        delivery_date=order_data.delivery_date,
+        notes=order_data.notes,
+        created_by=current_user.id
+    )
+    
+    order_dict = sales_order.model_dump()
+    order_dict['created_at'] = order_dict['created_at'].isoformat()
+    order_dict['delivery_date'] = order_dict['delivery_date'].isoformat()
+    
+    await db.sales_orders.insert_one(order_dict)
+    await create_audit_log(current_user.id, "CREATE_SALES_ORDER", "sales", {"order_id": sales_order.id})
+    return sales_order
+
+@api_router.get("/sales/orders", response_model=List[SalesOrder])
+async def get_sales_orders(current_user: User = Depends(get_current_user)):
+    orders = await db.sales_orders.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    for order in orders:
+        if isinstance(order.get('created_at'), str):
+            order['created_at'] = datetime.fromisoformat(order['created_at'])
+        if isinstance(order.get('delivery_date'), str):
+            order['delivery_date'] = datetime.fromisoformat(order['delivery_date'])
+    return orders
+
+@api_router.post("/shipments", response_model=Shipment)
+async def create_shipment(shipment_data: ShipmentCreate, current_user: User = Depends(get_current_user)):
+    shipment = Shipment(
+        shipment_number=generate_shipment_number(),
+        sales_order_id=shipment_data.sales_order_id,
+        container_no=shipment_data.container_no,
+        seal_no=shipment_data.seal_no,
+        shipping_line=shipment_data.shipping_line,
+        vessel_name=shipment_data.vessel_name,
+        port_of_loading=shipment_data.port_of_loading,
+        port_of_discharge=shipment_data.port_of_discharge,
+        destination_country=shipment_data.destination_country,
+        etd=shipment_data.etd,
+        eta=shipment_data.eta,
+        bill_of_lading=shipment_data.bill_of_lading,
+        created_by=current_user.id
+    )
+    
+    shipment_dict = shipment.model_dump()
+    shipment_dict['created_at'] = shipment_dict['created_at'].isoformat()
+    shipment_dict['etd'] = shipment_dict['etd'].isoformat()
+    shipment_dict['eta'] = shipment_dict['eta'].isoformat()
+    
+    await db.shipments.insert_one(shipment_dict)
+    await create_audit_log(current_user.id, "CREATE_SHIPMENT", "sales", {"shipment_id": shipment.id})
+    return shipment
+
+@api_router.get("/shipments", response_model=List[Shipment])
+async def get_shipments(current_user: User = Depends(get_current_user)):
+    shipments = await db.shipments.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    for shipment in shipments:
+        if isinstance(shipment.get('created_at'), str):
+            shipment['created_at'] = datetime.fromisoformat(shipment['created_at'])
+        if isinstance(shipment.get('etd'), str):
+            shipment['etd'] = datetime.fromisoformat(shipment['etd'])
+        if isinstance(shipment.get('eta'), str):
+            shipment['eta'] = datetime.fromisoformat(shipment['eta'])
+    return shipments
+
+# Wage & Billing endpoints
+@api_router.post("/wage-bills", response_model=WageBill)
+async def create_wage_bill(bill_data: WageBillCreate, current_user: User = Depends(get_current_user)):
+    net_payable = bill_data.gross_amount - bill_data.tds_deduction
+    
+    wage_bill = WageBill(
+        bill_number=generate_bill_number(),
+        bill_type=bill_data.bill_type,
+        period_from=bill_data.period_from,
+        period_to=bill_data.period_to,
+        department=bill_data.department,
+        gross_amount=bill_data.gross_amount,
+        tds_deduction=bill_data.tds_deduction,
+        net_payable=net_payable,
+        notes=bill_data.notes,
+        created_by=current_user.id
+    )
+    
+    bill_dict = wage_bill.model_dump()
+    bill_dict['created_at'] = bill_dict['created_at'].isoformat()
+    bill_dict['period_from'] = bill_dict['period_from'].isoformat()
+    bill_dict['period_to'] = bill_dict['period_to'].isoformat()
+    if bill_dict.get('payment_date'):
+        bill_dict['payment_date'] = bill_dict['payment_date'].isoformat()
+    
+    await db.wage_bills.insert_one(bill_dict)
+    await create_audit_log(current_user.id, "CREATE_WAGE_BILL", "accounts", {"bill_id": wage_bill.id})
+    return wage_bill
+
+@api_router.get("/wage-bills", response_model=List[WageBill])
+async def get_wage_bills(current_user: User = Depends(get_current_user)):
+    bills = await db.wage_bills.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    for bill in bills:
+        if isinstance(bill.get('created_at'), str):
+            bill['created_at'] = datetime.fromisoformat(bill['created_at'])
+        if isinstance(bill.get('period_from'), str):
+            bill['period_from'] = datetime.fromisoformat(bill['period_from'])
+        if isinstance(bill.get('period_to'), str):
+            bill['period_to'] = datetime.fromisoformat(bill['period_to'])
+        if bill.get('payment_date') and isinstance(bill['payment_date'], str):
+            bill['payment_date'] = datetime.fromisoformat(bill['payment_date'])
+    return bills
+
+# Universal Attachments & Notes
+@api_router.post("/attachments", response_model=Attachment)
+async def create_attachment(attachment_data: AttachmentCreate, current_user: User = Depends(get_current_user)):
+    attachment = Attachment(
+        entity_type=attachment_data.entity_type,
+        entity_id=attachment_data.entity_id,
+        file_name=attachment_data.file_name,
+        file_url=f"/uploads/{attachment_data.file_name}",
+        file_size_kb=0.0,
+        mime_type="application/octet-stream",
+        category=attachment_data.category,
+        description=attachment_data.description,
+        uploaded_by=current_user.id
+    )
+    
+    attachment_dict = attachment.model_dump()
+    attachment_dict['created_at'] = attachment_dict['created_at'].isoformat()
+    
+    await db.attachments.insert_one(attachment_dict)
+    return attachment
+
+@api_router.get("/attachments/{entity_type}/{entity_id}", response_model=List[Attachment])
+async def get_attachments(entity_type: str, entity_id: str, current_user: User = Depends(get_current_user)):
+    attachments = await db.attachments.find(
+        {"entity_type": entity_type, "entity_id": entity_id, "is_deleted": False},
+        {"_id": 0}
+    ).to_list(1000)
+    for attachment in attachments:
+        if isinstance(attachment.get('created_at'), str):
+            attachment['created_at'] = datetime.fromisoformat(attachment['created_at'])
+    return attachments
+
+@api_router.post("/notes", response_model=Note)
+async def create_note(note_data: NoteCreate, current_user: User = Depends(get_current_user)):
+    is_admin_note = current_user.role in [UserRole.admin, UserRole.owner]
+    
+    note = Note(
+        entity_type=note_data.entity_type,
+        entity_id=note_data.entity_id,
+        note_text=note_data.note_text,
+        is_pinned=note_data.is_pinned,
+        is_admin_note=is_admin_note,
+        authored_by=current_user.id,
+        author_name=current_user.name
+    )
+    
+    note_dict = note.model_dump()
+    note_dict['created_at'] = note_dict['created_at'].isoformat()
+    
+    await db.notes.insert_one(note_dict)
+    return note
+
+@api_router.get("/notes/{entity_type}/{entity_id}", response_model=List[Note])
+async def get_notes(entity_type: str, entity_id: str, current_user: User = Depends(get_current_user)):
+    notes = await db.notes.find(
+        {"entity_type": entity_type, "entity_id": entity_id, "is_deleted": False},
+        {"_id": 0}
+    ).sort([("is_pinned", -1), ("created_at", -1)]).to_list(1000)
+    for note in notes:
+        if isinstance(note.get('created_at'), str):
+            note['created_at'] = datetime.fromisoformat(note['created_at'])
+    return notes
+
 app.include_router(api_router)
 
 app.add_middleware(
