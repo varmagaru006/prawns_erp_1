@@ -44,6 +44,7 @@ function AppRoutes() {
         <Route path="cold-storage" element={<ColdStorage />} />
         <Route path="sales" element={<Sales />} />
         <Route path="accounts" element={<Accounts />} />
+        <Route path="admin" element={<AdminPanel />} />
         <Route path="notifications" element={<Notifications />} />
       </Route>
     </Routes>
