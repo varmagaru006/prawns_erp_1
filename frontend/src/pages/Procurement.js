@@ -32,7 +32,10 @@ const Procurement = () => {
     is_rejected: false,
     rejection_reason: '',
     notes: '',
+    no_of_trays: 0,
   });
+  const [photoFile, setPhotoFile] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState(null);
 
   useEffect(() => {
     fetchData();
@@ -56,12 +59,44 @@ const Procurement = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      await axios.post(`${API}/procurement/lots`, formData);
+      const response = await axios.post(`${API}/procurement/lots`, formData);
+      const lotId = response.data.id;
+      
+      // Upload photo if provided
+      if (photoFile) {
+        const photoFormData = new FormData();
+        photoFormData.append('file', photoFile);
+        photoFormData.append('entity_type', 'procurement_lot');
+        photoFormData.append('entity_id', lotId);
+        photoFormData.append('entity_display', response.data.lot_number);
+        photoFormData.append('stage', 'procurement');
+        photoFormData.append('count_per_kg_visible', formData.count_per_kg);
+        photoFormData.append('tray_count_visible', formData.no_of_trays.toString());
+        
+        await axios.post(`${API}/admin/photos`, photoFormData, {
+          headers: { 'Content-Type': 'multipart/form-data' }
+        });
+      }
+      
       toast.success('Procurement lot added successfully');
       setOpen(false);
+      setPhotoFile(null);
+      setPhotoPreview(null);
       fetchData();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to add lot');
+    }
+  };
+
+  const handlePhotoChange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      setPhotoFile(file);
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setPhotoPreview(reader.result);
+      };
+      reader.readAsDataURL(file);
     }
   };
 
