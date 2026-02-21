@@ -46,7 +46,9 @@ const Layout = () => {
     Ship,
     Receipt,
     Settings,
-    Bell
+    Bell,
+    TrendingDown,
+    Target
   };
 
   const navigation = [
