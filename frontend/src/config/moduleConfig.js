@@ -60,6 +60,18 @@ export const moduleConfig = {
     description: 'Approvals, photos, and system management',
     roles: ['admin', 'owner']
   },
+  wastageDashboard: {
+    enabled: true,
+    name: 'Wastage Dashboard',
+    description: 'Yield tracking and revenue loss monitoring',
+    roles: ['admin', 'owner', 'production_supervisor']
+  },
+  yieldBenchmarks: {
+    enabled: true,
+    name: 'Yield Benchmarks',
+    description: 'Configure wastage thresholds',
+    roles: ['admin', 'owner']
+  },
   notifications: {
     enabled: true,
     name: 'Notifications',
