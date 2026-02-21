@@ -17,7 +17,8 @@ import {
   ClipboardCheck,
   Snowflake,
   Ship,
-  Receipt
+  Receipt,
+  Settings
 } from 'lucide-react';
 
 const Layout = () => {
