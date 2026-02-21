@@ -1598,6 +1598,285 @@ async def get_notes(entity_type: str, entity_id: str, current_user: User = Depen
             note['created_at'] = datetime.fromisoformat(note['created_at'])
     return notes
 
+
+
+# Approval Workflow Endpoints
+@api_router.get("/admin/pending-approvals", response_model=List[PendingApproval])
+async def get_pending_approvals(current_user: User = Depends(get_current_user)):
+    if current_user.role not in [UserRole.admin, UserRole.owner, UserRole.production_supervisor]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    approvals = await db.pending_approvals.find(
+        {"approval_status": "pending"},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(1000)
+    
+    for approval in approvals:
+        if isinstance(approval.get('created_at'), str):
+            approval['created_at'] = datetime.fromisoformat(approval['created_at'])
+    return approvals
+
+@api_router.post("/admin/approve-action")
+async def handle_approval(action_data: ApprovalAction, current_user: User = Depends(get_current_user)):
+    if current_user.role not in [UserRole.admin, UserRole.owner, UserRole.production_supervisor]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    approval = await db.pending_approvals.find_one({"id": action_data.approval_id}, {"_id": 0})
+    if not approval:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    
+    # Update approval status
+    new_status = ApprovalStatus.approved if action_data.action == "approve" else ApprovalStatus.rejected
+    
+    await db.pending_approvals.update_one(
+        {"id": action_data.approval_id},
+        {"$set": {
+            "approval_status": new_status.value,
+            "approved_by": current_user.id,
+            "approval_notes": action_data.notes
+        }}
+    )
+    
+    # If approved, apply changes to the actual entity
+    if action_data.action == "approve":
+        entity_type = approval['entity_type']
+        entity_id = approval['entity_id']
+        new_data = approval['new_data']
+        
+        if entity_type == "procurement_lot":
+            await db.procurement_lots.update_one(
+                {"id": entity_id},
+                {"$set": {
+                    **new_data,
+                    "is_update_pending_approval": False,
+                    "approval_status": "approved",
+                    "approved_by": current_user.id,
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }}
+            )
+    
+    await create_audit_log(current_user.id, f"APPROVAL_{action_data.action.upper()}", "admin", {
+        "approval_id": action_data.approval_id,
+        "entity_type": approval['entity_type'],
+        "entity_id": approval['entity_id']
+    })
+    
+    return {"message": f"Successfully {action_data.action}d", "status": new_status.value}
+
+# Photo Tracker Endpoints
+@api_router.post("/admin/photos", response_model=PhotoTracker)
+async def upload_photo_tracking(photo_data: PhotoUpload, current_user: User = Depends(get_current_user)):
+    photo = PhotoTracker(
+        entity_type=photo_data.entity_type,
+        entity_id=photo_data.entity_id,
+        entity_display=photo_data.entity_display,
+        stage=photo_data.stage,
+        photo_url=photo_data.photo_url,
+        count_per_kg_visible=photo_data.count_per_kg_visible,
+        tray_count_visible=photo_data.tray_count_visible,
+        uploaded_by=current_user.id,
+        uploader_name=current_user.name,
+        notes=photo_data.notes
+    )
+    
+    photo_dict = photo.model_dump()
+    photo_dict['created_at'] = photo_dict['created_at'].isoformat()
+    
+    await db.photo_tracker.insert_one(photo_dict)
+    
+    # Also update the entity's photos array
+    collection_map = {
+        "procurement_lot": "procurement_lots",
+        "preprocessing_batch": "preprocessing_batches",
+        "production_order": "production_orders"
+    }
+    
+    if photo_data.entity_type in collection_map:
+        collection = db[collection_map[photo_data.entity_type]]
+        await collection.update_one(
+            {"id": photo_data.entity_id},
+            {"$push": {"photos": photo_data.photo_url}}
+        )
+    
+    return photo
+
+@api_router.get("/admin/photos", response_model=List[PhotoTracker])
+async def get_all_photos(stage: Optional[str] = None, current_user: User = Depends(get_current_user)):
+    query = {"stage": stage} if stage else {}
+    photos = await db.photo_tracker.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    
+    for photo in photos:
+        if isinstance(photo.get('created_at'), str):
+            photo['created_at'] = datetime.fromisoformat(photo['created_at'])
+    return photos
+
+# Live Price Tracking
+@api_router.get("/live-prices", response_model=List[LivePriceData])
+async def get_live_prices(current_user: User = Depends(get_current_user)):
+    # Mock data for now - in production, this would fetch from external API or database
+    mock_prices = [
+        {
+            "id": str(uuid.uuid4()),
+            "category": "Vannamei 30/40",
+            "price_per_kg": 420.0,
+            "location": "Andhra Pradesh",
+            "market": "Nellore",
+            "date": datetime.now(timezone.utc),
+            "source": "Market Data"
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "category": "Vannamei 40/60",
+            "price_per_kg": 380.0,
+            "location": "Andhra Pradesh",
+            "market": "Kakinada",
+            "date": datetime.now(timezone.utc),
+            "source": "Market Data"
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "category": "Vannamei 60/80",
+            "price_per_kg": 340.0,
+            "location": "Andhra Pradesh",
+            "market": "Bhimavaram",
+            "date": datetime.now(timezone.utc),
+            "source": "Market Data"
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "category": "Black Tiger 20/30",
+            "price_per_kg": 650.0,
+            "location": "Andhra Pradesh",
+            "market": "Nellore",
+            "date": datetime.now(timezone.utc),
+            "source": "Market Data"
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "category": "Black Tiger 30/40",
+            "price_per_kg": 580.0,
+            "location": "Andhra Pradesh",
+            "market": "Kakinada",
+            "date": datetime.now(timezone.utc),
+            "source": "Market Data"
+        }
+    ]
+    
+    return mock_prices
+
+# Traceability View
+@api_router.get("/traceability/{lot_number}", response_model=TraceabilityRecord)
+async def get_traceability(lot_number: str, current_user: User = Depends(get_current_user)):
+    # Get procurement lot
+    lot = await db.procurement_lots.find_one({"lot_number": lot_number}, {"_id": 0})
+    if not lot:
+        raise HTTPException(status_code=404, detail="Lot not found")
+    
+    # Get preprocessing batches
+    batches = await db.preprocessing_batches.find({"procurement_lot_id": lot['id']}, {"_id": 0}).to_list(1000)
+    
+    # Get production orders
+    batch_ids = [b['id'] for b in batches]
+    orders = []
+    if batch_ids:
+        orders = await db.production_orders.find(
+            {"preprocessing_batch_ids": {"$in": batch_ids}},
+            {"_id": 0}
+        ).to_list(1000)
+    
+    # Get finished goods
+    order_ids = [o['id'] for o in orders]
+    finished_goods = []
+    if order_ids:
+        finished_goods = await db.finished_goods.find(
+            {"production_order_id": {"$in": order_ids}},
+            {"_id": 0}
+        ).to_list(1000)
+    
+    # Get cold storage inventory
+    fg_ids = [fg['id'] for fg in finished_goods]
+    cold_storage = []
+    if fg_ids:
+        cold_storage = await db.cold_storage_inventory.find(
+            {"fg_id": {"$in": fg_ids}},
+            {"_id": 0}
+        ).to_list(1000)
+    
+    # Get shipments
+    shipment = None
+    if order_ids:
+        shipment = await db.shipments.find_one(
+            {"sales_order_id": {"$in": order_ids}},
+            {"_id": 0}
+        )
+    
+    # Track count per kg changes
+    count_changes = [lot.get('count_per_kg', 'N/A')]
+    for order in orders:
+        if order.get('target_size_count'):
+            count_changes.append(order['target_size_count'])
+    
+    # Calculate total trays
+    total_trays = lot.get('no_of_trays', 0)
+    for batch in batches:
+        total_trays += batch.get('no_of_trays', 0)
+    
+    # Get photos count
+    photos_count = await db.photo_tracker.count_documents({"entity_id": lot['id']})
+    
+    return TraceabilityRecord(
+        lot_number=lot_number,
+        procurement_data=lot,
+        preprocessing_data=batches,
+        production_data=orders,
+        finished_goods_data=finished_goods,
+        cold_storage_data=cold_storage,
+        shipment_data=shipment,
+        total_count_per_kg_changes=count_changes,
+        total_tray_count=total_trays,
+        photos_count=photos_count
+    )
+
+# Update procurement lot endpoint to require approval
+@api_router.put("/procurement/lots/{lot_id}")
+async def update_procurement_lot(
+    lot_id: str,
+    updates: Dict[str, Any],
+    current_user: User = Depends(get_current_user)
+):
+    lot = await db.procurement_lots.find_one({"id": lot_id}, {"_id": 0})
+    if not lot:
+        raise HTTPException(status_code=404, detail="Lot not found")
+    
+    # Create pending approval
+    pending_approval = PendingApproval(
+        entity_type="procurement_lot",
+        entity_id=lot_id,
+        entity_display=lot['lot_number'],
+        change_type="update",
+        old_data=lot,
+        new_data=updates,
+        requested_by=current_user.id,
+        requester_name=current_user.name
+    )
+    
+    approval_dict = pending_approval.model_dump()
+    approval_dict['created_at'] = approval_dict['created_at'].isoformat()
+    
+    await db.pending_approvals.insert_one(approval_dict)
+    
+    # Mark lot as pending approval
+    await db.procurement_lots.update_one(
+        {"id": lot_id},
+        {"$set": {"is_update_pending_approval": True}}
+    )
+    
+    return {
+        "message": "Update request submitted for approval",
+        "approval_id": pending_approval.id,
+        "requires_approval_from": ["admin", "owner", "production_supervisor"]
+    }
+
 app.include_router(api_router)
 
 app.add_middleware(
