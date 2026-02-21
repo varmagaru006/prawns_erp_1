@@ -129,7 +129,7 @@ const ColdStorage = () => {
               </CardHeader>
               <CardContent>
                 <div className=\"text-2xl font-bold text-green-600\">
-                  {chamberLogs[0]?.temperature_c || '--'}&deg;C
+                  {chamberLogs[0]?.temperature_c || '--'}°C
                 </div>
               </CardContent>
             </Card>
