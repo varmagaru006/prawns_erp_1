@@ -169,7 +169,7 @@ const ColdStorage = () => {
                       <CheckCircle className=\"h-5 w-5 text-green-600\" />
                     )}
                     <div>
-                      <p className=\"font-medium text-slate-800\">{log.temperature_c}°C</p>
+                      <p className=\"font-medium text-slate-800\">{log.temperature_c}&deg;C</p>
                       <p className=\"text-xs text-slate-500\">
                         {new Date(log.recorded_at).toLocaleString()}
                       </p>
