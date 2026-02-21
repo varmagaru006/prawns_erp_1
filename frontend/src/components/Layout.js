@@ -43,6 +43,7 @@ const Layout = () => {
     Snowflake,
     Ship,
     Receipt,
+    Settings,
     Bell
   };
 
