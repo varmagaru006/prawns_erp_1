@@ -15,6 +15,9 @@ const Procurement = () => {
   const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
+  const [wastageData, setWastageData] = useState({});
+  const [viewWastageDialog, setViewWastageDialog] = useState(false);
+  const [selectedLotWastage, setSelectedLotWastage] = useState(null);
   const [formData, setFormData] = useState({
     agent_id: '',
     vehicle_number: '',
@@ -49,6 +52,19 @@ const Procurement = () => {
       ]);
       setLots(lotsRes.data);
       setAgents(agentsRes.data);
+      
+      // Fetch wastage data for each lot
+      const wastagePromises = lotsRes.data.map(lot => 
+        axios.get(`${API}/lot-stage-wastage/${lot.id}`).catch(() => ({ data: [] }))
+      );
+      const wastageResults = await Promise.all(wastagePromises);
+      
+      const wastageMap = {};
+      lotsRes.data.forEach((lot, index) => {
+        wastageMap[lot.id] = wastageResults[index].data;
+      });
+      setWastageData(wastageMap);
+      
     } catch (error) {
       toast.error('Failed to load data');
     } finally {
