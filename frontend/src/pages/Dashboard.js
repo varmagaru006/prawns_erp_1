@@ -326,6 +326,49 @@ const Dashboard = () => {
         </Card>
       )}
 
+
+
+      {/* Live Prawn Prices - Andhra Pradesh */}
+      <Card className=\"hover:shadow-lg transition-shadow duration-300\">
+        <CardHeader>
+          <CardTitle className=\"flex items-center gap-2\">
+            <TrendingUp className=\"h-5 w-5 text-green-600\" />
+            Live Prawn Prices - Andhra Pradesh
+            <span className=\"ml-auto text-xs px-3 py-1 bg-green-100 text-green-700 rounded-full flex items-center gap-1\">
+              <div className=\"h-2 w-2 rounded-full bg-green-500 animate-pulse\"></div>
+              Live
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className=\"grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4\">
+            {livePrices.map((price, index) => (
+              <div
+                key={index}
+                className=\"group border-2 border-slate-200 rounded-xl p-4 hover:border-green-500 hover:shadow-md transition-all duration-300 cursor-pointer\"
+              >
+                <div className=\"flex items-center justify-between mb-2\">
+                  <h4 className=\"font-semibold text-slate-700\">{price.category}</h4>
+                  <DollarSign className=\"h-5 w-5 text-green-600\" />
+                </div>
+                <div className=\"text-3xl font-bold text-green-600 mb-1\">
+                  ₹{price.price_per_kg.toFixed(0)}
+                </div>
+                <p className=\"text-sm text-slate-500\">per KG</p>
+                <div className=\"mt-3 pt-3 border-t border-slate-200\">
+                  <p className=\"text-xs text-slate-600\">
+                    <strong>Market:</strong> {price.market}
+                  </p>
+                  <p className=\"text-xs text-slate-400 mt-1\">
+                    Updated: {new Date(price.date).toLocaleTimeString()}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Recent Activities */}
       <Card data-testid="recent-activities-card" className="hover:shadow-lg transition-shadow duration-300">
         <CardHeader>
