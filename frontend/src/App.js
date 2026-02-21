@@ -13,6 +13,8 @@ import ColdStorage from './pages/ColdStorage';
 import Sales from './pages/Sales';
 import Accounts from './pages/Accounts';
 import AdminPanel from './pages/AdminPanel';
+import YieldBenchmarks from './pages/YieldBenchmarks';
+import WastageDashboard from './pages/WastageDashboard';
 import Layout from './components/Layout';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { Toaster } from './components/ui/sonner';
@@ -59,6 +61,8 @@ function AppRoutes() {
         <Route path="sales" element={<Sales />} />
         <Route path="accounts" element={<Accounts />} />
         <Route path="admin" element={<AdminPanel />} />
+        <Route path="admin/yield-benchmarks" element={<YieldBenchmarks />} />
+        <Route path="admin/wastage-dashboard" element={<WastageDashboard />} />
         <Route path="notifications" element={<Notifications />} />
       </Route>
     </Routes>
