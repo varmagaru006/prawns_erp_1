@@ -207,7 +207,7 @@ const Procurement = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-3 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="arrival_time">Arrival Time *</Label>
                   <Input
@@ -228,6 +228,17 @@ const Procurement = () => {
                     placeholder="e.g., 30/40"
                     required
                     data-testid="lot-count-input"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="no_of_trays">Number of Trays</Label>
+                  <Input
+                    id="no_of_trays"
+                    type="number"
+                    value={formData.no_of_trays}
+                    onChange={(e) => setFormData({ ...formData, no_of_trays: parseInt(e.target.value) || 0 })}
+                    placeholder="0"
+                    data-testid="lot-trays-input"
                   />
                 </div>
               </div>
@@ -359,6 +370,27 @@ const Procurement = () => {
                   rows="3"
                   data-testid="lot-notes-input"
                 />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="photo">Upload Prawn Photo (Optional)</Label>
+                <Input
+                  id="photo"
+                  type="file"
+                  accept="image/*"
+                  onChange={handlePhotoChange}
+                  className="cursor-pointer"
+                  data-testid="lot-photo-input"
+                />
+                {photoPreview && (
+                  <div className="mt-2">
+                    <img 
+                      src={photoPreview} 
+                      alt="Preview" 
+                      className="w-full h-32 object-cover rounded-md border border-slate-300"
+                    />
+                  </div>
+                )}
               </div>
 
               <Button type="submit" className="w-full" data-testid="submit-lot-button">
