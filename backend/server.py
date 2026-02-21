@@ -619,6 +619,79 @@ class NoteCreate(BaseModel):
 
 # Helper functions
 def verify_password(plain_password: str, hashed_password: str) -> bool:
+
+
+# Approval Workflow Models
+class PendingApproval(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    entity_type: str  # procurement_lot, production_order, etc
+    entity_id: str
+    entity_display: str  # Lot number, order number, etc
+    change_type: str  # update, delete, status_change
+    old_data: Dict[str, Any] = {}
+    new_data: Dict[str, Any] = {}
+    requested_by: str
+    requester_name: str
+    approval_status: ApprovalStatus = ApprovalStatus.pending
+    approved_by: Optional[str] = None
+    approval_notes: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class ApprovalAction(BaseModel):
+    approval_id: str
+    action: str  # approve, reject
+    notes: Optional[str] = None
+
+# Live Price Tracking Models
+class LivePriceData(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    category: str  # Vannamei 30/40, etc
+    price_per_kg: float
+    location: str = "Andhra Pradesh"
+    market: str  # Nellore, Kakinada, etc
+    date: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    source: str = "Market Data"
+
+class PhotoTracker(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    entity_type: str
+    entity_id: str
+    entity_display: str
+    stage: str  # procurement, preprocessing, production, qc, cold_storage
+    photo_url: str
+    count_per_kg_visible: Optional[str] = None
+    tray_count_visible: Optional[int] = None
+    uploaded_by: str
+    uploader_name: str
+    notes: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class PhotoUpload(BaseModel):
+    entity_type: str
+    entity_id: str
+    entity_display: str
+    stage: str
+    photo_url: str
+    count_per_kg_visible: Optional[str] = None
+    tray_count_visible: Optional[int] = None
+    notes: Optional[str] = None
+
+# Traceability Models
+class TraceabilityRecord(BaseModel):
+    lot_number: str
+    procurement_data: Optional[Dict[str, Any]] = None
+    preprocessing_data: List[Dict[str, Any]] = []
+    production_data: List[Dict[str, Any]] = []
+    finished_goods_data: List[Dict[str, Any]] = []
+    cold_storage_data: List[Dict[str, Any]] = []
+    shipment_data: Optional[Dict[str, Any]] = None
+    total_count_per_kg_changes: List[str] = []
+    total_tray_count: int = 0
+    photos_count: int = 0
+
     return pwd_context.verify(plain_password, hashed_password)
 
 def get_password_hash(password: str) -> str:
