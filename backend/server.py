@@ -970,6 +970,7 @@ async def create_procurement_lot(lot_data: ProcurementLotCreate, current_user: U
         species=lot_data.species,
         count_per_kg=lot_data.count_per_kg,
         boxes_count=lot_data.boxes_count,
+        no_of_trays=lot_data.no_of_trays,
         gross_weight_kg=lot_data.gross_weight_kg,
         ice_weight_kg=lot_data.ice_weight_kg,
         net_weight_kg=net_weight,
