@@ -26,14 +26,16 @@ const Dashboard = () => {
 
   const fetchData = async () => {
     try {
-      const [statsRes, lotsRes, batchesRes] = await Promise.all([
+      const [statsRes, lotsRes, batchesRes, pricesRes] = await Promise.all([
         axios.get(`${API}/dashboard/stats`),
         axios.get(`${API}/procurement/lots`),
-        axios.get(`${API}/preprocessing/batches`)
+        axios.get(`${API}/preprocessing/batches`),
+        axios.get(`${API}/live-prices`)
       ]);
       setStats(statsRes.data);
       setLots(lotsRes.data);
       setBatches(batchesRes.data);
+      setLivePrices(pricesRes.data);
     } catch (error) {
       toast.error('Failed to load dashboard stats');
     } finally {
