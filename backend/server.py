@@ -666,6 +666,32 @@ async def create_audit_log(user_id: str, action: str, module: str, details: dict
     }
     await db.audit_logs.insert_one(log)
 
+
+def generate_inspection_code() -> str:
+    now = datetime.now()
+    date_str = now.strftime("%Y%m%d")
+    counter = now.strftime("%H%M%S")
+    return f"QC-{date_str}-{counter}"
+
+def generate_order_num() -> str:
+    now = datetime.now()
+    date_str = now.strftime("%Y%m%d")
+    counter = now.strftime("%H%M%S")
+    return f"SO-{date_str}-{counter}"
+
+def generate_shipment_number() -> str:
+    now = datetime.now()
+    date_str = now.strftime("%Y%m%d")
+    counter = now.strftime("%H%M%S")
+    return f"SHIP-{date_str}-{counter}"
+
+def generate_bill_number() -> str:
+    now = datetime.now()
+    date_str = now.strftime("%Y%m%d")
+    counter = now.strftime("%H%M%S")
+    return f"BILL-{date_str}-{counter}"
+
+
 def generate_procurement_receipt_pdf(lot: ProcurementLot, agent: Agent) -> bytes:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4)
