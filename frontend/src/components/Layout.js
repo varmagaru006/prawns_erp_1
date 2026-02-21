@@ -113,7 +113,7 @@ const Layout = () => {
         >
           <nav className="p-4 space-y-1">
             {visibleNav.map((item) => {
-              const Icon = item.icon;
+              const Icon = iconMap[item.icon];
               const isActive = location.pathname === item.path;
               
               return (
@@ -123,15 +123,15 @@ const Layout = () => {
                   onClick={() => setSidebarOpen(false)}
                   className={`
                     flex items-center gap-3 px-4 py-3 rounded-lg font-medium text-sm
-                    transition-colors duration-150
+                    transition-all duration-200 group
                     ${isActive 
-                      ? 'bg-blue-50 text-blue-700' 
+                      ? 'bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg' 
                       : 'text-slate-600 hover:bg-slate-100'
                     }
                   `}
-                  data-testid={`nav-${item.name.toLowerCase().replace(' ', '-')}`}
+                  data-testid={`nav-${item.name.toLowerCase().replace(/ /g, '-')}`}
                 >
-                  <Icon size={20} />
+                  <Icon size={20} className={isActive ? '' : 'group-hover:scale-110 transition-transform'} />
                   {item.name}
                 </Link>
               );
