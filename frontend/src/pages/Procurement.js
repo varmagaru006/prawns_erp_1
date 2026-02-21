@@ -457,6 +457,8 @@ const Procurement = () => {
                       <TableHead>Count/KG</TableHead>
                       <TableHead>Trays</TableHead>
                       <TableHead>Net Weight (KG)</TableHead>
+                      <TableHead>Ice %</TableHead>
+                      <TableHead>Gate Yield</TableHead>
                       <TableHead>Total Amount</TableHead>
                       <TableHead>Balance Due</TableHead>
                       <TableHead>Status</TableHead>
