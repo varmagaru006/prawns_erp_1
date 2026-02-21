@@ -339,6 +339,263 @@ class DashboardStats(BaseModel):
     pending_qc_items: int
     recent_activities: List[Dict[str, Any]]
 
+
+# QC Module Models
+class QCInspection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    inspection_code: str
+    entity_type: str  # procurement_lot, finished_good, cold_storage_slot
+    entity_id: str
+    inspection_date: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    qc_officer: str
+    parameters: Dict[str, Any] = {}  # Flexible JSONB-like field
+    overall_grade: FreshnessGrade
+    pass_fail: bool
+    failure_reason: Optional[str] = None
+    lab_report_ref: Optional[str] = None
+    notes: Optional[str] = None
+    created_by: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class QCInspectionCreate(BaseModel):
+    entity_type: str
+    entity_id: str
+    qc_officer: str
+    parameters: Dict[str, Any] = {}
+    overall_grade: FreshnessGrade
+    pass_fail: bool
+    failure_reason: Optional[str] = None
+    lab_report_ref: Optional[str] = None
+    notes: Optional[str] = None
+
+# Cold Storage Models
+class ColdStorageChamber(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    chamber_code: str  # CH-01, CH-02
+    chamber_name: str
+    setpoint_temperature_c: float = -18.0
+    capacity_kg: float
+    status: str = "active"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class ColdStorageChamberCreate(BaseModel):
+    chamber_code: str
+    chamber_name: str
+    setpoint_temperature_c: float = -18.0
+    capacity_kg: float
+
+class ColdStorageSlot(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    slot_code: str  # CH-01-R01-S05
+    chamber_id: str
+    rack_number: int
+    slot_number: int
+    status: StorageStatus = StorageStatus.empty
+    occupied_weight_kg: float = 0.0
+    fg_id: Optional[str] = None  # Linked finished good
+    intake_date: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class ColdStorageSlotCreate(BaseModel):
+    slot_code: str
+    chamber_id: str
+    rack_number: int
+    slot_number: int
+
+class ColdStorageInventory(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    slot_id: str
+    fg_id: str
+    quantity_kg: float
+    carton_count: int
+    intake_date: datetime
+    days_in_storage: int = 0
+    fifo_alert: bool = False
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class ColdStorageInventoryCreate(BaseModel):
+    slot_id: str
+    fg_id: str
+    quantity_kg: float
+    carton_count: int
+
+class TemperatureLog(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    chamber_id: str
+    temperature_c: float
+    alert: bool = False
+    alert_reason: Optional[str] = None
+    recorded_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class TemperatureLogCreate(BaseModel):
+    chamber_id: str
+    temperature_c: float
+
+# Sales & Dispatch Models
+class Buyer(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    buyer_code: str
+    company_name: str
+    country: str
+    ie_code: Optional[str] = None
+    gst: Optional[str] = None
+    contact_person: str
+    phone: str
+    email: EmailStr
+    is_active: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class BuyerCreate(BaseModel):
+    buyer_code: str
+    company_name: str
+    country: str
+    ie_code: Optional[str] = None
+    gst: Optional[str] = None
+    contact_person: str
+    phone: str
+    email: EmailStr
+
+class SalesOrder(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    order_number: str
+    buyer_id: str
+    buyer_name: str
+    quantity_kg: float
+    rate_per_kg_usd: float
+    currency: str = "USD"
+    total_value_usd: float
+    delivery_date: datetime
+    payment_status: PaymentStatus = PaymentStatus.pending
+    notes: Optional[str] = None
+    created_by: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class SalesOrderCreate(BaseModel):
+    buyer_id: str
+    quantity_kg: float
+    rate_per_kg_usd: float
+    currency: str = "USD"
+    delivery_date: datetime
+    notes: Optional[str] = None
+
+class Shipment(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    shipment_number: str
+    sales_order_id: str
+    container_no: str
+    seal_no: str
+    shipping_line: str
+    vessel_name: str
+    port_of_loading: str
+    port_of_discharge: str
+    destination_country: str
+    etd: datetime  # Estimated Time of Departure
+    eta: datetime  # Estimated Time of Arrival
+    bill_of_lading: Optional[str] = None
+    shipment_status: ShipmentStatus = ShipmentStatus.draft
+    created_by: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class ShipmentCreate(BaseModel):
+    sales_order_id: str
+    container_no: str
+    seal_no: str
+    shipping_line: str
+    vessel_name: str
+    port_of_loading: str
+    port_of_discharge: str
+    destination_country: str
+    etd: datetime
+    eta: datetime
+    bill_of_lading: Optional[str] = None
+
+# Wage & Billing Models
+class WageBill(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    bill_number: str
+    bill_type: str  # VA, TDS, contractor, daily
+    period_from: datetime
+    period_to: datetime
+    department: str
+    gross_amount: float
+    tds_deduction: float
+    net_payable: float
+    payment_status: PaymentStatus = PaymentStatus.pending
+    payment_date: Optional[datetime] = None
+    notes: Optional[str] = None
+    created_by: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class WageBillCreate(BaseModel):
+    bill_type: str
+    period_from: datetime
+    period_to: datetime
+    department: str
+    gross_amount: float
+    tds_deduction: float
+    notes: Optional[str] = None
+
+class WageBillLine(BaseModel):
+    worker_code: str
+    worker_name: str
+    days_worked: float
+    rate_per_day: float
+    basic_amount: float
+    va_allowance: float
+    tds_deducted: float
+    net_amount: float
+
+class Attachment(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    entity_type: str
+    entity_id: str
+    file_name: str
+    file_url: str
+    file_size_kb: float
+    mime_type: str
+    category: str  # invoice, weighment_slip, lab_report, gate_pass, photo, other
+    description: Optional[str] = None
+    uploaded_by: str
+    is_deleted: bool = False
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class AttachmentCreate(BaseModel):
+    entity_type: str
+    entity_id: str
+    file_name: str
+    category: str
+    description: Optional[str] = None
+
+class Note(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    entity_type: str
+    entity_id: str
+    note_text: str
+    is_pinned: bool = False
+    is_admin_note: bool = False
+    authored_by: str
+    author_name: str
+    is_deleted: bool = False
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class NoteCreate(BaseModel):
+    entity_type: str
+    entity_id: str
+    note_text: str
+    is_pinned: bool = False
+
+
 # Helper functions
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
