@@ -230,6 +230,7 @@ class ProcurementLotCreate(BaseModel):
     species: Species
     count_per_kg: str
     boxes_count: int
+    no_of_trays: int = 0
     gross_weight_kg: float
     ice_weight_kg: float
     rate_per_kg: float
