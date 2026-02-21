@@ -1404,6 +1404,29 @@ async def create_production_order(order_data: ProductionOrderCreate, current_use
     
     await db.production_orders.insert_one(order_dict)
     await create_audit_log(current_user.id, "CREATE_PRODUCTION_ORDER", "production", {"order_id": order.id})
+    
+    # Auto-create wastage record for production stage
+    # Get the preprocessing batch to find the lot_id
+    batch = await db.preprocessing_batches.find_one({"id": order.preprocessing_batch_id}, {"_id": 0})
+    if batch:
+        lot_id = batch.get("procurement_lot_id")
+        
+        # Determine stage sequence based on process_type
+        stage_sequence_map = {"cooking": 5, "blanching": 5, "iqf_freezing": 6, "glazing": 7, "breading": 8}
+        stage_sequence = stage_sequence_map.get(order.process_type, 9)
+        
+        await create_wastage_record(
+            lot_id=lot_id,
+            stage_sequence=stage_sequence,
+            stage_name=order.process_type.capitalize(),
+            process_type=order.process_type,
+            input_weight_kg=order.input_weight_kg,
+            output_weight_kg=order.output_weight_kg,
+            source_entity_type="production_order",
+            source_entity_id=order.id,
+            recorded_by=current_user.id
+        )
+    
     return order
 
 @api_router.get("/production/orders", response_model=List[ProductionOrder])
