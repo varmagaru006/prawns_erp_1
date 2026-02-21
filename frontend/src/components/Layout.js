@@ -48,7 +48,7 @@ const Layout = () => {
   };
 
   const navigation = [
-    { name: 'Dashboard', path: '/', icon: 'LayoutDashboard', moduleKey: null },
+    { name: 'Dashboard', path: '/', icon: 'LayoutDashboard', moduleKey: 'dashboard' },
     { name: 'Procurement', path: '/procurement', icon: 'ShoppingCart', moduleKey: 'procurement' },
     { name: 'Agents', path: '/agents', icon: 'Users', moduleKey: 'agents' },
     { name: 'Pre-Processing', path: '/preprocessing', icon: 'Package', moduleKey: 'preprocessing' },
@@ -64,7 +64,11 @@ const Layout = () => {
 
   // Filter navigation based on module configuration and user role
   const visibleNav = navigation.filter(item => {
-    if (!item.moduleKey) return true; // Dashboard is always visible
+    // Dashboard needs special handling based on canAccessDashboard
+    if (item.moduleKey === 'dashboard') {
+      return canAccessDashboard(user?.role);
+    }
+    if (!item.moduleKey) return true;
     return isModuleAccessible(item.moduleKey, user?.role);
   });
 
