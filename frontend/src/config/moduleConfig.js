@@ -1,51 +1,41 @@
-// Updated Module Configuration with Lifecycle Hierarchy
+// Module Configuration - Flat structure for easy access
 export const moduleConfig = {
-  // Core Lifecycle Modules (Grouped in hierarchy)
-  lifecycle: {
+  procurement: {
     enabled: true,
-    name: 'Product Lifecycle',
-    description: 'Complete prawn processing lifecycle',
-    modules: {
-      procurement: {
-        enabled: true,
-        name: 'Procurement',
-        path: '/lifecycle/procurement',
-        roles: ['admin', 'owner', 'procurement_manager']
-      },
-      preprocessing: {
-        enabled: true,
-        name: 'Pre-Processing',
-        path: '/lifecycle/preprocessing',
-        roles: ['admin', 'owner', 'production_supervisor']
-      },
-      production: {
-        enabled: true,
-        name: 'Production',
-        path: '/lifecycle/production',
-        roles: ['admin', 'owner', 'production_supervisor']
-      },
-      qc: {
-        enabled: true,
-        name: 'Quality Control',
-        path: '/lifecycle/qc',
-        roles: ['admin', 'owner', 'qc_officer']
-      },
-      coldStorage: {
-        enabled: true,
-        name: 'Cold Storage',
-        path: '/lifecycle/cold-storage',
-        roles: ['admin', 'owner', 'cold_storage_incharge']
-      },
-      dispatch: {
-        enabled: true,
-        name: 'Dispatch',
-        path: '/lifecycle/dispatch',
-        roles: ['admin', 'owner', 'sales_manager']
-      }
-    }
+    name: 'Procurement',
+    description: 'Incoming prawn lots management',
+    roles: ['admin', 'owner', 'procurement_manager']
   },
-  
-  // Supporting Modules (Separate)
+  preprocessing: {
+    enabled: true,
+    name: 'Pre-Processing',
+    description: 'Batch processing and yield tracking',
+    roles: ['admin', 'owner', 'production_supervisor']
+  },
+  production: {
+    enabled: true,
+    name: 'Production',
+    description: 'Production orders and conversion',
+    roles: ['admin', 'owner', 'production_supervisor']
+  },
+  qc: {
+    enabled: true,
+    name: 'Quality Control',
+    description: 'QC inspections and quality assurance',
+    roles: ['admin', 'owner', 'qc_officer']
+  },
+  coldStorage: {
+    enabled: true,
+    name: 'Cold Storage',
+    description: 'Inventory and temperature monitoring',
+    roles: ['admin', 'owner', 'cold_storage_incharge']
+  },
+  finishedGoods: {
+    enabled: true,
+    name: 'Finished Goods',
+    description: 'Ready inventory for dispatch',
+    roles: ['admin', 'owner', 'production_supervisor']
+  },
   agents: {
     enabled: true,
     name: 'Agents & Vendors',
@@ -54,13 +44,13 @@ export const moduleConfig = {
   },
   sales: {
     enabled: true,
-    name: 'Sales & Orders',
+    name: 'Sales & Dispatch',
     description: 'Buyer management and orders',
     roles: ['admin', 'owner', 'sales_manager']
   },
   accounts: {
     enabled: true,
-    name: 'Accounts & Billing',
+    name: 'Accounts',
     description: 'Wage bills and payments',
     roles: ['admin', 'owner', 'accounts_manager']
   },
@@ -98,10 +88,4 @@ export const isModuleAccessible = (moduleKey, userRole) => {
   if (!module || !module.enabled) return false;
   if (module.roles === '*') return true;
   return module.roles.includes(userRole);
-};
-
-export const isLifecycleModuleAccessible = (lifecycleModuleKey, userRole) => {
-  const lifecycleModule = moduleConfig.lifecycle.modules[lifecycleModuleKey];
-  if (!lifecycleModule || !lifecycleModule.enabled) return false;
-  return lifecycleModule.roles.includes(userRole);
 };
