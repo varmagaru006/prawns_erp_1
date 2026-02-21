@@ -58,6 +58,7 @@ const Layout = () => {
     { name: 'Finished Goods', path: '/finished-goods', icon: 'Box', moduleKey: 'finishedGoods' },
     { name: 'Sales & Dispatch', path: '/sales', icon: 'Ship', moduleKey: 'sales' },
     { name: 'Accounts', path: '/accounts', icon: 'Receipt', moduleKey: 'accounts' },
+    { name: 'Admin Panel', path: '/admin', icon: 'Settings', moduleKey: 'admin' },
     { name: 'Notifications', path: '/notifications', icon: 'Bell', moduleKey: 'notifications' },
   ];
 
