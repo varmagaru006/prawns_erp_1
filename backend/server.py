@@ -1664,6 +1664,67 @@ async def handle_approval(action_data: ApprovalAction, current_user: User = Depe
     
     return {"message": f"Successfully {action_data.action}d", "status": new_status.value}
 
+
+# File Upload Endpoint
+@api_router.post("/upload-file")
+async def upload_file(
+    file: UploadFile = File(...),
+    entity_type: str = Form(...),
+    entity_id: str = Form(...),
+    entity_display: str = Form(...),
+    stage: str = Form(...),
+    count_per_kg_visible: Optional[str] = Form(None),
+    tray_count_visible: Optional[str] = Form(None),
+    current_user: User = Depends(get_current_user)
+):
+    # Generate unique filename
+    file_extension = file.filename.split('.')[-1]
+    unique_filename = f"{entity_type}_{entity_id}_{uuid.uuid4()}.{file_extension}"
+    file_path = UPLOADS_DIR / unique_filename
+    
+    # Save file
+    with open(file_path, "wb") as buffer:
+        content = await file.read()
+        buffer.write(content)
+    
+    # Create photo tracker record
+    photo_url = f"/uploads/{unique_filename}"
+    tray_count = int(tray_count_visible) if tray_count_visible and tray_count_visible.isdigit() else None
+    
+    photo = PhotoTracker(
+        entity_type=entity_type,
+        entity_id=entity_id,
+        entity_display=entity_display,
+        stage=stage,
+        photo_url=photo_url,
+        count_per_kg_visible=count_per_kg_visible,
+        tray_count_visible=tray_count,
+        uploaded_by=current_user.id,
+        uploader_name=current_user.name
+    )
+    
+    photo_dict = photo.model_dump()
+    photo_dict['created_at'] = photo_dict['created_at'].isoformat()
+    
+    await db.photo_tracker.insert_one(photo_dict)
+    
+    # Update entity's photos array
+    collection_map = {
+        "procurement_lot": "procurement_lots",
+        "preprocessing_batch": "preprocessing_batches",
+        "production_order": "production_orders"
+    }
+    
+    if entity_type in collection_map:
+        collection = db[collection_map[entity_type]]
+        await collection.update_one(
+            {"id": entity_id},
+            {"$push": {"photos": photo_url}}
+        )
+    
+    return {"photo_url": photo_url, "photo_id": photo.id, "message": "File uploaded successfully"}
+
+
 # Photo Tracker Endpoints
 @api_router.post("/admin/photos", response_model=PhotoTracker)
 async def upload_photo_tracking(photo_data: PhotoUpload, current_user: User = Depends(get_current_user)):
