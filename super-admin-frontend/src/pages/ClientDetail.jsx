@@ -95,14 +95,17 @@ export default function ClientDetail() {
     const moduleFeatures = features.filter(f => f.module === module);
     const allEnabled = moduleFeatures.every(f => f.is_enabled);
     
-    // Only get features that need to be changed
-    const featuresToChange = allEnabled 
-      ? moduleFeatures.filter(f => f.is_enabled).map(f => f.feature_code)  // Disable only enabled ones
-      : moduleFeatures.filter(f => !f.is_enabled).map(f => f.feature_code); // Enable only disabled ones
+    // Determine target state: if all enabled -> disable all, otherwise -> enable all
+    const targetState = !allEnabled;
+    
+    // Get feature codes that need to change to reach target state
+    const featuresToChange = moduleFeatures
+      .filter(f => f.is_enabled !== targetState)
+      .map(f => f.feature_code);
     
     if (featuresToChange.length === 0) return;
     
-    await handleBulkToggle(featuresToChange, !allEnabled, `${module} module`);
+    await handleBulkToggle(featuresToChange, targetState, `${module} module`);
   };
 
   // Group features by module
