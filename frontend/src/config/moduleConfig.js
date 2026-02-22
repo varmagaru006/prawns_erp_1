@@ -72,6 +72,12 @@ export const moduleConfig = {
     description: 'Configure wastage thresholds',
     roles: ['admin', 'owner']
   },
+  marketRates: {
+    enabled: true,
+    name: 'Market Rates',
+    description: 'Configure pricing for revenue calculations',
+    roles: ['admin', 'owner']
+  },
   notifications: {
     enabled: true,
     name: 'Notifications',
