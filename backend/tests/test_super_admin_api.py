@@ -6,7 +6,7 @@ import pytest
 import requests
 import os
 
-BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'https://aqua-admin-dashboard.preview.emergentagent.com').rstrip('/')
+BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'https://prawn-erp-saas.preview.emergentagent.com').rstrip('/')
 SUPER_ADMIN_URL = f"{BASE_URL}/api/super-admin"
 
 # Test credentials

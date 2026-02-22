@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any
 
 class PrawnERPTester:
-    def __init__(self, base_url="https://aqua-export-hub.preview.emergentagent.com"):
+    def __init__(self, base_url="https://prawn-erp-saas.preview.emergentagent.com"):
         self.base_url = base_url
         self.token = None
         self.user_id = None

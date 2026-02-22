@@ -93,7 +93,7 @@
   "test_credentials": {
     "email": "superadmin@prawnrp.com",
     "password": "admin123",
-    "portal_url": "https://aqua-admin-dashboard.preview.emergentagent.com/super-admin/"
+    "portal_url": "https://prawn-erp-saas.preview.emergentagent.com/super-admin/"
   },
   
   "seed_data_creation": "Used existing test client cli_ui_test (ID: 0f54ec40-eb9e-4fea-ab13-b0183e938ff5)",
@@ -109,7 +109,7 @@
     "remaining_issue": "Frontend is calling wrong API endpoint (aqua-export-hub vs aqua-admin-dashboard) - this is platform/infrastructure config, not code",
     "reproduction_steps": [
       "1. Open browser DevTools Network tab",
-      "2. Navigate to https://aqua-admin-dashboard.preview.emergentagent.com/super-admin/",
+      "2. Navigate to https://prawn-erp-saas.preview.emergentagent.com/super-admin/",
       "3. Login and observe API calls go to aqua-export-hub.preview.emergentagent.com instead of aqua-admin-dashboard",
       "4. This causes client IDs to not match since different databases"
     ],

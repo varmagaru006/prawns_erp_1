@@ -5,7 +5,7 @@
 - **Full credentials**: See /app/TEST_CREDENTIALS.md
 
 ## App URL
-https://aqua-export-hub.preview.emergentagent.com
+https://prawn-erp-saas.preview.emergentagent.com
 
 ---
 
