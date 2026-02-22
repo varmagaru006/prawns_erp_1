@@ -29,6 +29,7 @@ import {
 const Layout = () => {
   const { user, logout, isImpersonating, endImpersonation } = useAuth();
   const { isEnabled } = useFeatureFlags();
+  const { branding } = useBranding();
   const location = useLocation();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
