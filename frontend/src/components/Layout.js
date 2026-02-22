@@ -129,7 +129,13 @@ const Layout = () => {
             >
               {sidebarOpen ? <X size={24} /> : <Menu size={24} />}
             </button>
-            <h1 className="text-xl font-semibold text-slate-800">Prawn ERP</h1>
+            {branding.logo_url ? (
+              <img src={branding.logo_url} alt={branding.sidebar_label} className="h-8" />
+            ) : (
+              <h1 className="text-xl font-semibold text-slate-800" style={{ color: branding.primary_color }}>
+                {branding.sidebar_label || 'Prawn ERP'}
+              </h1>
+            )}
           </div>
           
           <div className="flex items-center gap-4">
