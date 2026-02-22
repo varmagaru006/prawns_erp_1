@@ -1,16 +1,19 @@
 import React from 'react';
-import { Outlet, Link, useNavigate } from 'react-router-dom';
+import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { LogOut, Users, Settings } from 'lucide-react';
+import { LogOut, Users, Settings, Megaphone } from 'lucide-react';
 
 export default function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const handleLogout = () => {
     logout();
     navigate('/login');
   };
+
+  const isActive = (path) => location.pathname.includes(path);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -30,10 +33,27 @@ export default function Layout() {
             <div className="flex items-center space-x-4">
               <Link
                 to="/dashboard"
-                className="flex items-center px-3 py-2 rounded-md text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-100"
+                className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${
+                  isActive('/dashboard') || isActive('/clients')
+                    ? 'text-primary-600 bg-primary-50'
+                    : 'text-gray-700 hover:text-gray-900 hover:bg-gray-100'
+                }`}
               >
                 <Users className="h-4 w-4 mr-2" />
                 Clients
+              </Link>
+              
+              <Link
+                to="/announcements"
+                className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${
+                  isActive('/announcements')
+                    ? 'text-primary-600 bg-primary-50'
+                    : 'text-gray-700 hover:text-gray-900 hover:bg-gray-100'
+                }`}
+                data-testid="nav-announcements"
+              >
+                <Megaphone className="h-4 w-4 mr-2" />
+                Announcements
               </Link>
 
               <div className="flex items-center space-x-3 border-l border-gray-200 pl-4">
