@@ -78,12 +78,14 @@ function AppRoutes() {
 function App() {
   return (
     <BrowserRouter>
-      <AuthProvider>
-        <FeatureFlagProvider>
-          <AppRoutes />
-          <Toaster position="top-right" />
-        </FeatureFlagProvider>
-      </AuthProvider>
+      <BrandingProvider>
+        <AuthProvider>
+          <FeatureFlagProvider>
+            <AppRoutes />
+            <Toaster position="top-right" />
+          </FeatureFlagProvider>
+        </AuthProvider>
+      </BrandingProvider>
     </BrowserRouter>
   );
 }
