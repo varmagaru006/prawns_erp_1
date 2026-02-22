@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { clientAPI } from '../api/auth';
-import { ArrowLeft, Building2, Package, ToggleLeft, ToggleRight, Check, AlertCircle, Zap, Edit } from 'lucide-react';
+import LinkBrandingTab from '../components/LinkBrandingTab';
+import UsersTab from '../components/UsersTab';
+import { ArrowLeft, Building2, Package, ToggleLeft, ToggleRight, Check, AlertCircle, Zap, Link2, Users, Settings } from 'lucide-react';
 
 export default function ClientDetail() {
   const { id } = useParams();
@@ -11,6 +13,7 @@ export default function ClientDetail() {
   const [toggling, setToggling] = useState({});
   const [bulkLoading, setBulkLoading] = useState(false);
   const [notification, setNotification] = useState(null);
+  const [activeTab, setActiveTab] = useState('features');
 
   useEffect(() => {
     loadClientData();
@@ -75,7 +78,6 @@ export default function ClientDetail() {
         is_enabled: isEnabled
       });
 
-      // Update local state immediately - don't reload to avoid race condition
       setFeatures(prev => prev.map(f => 
         featureCodes.includes(f.feature_code)
           ? { ...f, is_enabled: isEnabled }
@@ -85,7 +87,6 @@ export default function ClientDetail() {
       showNotification(`${label} - ${featureCodes.length} features ${isEnabled ? 'enabled' : 'disabled'}`, 'success');
     } catch (err) {
       showNotification(`Bulk update failed: ${err.message}`, 'error');
-      // Only reload on error to restore correct state
       loadClientData();
     } finally {
       setBulkLoading(false);
@@ -95,17 +96,12 @@ export default function ClientDetail() {
   const handleToggleModule = async (module) => {
     const moduleFeatures = features.filter(f => f.module === module);
     const allEnabled = moduleFeatures.every(f => f.is_enabled);
-    
-    // Determine target state: if all enabled -> disable all, otherwise -> enable all
     const targetState = !allEnabled;
-    
-    // Get feature codes that need to change to reach target state
     const featuresToChange = moduleFeatures
       .filter(f => f.is_enabled !== targetState)
       .map(f => f.feature_code);
     
     if (featuresToChange.length === 0) return;
-    
     await handleBulkToggle(featuresToChange, targetState, `${module} module`);
   };
 
@@ -194,6 +190,13 @@ export default function ClientDetail() {
 
   const enabledCount = features.filter(f => f.is_enabled).length;
   const totalCount = features.length;
+  const isLinked = client?.link_status === 'linked';
+
+  const tabs = [
+    { id: 'features', label: 'Features', icon: Settings },
+    { id: 'link-branding', label: 'Link & Branding', icon: Link2, badge: isLinked ? '🟢' : '⚪' },
+    { id: 'users', label: 'Users', icon: Users },
+  ];
 
   return (
     <div>
@@ -219,7 +222,7 @@ export default function ClientDetail() {
       </Link>
 
       {/* Client Info Card */}
-      <div className="bg-gradient-to-r from-primary-500 to-primary-600 rounded-lg shadow-lg p-6 mb-8 text-white">
+      <div className="bg-gradient-to-r from-primary-500 to-primary-600 rounded-lg shadow-lg p-6 mb-6 text-white">
         <div className="flex items-start justify-between">
           <div className="flex items-start">
             <div className="bg-white/20 p-3 rounded-lg">
@@ -227,7 +230,7 @@ export default function ClientDetail() {
             </div>
             <div className="ml-4">
               <h1 className="text-3xl font-bold">{client.business_name}</h1>
-              <div className="mt-3 flex items-center space-x-4">
+              <div className="mt-3 flex items-center space-x-4 flex-wrap gap-2">
                 <span className="px-3 py-1 bg-white/20 rounded-full text-sm font-medium">
                   {client.tenant_id}
                 </span>
@@ -242,12 +245,17 @@ export default function ClientDetail() {
                   <Package className="h-4 w-4 mr-1" />
                   {client.plan_name}
                 </span>
+                <span className={`px-3 py-1 rounded-full text-sm font-medium ${
+                  isLinked ? 'bg-green-400' : 'bg-gray-400'
+                }`}>
+                  {isLinked ? '🔗 Linked' : 'Not Linked'}
+                </span>
               </div>
             </div>
           </div>
         </div>
 
-        <div className="mt-6 grid grid-cols-3 gap-4">
+        <div className="mt-6 grid grid-cols-4 gap-4">
           <div className="bg-white/10 rounded-lg p-4">
             <p className="text-white/70 text-sm">Features Enabled</p>
             <p className="mt-1 text-2xl font-bold">{enabledCount} / {totalCount}</p>
@@ -262,118 +270,161 @@ export default function ClientDetail() {
               {new Date(client.onboarded_at).toLocaleDateString()}
             </p>
           </div>
-        </div>
-      </div>
-
-      {/* Quick Setup */}
-      <div className="mb-6">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-xl font-bold text-gray-900 flex items-center">
-              <Zap className="h-6 w-6 mr-2 text-yellow-500" />
-              Quick Setup
-            </h2>
-            <p className="text-sm text-gray-600 mt-1">Apply feature presets instantly</p>
+          <div className="bg-white/10 rounded-lg p-4">
+            <p className="text-white/70 text-sm">Last Ping</p>
+            <p className="mt-1 text-sm font-medium">
+              {client.last_ping_at ? new Date(client.last_ping_at).toLocaleString() : 'Never'}
+            </p>
           </div>
         </div>
-        <div className="grid grid-cols-4 gap-4">
-          {quickSetups.map((setup, index) => (
-            <button
-              key={index}
-              onClick={setup.action}
-              disabled={bulkLoading}
-              className={`px-4 py-3 rounded-lg font-medium transition disabled:opacity-50 ${
-                setup.color === 'green' ? 'bg-green-500 hover:bg-green-600 text-white' :
-                setup.color === 'blue' ? 'bg-blue-500 hover:bg-blue-600 text-white' :
-                setup.color === 'purple' ? 'bg-purple-500 hover:bg-purple-600 text-white' :
-                'bg-red-500 hover:bg-red-600 text-white'
-              }`}
-            >
-              {bulkLoading ? 'Applying...' : setup.label}
-            </button>
-          ))}
+      </div>
+
+      {/* Tabs Navigation */}
+      <div className="bg-white rounded-lg shadow mb-6">
+        <div className="border-b border-gray-200">
+          <nav className="flex -mb-px" aria-label="Tabs">
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center px-6 py-4 text-sm font-medium border-b-2 transition-colors ${
+                  activeTab === tab.id
+                    ? 'border-primary-500 text-primary-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+                data-testid={`tab-${tab.id}`}
+              >
+                <tab.icon className="h-4 w-4 mr-2" />
+                {tab.label}
+                {tab.badge && <span className="ml-2">{tab.badge}</span>}
+              </button>
+            ))}
+          </nav>
         </div>
       </div>
 
-      {/* Feature Management */}
-      <div className="mb-6">
-        <h2 className="text-xl font-bold text-gray-900 mb-4">Feature Management</h2>
-      </div>
-
-      {/* Feature Groups */}
-      <div className="space-y-4">
-        {Object.entries(groupedFeatures).map(([module, moduleFeatures]) => {
-          const enabledInModule = moduleFeatures.filter(f => f.is_enabled).length;
-          const allEnabled = moduleFeatures.every(f => f.is_enabled);
-          
-          return (
-            <div key={module} className="bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
-              {/* Module Header with Toggle */}
-              <div className="bg-gray-50 px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-900 capitalize">{module} Module</h3>
-                  <p className="text-sm text-gray-600 mt-1">
-                    {enabledInModule} / {moduleFeatures.length} enabled
-                  </p>
-                </div>
-                <button
-                  onClick={() => handleToggleModule(module)}
-                  disabled={bulkLoading}
-                  className={`px-4 py-2 rounded-lg font-medium transition ${
-                    allEnabled
-                      ? 'bg-green-100 text-green-700 hover:bg-green-200'
-                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                  }`}
-                >
-                  {bulkLoading ? 'Updating...' : allEnabled ? 'Disable All' : 'Enable All'}
-                </button>
-              </div>
-
-              {/* Features List */}
-              <div className="divide-y divide-gray-200">
-                {moduleFeatures.map((feature) => (
-                  <div key={feature.feature_code} className="px-6 py-4 hover:bg-gray-50 transition">
-                    <div className="flex items-center justify-between">
-                      <div className="flex-1">
-                        <div className="flex items-center">
-                          <h4 className="text-sm font-medium text-gray-900">{feature.feature_name}</h4>
-                          {feature.is_beta && (
-                            <span className="ml-2 px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-800 rounded">
-                              BETA
-                            </span>
-                          )}
-                        </div>
-                        <p className="mt-1 text-sm text-gray-600">{feature.description}</p>
-                        <div className="mt-2 flex items-center space-x-4 text-xs text-gray-500">
-                          <span className="font-mono">{feature.feature_code}</span>
-                        </div>
-                      </div>
-
-                      <button
-                        onClick={() => handleToggleFeature(feature)}
-                        disabled={toggling[feature.feature_code]}
-                        className={`ml-4 p-2 rounded-lg transition ${
-                          feature.is_enabled
-                            ? 'bg-green-100 text-green-700 hover:bg-green-200'
-                            : 'bg-gray-100 text-gray-400 hover:bg-gray-200'
-                        } ${toggling[feature.feature_code] ? 'opacity-50 cursor-not-allowed' : ''}`}
-                      >
-                        {toggling[feature.feature_code] ? (
-                          <div className="animate-spin h-6 w-6 border-2 border-current border-t-transparent rounded-full"></div>
-                        ) : feature.is_enabled ? (
-                          <ToggleRight className="h-6 w-6" />
-                        ) : (
-                          <ToggleLeft className="h-6 w-6" />
-                        )}
-                      </button>
-                    </div>
-                  </div>
-                ))}
+      {/* Tab Content */}
+      {activeTab === 'features' && (
+        <div>
+          {/* Quick Setup */}
+          <div className="mb-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-xl font-bold text-gray-900 flex items-center">
+                  <Zap className="h-6 w-6 mr-2 text-yellow-500" />
+                  Quick Setup
+                </h2>
+                <p className="text-sm text-gray-600 mt-1">Apply feature presets instantly</p>
               </div>
             </div>
-          );
-        })}
-      </div>
+            <div className="grid grid-cols-4 gap-4">
+              {quickSetups.map((setup, index) => (
+                <button
+                  key={index}
+                  onClick={setup.action}
+                  disabled={bulkLoading}
+                  className={`px-4 py-3 rounded-lg font-medium transition disabled:opacity-50 ${
+                    setup.color === 'green' ? 'bg-green-500 hover:bg-green-600 text-white' :
+                    setup.color === 'blue' ? 'bg-blue-500 hover:bg-blue-600 text-white' :
+                    setup.color === 'purple' ? 'bg-purple-500 hover:bg-purple-600 text-white' :
+                    'bg-red-500 hover:bg-red-600 text-white'
+                  }`}
+                >
+                  {bulkLoading ? 'Applying...' : setup.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Feature Management */}
+          <div className="mb-6">
+            <h2 className="text-xl font-bold text-gray-900 mb-4">Feature Management</h2>
+          </div>
+
+          {/* Feature Groups */}
+          <div className="space-y-4">
+            {Object.entries(groupedFeatures).map(([module, moduleFeatures]) => {
+              const enabledInModule = moduleFeatures.filter(f => f.is_enabled).length;
+              const allEnabled = moduleFeatures.every(f => f.is_enabled);
+              
+              return (
+                <div key={module} className="bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
+                  {/* Module Header with Toggle */}
+                  <div className="bg-gray-50 px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900 capitalize">{module} Module</h3>
+                      <p className="text-sm text-gray-600 mt-1">
+                        {enabledInModule} / {moduleFeatures.length} enabled
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => handleToggleModule(module)}
+                      disabled={bulkLoading}
+                      className={`px-4 py-2 rounded-lg font-medium transition ${
+                        allEnabled
+                          ? 'bg-green-100 text-green-700 hover:bg-green-200'
+                          : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                      }`}
+                    >
+                      {bulkLoading ? 'Updating...' : allEnabled ? 'Disable All' : 'Enable All'}
+                    </button>
+                  </div>
+
+                  {/* Features List */}
+                  <div className="divide-y divide-gray-200">
+                    {moduleFeatures.map((feature) => (
+                      <div key={feature.feature_code} className="px-6 py-4 hover:bg-gray-50 transition">
+                        <div className="flex items-center justify-between">
+                          <div className="flex-1">
+                            <div className="flex items-center">
+                              <h4 className="text-sm font-medium text-gray-900">{feature.feature_name}</h4>
+                              {feature.is_beta && (
+                                <span className="ml-2 px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-800 rounded">
+                                  BETA
+                                </span>
+                              )}
+                            </div>
+                            <p className="mt-1 text-sm text-gray-600">{feature.description}</p>
+                            <div className="mt-2 flex items-center space-x-4 text-xs text-gray-500">
+                              <span className="font-mono">{feature.feature_code}</span>
+                            </div>
+                          </div>
+
+                          <button
+                            onClick={() => handleToggleFeature(feature)}
+                            disabled={toggling[feature.feature_code]}
+                            className={`ml-4 p-2 rounded-lg transition ${
+                              feature.is_enabled
+                                ? 'bg-green-100 text-green-700 hover:bg-green-200'
+                                : 'bg-gray-100 text-gray-400 hover:bg-gray-200'
+                            } ${toggling[feature.feature_code] ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          >
+                            {toggling[feature.feature_code] ? (
+                              <div className="animate-spin h-6 w-6 border-2 border-current border-t-transparent rounded-full"></div>
+                            ) : feature.is_enabled ? (
+                              <ToggleRight className="h-6 w-6" />
+                            ) : (
+                              <ToggleLeft className="h-6 w-6" />
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'link-branding' && (
+        <LinkBrandingTab client={client} onUpdate={loadClientData} />
+      )}
+
+      {activeTab === 'users' && (
+        <UsersTab client={client} isLinked={isLinked} />
+      )}
     </div>
   );
 }
