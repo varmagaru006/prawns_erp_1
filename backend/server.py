@@ -981,10 +981,6 @@ async def create_wastage_record(
     return wastage
 
 
-    date_str = now.strftime("%Y%m%d")
-    counter = now.strftime("%H%M%S")
-    return f"BATCH-{date_str}-{counter}"
-
 def generate_order_number() -> str:
     now = datetime.now()
     date_str = now.strftime("%Y%m%d")
