@@ -48,7 +48,8 @@ const Layout = () => {
     Settings,
     Bell,
     TrendingDown,
-    Target
+    Target,
+    DollarSign: Receipt  // Reuse Receipt icon for Market Rates
   };
 
   const navigation = [
@@ -64,6 +65,7 @@ const Layout = () => {
     { name: 'Accounts', path: '/accounts', icon: 'Receipt', moduleKey: 'accounts' },
     { name: 'Wastage Dashboard', path: '/admin/wastage-dashboard', icon: 'TrendingDown', moduleKey: 'wastageDashboard' },
     { name: 'Yield Benchmarks', path: '/admin/yield-benchmarks', icon: 'Target', moduleKey: 'yieldBenchmarks' },
+    { name: 'Market Rates', path: '/admin/market-rates', icon: 'DollarSign', moduleKey: 'marketRates' },
     { name: 'Admin Panel', path: '/admin', icon: 'Settings', moduleKey: 'admin' },
     { name: 'Notifications', path: '/notifications', icon: 'Bell', moduleKey: 'notifications' },
   ];
