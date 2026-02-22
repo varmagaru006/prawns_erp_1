@@ -662,6 +662,177 @@ async def get_feature_registry(current_admin = Depends(get_current_super_admin))
     features = await database.fetch_all(query=query)
     return features
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Announcement Management
+# ══════════════════════════════════════════════════════════════════════════════
+
+class AnnouncementCreate(BaseModel):
+    title: str
+    body: str
+    announcement_type: str = "info"  # info, warning, critical
+    target_all: bool = True
+    target_client_ids: Optional[List[str]] = None
+    show_from: Optional[str] = None  # ISO datetime string
+    show_until: Optional[str] = None  # ISO datetime string
+
+class AnnouncementResponse(BaseModel):
+    id: str
+    title: str
+    body: str
+    announcement_type: str
+    target_all: bool
+    show_from: str
+    show_until: Optional[str]
+    created_by: Optional[str]
+    created_at: str
+
+@app.get("/announcements")
+async def get_announcements(current_admin = Depends(get_current_super_admin)):
+    """Get all announcements"""
+    query = """
+        SELECT 
+            a.id::text,
+            a.title,
+            a.body,
+            a.announcement_type,
+            a.target_all,
+            a.show_from::text,
+            a.show_until::text,
+            a.created_by::text,
+            a.created_at::text,
+            sa.name as created_by_name
+        FROM announcements a
+        LEFT JOIN super_admins sa ON a.created_by = sa.id
+        ORDER BY a.created_at DESC
+    """
+    announcements = await database.fetch_all(query=query)
+    
+    result = []
+    for ann in announcements:
+        ann_dict = dict(ann)
+        # Get target clients if not targeting all
+        if not ann_dict["target_all"]:
+            targets_query = """
+                SELECT c.id::text, c.business_name, c.tenant_id
+                FROM announcement_targets at
+                JOIN clients c ON at.client_id = c.id
+                WHERE at.announcement_id::text = :announcement_id
+            """
+            targets = await database.fetch_all(
+                query=targets_query, 
+                values={"announcement_id": ann_dict["id"]}
+            )
+            ann_dict["target_clients"] = [dict(t) for t in targets]
+        else:
+            ann_dict["target_clients"] = []
+        result.append(ann_dict)
+    
+    return result
+
+@app.post("/announcements")
+async def create_announcement(
+    announcement: AnnouncementCreate, 
+    current_admin = Depends(get_current_super_admin)
+):
+    """Create a new announcement"""
+    from datetime import datetime, timezone
+    
+    # Parse dates
+    show_from = datetime.fromisoformat(announcement.show_from.replace('Z', '+00:00')) if announcement.show_from else datetime.now(timezone.utc)
+    show_until = datetime.fromisoformat(announcement.show_until.replace('Z', '+00:00')) if announcement.show_until else None
+    
+    # Insert announcement
+    insert_query = """
+        INSERT INTO announcements (
+            title, body, announcement_type, target_all, show_from, show_until, created_by
+        ) VALUES (
+            :title, :body, :announcement_type, :target_all, :show_from, :show_until, :created_by
+        )
+        RETURNING id::text, title, body, announcement_type, target_all, show_from::text, show_until::text, created_at::text
+    """
+    
+    new_announcement = await database.fetch_one(
+        query=insert_query,
+        values={
+            "title": announcement.title,
+            "body": announcement.body,
+            "announcement_type": announcement.announcement_type,
+            "target_all": announcement.target_all,
+            "show_from": show_from,
+            "show_until": show_until,
+            "created_by": current_admin["id"]
+        }
+    )
+    
+    announcement_id = new_announcement["id"]
+    
+    # Add target clients if not targeting all
+    if not announcement.target_all and announcement.target_client_ids:
+        for client_id in announcement.target_client_ids:
+            target_query = """
+                INSERT INTO announcement_targets (announcement_id, client_id)
+                VALUES (:announcement_id::uuid, :client_id::uuid)
+            """
+            await database.execute(
+                query=target_query,
+                values={"announcement_id": announcement_id, "client_id": client_id}
+            )
+    
+    # Sync to MongoDB for client ERP access
+    await sync_announcement_to_mongodb(announcement_id, announcement, show_from, show_until)
+    
+    return {
+        "message": "Announcement created successfully",
+        "announcement": dict(new_announcement)
+    }
+
+async def sync_announcement_to_mongodb(announcement_id: str, announcement: AnnouncementCreate, show_from, show_until):
+    """Sync announcement to MongoDB for client ERP access"""
+    ann_doc = {
+        "announcement_id": announcement_id,
+        "title": announcement.title,
+        "body": announcement.body,
+        "announcement_type": announcement.announcement_type,
+        "target_all": announcement.target_all,
+        "target_tenant_ids": [],
+        "show_from": show_from.isoformat() if show_from else None,
+        "show_until": show_until.isoformat() if show_until else None,
+        "synced_at": datetime.utcnow().isoformat()
+    }
+    
+    # If targeting specific clients, get their tenant_ids
+    if not announcement.target_all and announcement.target_client_ids:
+        for client_id in announcement.target_client_ids:
+            client_query = "SELECT tenant_id FROM clients WHERE id::text = :client_id"
+            client = await database.fetch_one(query=client_query, values={"client_id": client_id})
+            if client:
+                ann_doc["target_tenant_ids"].append(client["tenant_id"])
+    
+    await mongo_db.active_announcements.update_one(
+        {"announcement_id": announcement_id},
+        {"$set": ann_doc},
+        upsert=True
+    )
+
+@app.delete("/announcements/{announcement_id}")
+async def delete_announcement(announcement_id: str, current_admin = Depends(get_current_super_admin)):
+    """Delete an announcement"""
+    # Delete from PostgreSQL (cascade will handle targets)
+    delete_query = """
+        DELETE FROM announcements 
+        WHERE id::text = :announcement_id
+        RETURNING id::text, title
+    """
+    deleted = await database.fetch_one(query=delete_query, values={"announcement_id": announcement_id})
+    
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Announcement not found")
+    
+    # Delete from MongoDB
+    await mongo_db.active_announcements.delete_one({"announcement_id": announcement_id})
+    
+    return {"message": "Announcement deleted successfully", "announcement": dict(deleted)}
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
