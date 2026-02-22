@@ -13,6 +13,7 @@ import { Plus, AlertTriangle, TrendingUp, TrendingDown } from 'lucide-react';
 const PreProcessing = () => {
   const [batches, setBatches] = useState([]);
   const [lots, setLots] = useState([]);
+  const [wastageData, setWastageData] = useState({});
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [formData, setFormData] = useState({
@@ -45,6 +46,21 @@ const PreProcessing = () => {
       ]);
       setBatches(batchesRes.data);
       setLots(lotsRes.data);
+      
+      // Fetch wastage data for each batch (using lot_id from batch)
+      const wastagePromises = batchesRes.data.map(batch => 
+        axios.get(`${API}/lot-stage-wastage/${batch.procurement_lot_id}`).catch(() => ({ data: [] }))
+      );
+      const wastageResults = await Promise.all(wastagePromises);
+      
+      const wastageMap = {};
+      batchesRes.data.forEach((batch, index) => {
+        wastageMap[batch.id] = wastageResults[index].data.filter(
+          w => w.process_type === batch.process_type
+        )[0] || null;
+      });
+      setWastageData(wastageMap);
+      
     } catch (error) {
       toast.error('Failed to load data');
     } finally {
@@ -90,6 +106,20 @@ const PreProcessing = () => {
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to add batch');
     }
+  };
+
+  const getYieldBadge = (yieldPct, thresholdStatus) => {
+    const styles = {
+      green: 'bg-green-100 text-green-800 border-green-300',
+      amber: 'bg-yellow-100 text-yellow-800 border-yellow-300',
+      red: 'bg-red-100 text-red-800 border-red-300',
+      info: 'bg-gray-100 text-gray-800 border-gray-300'
+    };
+    return (
+      <span className={`px-2 py-1 rounded border text-xs font-semibold ${styles[thresholdStatus] || styles.info}`}>
+        {yieldPct ? `${yieldPct.toFixed(1)}%` : 'N/A'}
+      </span>
+    );
   };
 
   return (
@@ -308,13 +338,16 @@ const PreProcessing = () => {
                       <TableHead>Input (KG)</TableHead>
                       <TableHead>Output (KG)</TableHead>
                       <TableHead>Yield %</TableHead>
+                      <TableHead>Threshold Status</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead>Supervisor</TableHead>
                       <TableHead>Workers</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {batches.map((batch) => (
+                    {batches.map((batch) => {
+                      const batchWastage = wastageData[batch.id];
+                      return (
                       <TableRow key={batch.id} data-testid={`batch-row-${batch.id}`}>
                         <TableCell className="font-medium">{batch.batch_number}</TableCell>
                         <TableCell className="capitalize">{batch.process_type}</TableCell>
@@ -335,6 +368,9 @@ const PreProcessing = () => {
                           </div>
                         </TableCell>
                         <TableCell>
+                          {batchWastage ? getYieldBadge(batchWastage.yield_pct, batchWastage.threshold_status) : '-'}
+                        </TableCell>
+                        <TableCell>
                           <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                             batch.end_time ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800'
                           }`}>
@@ -344,7 +380,8 @@ const PreProcessing = () => {
                         <TableCell>{batch.supervisor}</TableCell>
                         <TableCell>{batch.workers.length}</TableCell>
                       </TableRow>
-                    ))}
+                    );
+                    })}
                   </TableBody>
                 </Table>
               </div>
