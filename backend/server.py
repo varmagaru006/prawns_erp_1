@@ -2903,6 +2903,34 @@ async def super_admin_bulk_features(client_id: str, data: dict, request: Request
 
 app.include_router(super_admin_router)
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Super Admin Frontend Static Files
+# ══════════════════════════════════════════════════════════════════════════════
+import os
+
+SUPER_ADMIN_DIST_DIR = Path("/app/super-admin-frontend/dist")
+
+# Mount super-admin static assets (CSS, JS, etc.)
+if SUPER_ADMIN_DIST_DIR.exists():
+    app.mount("/super-admin/assets", StaticFiles(directory=str(SUPER_ADMIN_DIST_DIR / "assets")), name="super-admin-assets")
+
+# Serve super-admin frontend for all /super-admin/* routes
+@app.get("/super-admin/{full_path:path}")
+async def serve_super_admin_frontend(full_path: str):
+    """Serve the Super Admin frontend SPA"""
+    index_file = SUPER_ADMIN_DIST_DIR / "index.html"
+    if index_file.exists():
+        return FileResponse(index_file)
+    return {"error": "Super Admin frontend not built"}
+
+@app.get("/super-admin")
+async def serve_super_admin_root():
+    """Serve the Super Admin frontend root"""
+    index_file = SUPER_ADMIN_DIST_DIR / "index.html"
+    if index_file.exists():
+        return FileResponse(index_file)
+    return {"error": "Super Admin frontend not built"}
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
