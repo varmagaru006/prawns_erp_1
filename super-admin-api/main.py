@@ -224,6 +224,7 @@ async def create_client(client_data: ClientCreate, current_admin = Depends(get_c
     trial_ends_at = datetime.utcnow() + timedelta(days=client_data.trial_days)
     
     # Insert new client
+    from uuid import UUID
     insert_query = """
         INSERT INTO clients (
             tenant_id, business_name, contact_person, contact_email,
@@ -232,11 +233,11 @@ async def create_client(client_data: ClientCreate, current_admin = Depends(get_c
             is_active, onboarded_at
         ) VALUES (
             :tenant_id, :business_name, :contact_person, :contact_email,
-            :plan_id_param::uuid, :subscription_status, :trial_ends_at,
+            :plan_id, :subscription_status, :trial_ends_at,
             :max_users, :max_lots_per_month, :storage_limit_gb,
             true, NOW()
         )
-        RETURNING id, tenant_id, business_name, contact_email, subscription_status, onboarded_at
+        RETURNING id::text, tenant_id, business_name, contact_email, subscription_status, onboarded_at::text
     """
     
     new_client = await database.fetch_one(
@@ -246,7 +247,7 @@ async def create_client(client_data: ClientCreate, current_admin = Depends(get_c
             "business_name": client_data.business_name,
             "contact_person": client_data.contact_person,
             "contact_email": client_data.contact_email,
-            "plan_id_param": client_data.plan_id,
+            "plan_id": UUID(client_data.plan_id),
             "subscription_status": client_data.subscription_status,
             "trial_ends_at": trial_ends_at,
             "max_users": client_data.max_users,
