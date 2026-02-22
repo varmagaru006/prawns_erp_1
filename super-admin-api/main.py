@@ -863,17 +863,21 @@ async def start_impersonation(
         raise HTTPException(status_code=400, detail="Cannot impersonate suspended client")
     
     # Create impersonation session record
+    import uuid as uuid_module
+    session_id = str(uuid_module.uuid4())
+    
     session_query = """
         INSERT INTO impersonation_sessions (
-            super_admin_id, client_id, client_user_id, duration_mins, reason
+            id, super_admin_id, client_id, client_user_id, duration_mins, reason
         ) VALUES (
-            :admin_id::uuid, :cid::uuid, :user_id, :dur, :rsn
+            :session_id, :admin_id, :cid, :user_id, :dur, :rsn
         )
         RETURNING id::text, started_at::text
     """
-    session = await database.fetch_one(
+    await database.execute(
         query=session_query,
         values={
+            "session_id": session_id,
             "admin_id": current_admin["id"],
             "cid": client_id,
             "user_id": client["client_admin_email"],
@@ -881,6 +885,9 @@ async def start_impersonation(
             "rsn": request.reason
         }
     )
+    
+    # Fetch the created session
+    session = {"id": session_id, "started_at": datetime.utcnow().isoformat()}
     
     # Generate impersonation token with special claims
     expires = datetime.utcnow() + timedelta(minutes=request.duration_mins)
