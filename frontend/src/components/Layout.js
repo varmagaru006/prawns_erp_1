@@ -26,7 +26,7 @@ import {
 } from 'lucide-react';
 
 const Layout = () => {
-  const { user, logout } = useAuth();
+  const { user, logout, isImpersonating, endImpersonation } = useAuth();
   const { isEnabled } = useFeatureFlags();
   const location = useLocation();
   const navigate = useNavigate();
@@ -34,6 +34,11 @@ const Layout = () => {
 
   const handleLogout = () => {
     logout();
+    navigate('/login');
+  };
+
+  const handleEndImpersonation = () => {
+    endImpersonation();
     navigate('/login');
   };
 
