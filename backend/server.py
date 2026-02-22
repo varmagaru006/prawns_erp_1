@@ -2918,9 +2918,28 @@ if SUPER_ADMIN_DIST_DIR.exists():
 @app.get("/super-admin/{full_path:path}")
 async def serve_super_admin_frontend(full_path: str):
     """Serve the Super Admin frontend SPA"""
+    # Check if requesting an asset file
+    if full_path.startswith("assets/"):
+        asset_file = SUPER_ADMIN_DIST_DIR / full_path
+        if asset_file.exists():
+            return FileResponse(
+                asset_file,
+                headers={
+                    "Cache-Control": "public, max-age=31536000",
+                }
+            )
+    
+    # For all other routes, serve index.html (SPA routing)
     index_file = SUPER_ADMIN_DIST_DIR / "index.html"
     if index_file.exists():
-        return FileResponse(index_file)
+        return FileResponse(
+            index_file, 
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+        )
     return {"error": "Super Admin frontend not built"}
 
 @app.get("/super-admin")
