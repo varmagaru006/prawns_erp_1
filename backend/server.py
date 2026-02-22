@@ -1256,6 +1256,38 @@ async def get_me(current_user: User = Depends(get_current_user)):
     
     return response
 
+
+@api_router.get("/public-config")
+async def get_public_config():
+    """Get public branding/config for the client ERP (no auth required)"""
+    tenant_id = tenant_context.get_tenant()
+    
+    # Try to fetch tenant_config from MongoDB
+    config = await db.tenant_config.find_one(
+        {"tenant_id": tenant_id},
+        {"_id": 0}
+    )
+    
+    # Default branding if no config exists
+    if not config:
+        return {
+            "company_name": "Prawn ERP",
+            "sidebar_label": "Prawn ERP",
+            "primary_color": "#1e40af",
+            "login_bg_color": "#0f1117",
+            "logo_url": "",
+            "favicon_url": ""
+        }
+    
+    return {
+        "company_name": config.get("company_name", "Prawn ERP"),
+        "sidebar_label": config.get("sidebar_label", config.get("company_name", "Prawn ERP")),
+        "primary_color": config.get("primary_color", "#1e40af"),
+        "login_bg_color": config.get("login_bg_color", "#0f1117"),
+        "logo_url": config.get("logo_url", ""),
+        "favicon_url": config.get("favicon_url", "")
+    }
+
 @api_router.post("/auth/impersonation/validate")
 async def validate_impersonation(token: str):
     """Validate an impersonation token and return session info"""
