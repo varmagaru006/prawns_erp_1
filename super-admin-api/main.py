@@ -330,6 +330,96 @@ async def update_client(client_id: str, client_data: ClientUpdate, current_admin
 
 @app.get("/subscription-plans")
 async def get_subscription_plans(current_admin = Depends(get_current_super_admin)):
+
+
+@app.delete("/clients/{client_id}")
+async def delete_client(client_id: str, current_admin = Depends(get_current_super_admin)):
+    """Delete a client (soft delete by setting is_active = false)"""
+    query = """
+        UPDATE clients 
+        SET is_active = false, suspended_at = NOW()
+        WHERE id::text = :client_id
+        RETURNING id::text, tenant_id, business_name
+    """
+    
+    deleted_client = await database.fetch_one(query=query, values={"client_id": client_id})
+    
+    if not deleted_client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    
+    return {
+        "message": "Client suspended successfully",
+        "client": dict(deleted_client)
+    }
+
+@app.post("/clients/{client_id}/activate")
+async def activate_client(client_id: str, current_admin = Depends(get_current_super_admin)):
+    """Activate a suspended client"""
+    query = """
+        UPDATE clients 
+        SET is_active = true, suspended_at = NULL
+        WHERE id::text = :client_id
+        RETURNING id::text, tenant_id, business_name, is_active
+    """
+    
+    activated_client = await database.fetch_one(query=query, values={"client_id": client_id})
+    
+    if not activated_client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    
+    return {
+        "message": "Client activated successfully",
+        "client": dict(activated_client)
+    }
+
+@app.post("/clients/{client_id}/bulk-features")
+async def bulk_toggle_features(client_id: str, data: dict, current_admin = Depends(get_current_super_admin)):
+    """Bulk enable/disable features for a client"""
+    # Get client info
+    client_query = "SELECT tenant_id FROM clients WHERE id::text = :client_id"
+    client = await database.fetch_one(query=client_query, values={"client_id": client_id})
+    
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    
+    tenant_id = client["tenant_id"]
+    feature_codes = data.get("feature_codes", [])
+    is_enabled = data.get("is_enabled", True)
+    
+    # Get MongoDB connection
+    from motor.motor_asyncio import AsyncIOMotorClient
+    mongo_client = AsyncIOMotorClient(MONGO_URL)
+    db = mongo_client[MONGO_DB_NAME]
+    
+    updated_count = 0
+    for feature_code in feature_codes:
+        # Update or insert in MongoDB
+        await db.feature_flags.update_one(
+            {"tenant_id": tenant_id, "feature_code": feature_code},
+            {
+                "$set": {
+                    "tenant_id": tenant_id,
+                    "feature_code": feature_code,
+                    "is_enabled": is_enabled,
+                    "synced_at": datetime.utcnow().isoformat()
+                }
+            },
+            upsert=True
+        )
+        
+        # Invalidate Redis cache
+        redis_client = redis.Redis(host='localhost', port=6379, db=0)
+        redis_client.delete(f"flags:{tenant_id}")
+        
+        updated_count += 1
+    
+    return {
+        "message": f"Bulk update successful: {updated_count} features updated",
+        "tenant_id": tenant_id,
+        "updated_count": updated_count,
+        "cache_invalidated": True
+    }
+
     """Get all available subscription plans"""
     query = """
         SELECT 
