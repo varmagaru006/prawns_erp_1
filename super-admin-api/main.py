@@ -341,15 +341,15 @@ async def get_subscription_plans(current_admin = Depends(get_current_super_admin
             plan_code,
             plan_name,
             description,
-            price_monthly,
-            price_yearly,
+            price_inr_monthly as price_monthly,
+            price_inr_yearly as price_yearly,
             max_users,
             max_lots_per_month,
             storage_limit_gb,
             is_active
         FROM subscription_plans
         WHERE is_active = true
-        ORDER BY price_monthly
+        ORDER BY price_inr_monthly
     """
     plans = await database.fetch_all(query=query)
     return [dict(plan) for plan in plans]
