@@ -102,6 +102,22 @@ export default function Dashboard() {
 
   return (
     <div>
+      {/* Notification */}
+      {notification && (
+        <div className={`fixed top-4 right-4 z-50 px-6 py-4 rounded-lg shadow-lg flex items-center ${
+          notification.type === 'success' 
+            ? 'bg-green-500 text-white' 
+            : 'bg-red-500 text-white'
+        }`}>
+          {notification.type === 'success' ? (
+            <CheckCircle className="h-5 w-5 mr-2" />
+          ) : (
+            <XCircle className="h-5 w-5 mr-2" />
+          )}
+          {notification.message}
+        </div>
+      )}
+
       {/* Header */}
       <div className="mb-8 flex items-center justify-between">
         <div>
