@@ -13,6 +13,7 @@ import { Plus, Factory } from 'lucide-react';
 const Production = () => {
   const [orders, setOrders] = useState([]);
   const [batches, setBatches] = useState([]);
+  const [wastageData, setWastageData] = useState({});
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [formData, setFormData] = useState({
@@ -39,6 +40,22 @@ const Production = () => {
       ]);
       setOrders(ordersRes.data);
       setBatches(batchesRes.data);
+      
+      // Fetch wastage data for each production order
+      const wastagePromises = ordersRes.data.map(order => 
+        axios.get(`${API}/lot-stage-wastage/${order.id}`).catch(() => ({ data: [] }))
+      );
+      const wastageResults = await Promise.all(wastagePromises);
+      
+      const wastageMap = {};
+      ordersRes.data.forEach((order, index) => {
+        const productionWastage = wastageResults[index].data.find(
+          w => w.stage_name === 'production'
+        );
+        wastageMap[order.id] = productionWastage || null;
+      });
+      setWastageData(wastageMap);
+      
     } catch (error) {
       toast.error('Failed to load data');
     } finally {
@@ -56,6 +73,20 @@ const Production = () => {
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to add order');
     }
+  };
+
+  const getYieldBadge = (yieldPct, thresholdStatus) => {
+    const styles = {
+      green: 'bg-green-100 text-green-800 border-green-300',
+      amber: 'bg-yellow-100 text-yellow-800 border-yellow-300',
+      red: 'bg-red-100 text-red-800 border-red-300',
+      info: 'bg-gray-100 text-gray-800 border-gray-300'
+    };
+    return (
+      <span className={`px-2 py-1 rounded border text-xs font-semibold ${styles[thresholdStatus] || styles.info}`}>
+        {yieldPct ? `${yieldPct.toFixed(1)}%` : 'N/A'}
+      </span>
+    );
   };
 
   const toggleBatch = (batchId) => {
@@ -258,11 +289,14 @@ const Production = () => {
                       <TableHead>Input (KG)</TableHead>
                       <TableHead>Output (KG)</TableHead>
                       <TableHead>Conversion %</TableHead>
+                      <TableHead>Threshold Status</TableHead>
                       <TableHead>QC Status</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {orders.map((order) => (
+                    {orders.map((order) => {
+                      const orderWastage = wastageData[order.id];
+                      return (
                       <TableRow key={order.id} data-testid={`order-row-${order.id}`}>
                         <TableCell className="font-medium">{order.order_number}</TableCell>
                         <TableCell>{order.product_form}</TableCell>
@@ -275,9 +309,13 @@ const Production = () => {
                             {order.conversion_rate_pct.toFixed(2)}%
                           </span>
                         </TableCell>
+                        <TableCell>
+                          {orderWastage ? getYieldBadge(orderWastage.yield_pct, orderWastage.threshold_status) : '-'}
+                        </TableCell>
                         <TableCell>{getQCBadge(order.qc_status)}</TableCell>
                       </TableRow>
-                    ))}
+                    );
+                    })}
                   </TableBody>
                 </Table>
               </div>
