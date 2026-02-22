@@ -63,7 +63,7 @@ const Login = () => {
   ];
 
   return (
-    <div className="min-h-screen relative overflow-hidden bg-gradient-to-br from-blue-600 via-purple-600 to-pink-600">
+    <div className="min-h-screen relative overflow-hidden" style={{ background: branding.login_bg_color || 'linear-gradient(to bottom right, #2563eb, #7c3aed, #ec4899)' }}>
       {/* Animated Background */}
       <div className="absolute inset-0 overflow-hidden">
         <div className="absolute inset-0 opacity-20">
@@ -105,12 +105,16 @@ const Login = () => {
           {/* Left Side - Branding */}
           <div className="text-white space-y-6 hidden lg:block animate-fadeIn">
             <div className="flex items-center gap-3 mb-8">
-              <div className="p-3 bg-white/20 backdrop-blur-md rounded-2xl">
-                <Fish className="h-12 w-12" />
-              </div>
+              {branding.logo_url ? (
+                <img src={branding.logo_url} alt={branding.company_name} className="h-16" />
+              ) : (
+                <div className="p-3 bg-white/20 backdrop-blur-md rounded-2xl">
+                  <Fish className="h-12 w-12" />
+                </div>
+              )}
               <div>
-                <h1 className="text-5xl font-bold">Prawn ERP</h1>
-                <p className="text-blue-100 text-lg">Aquaculture Export Management</p>
+                <h1 className="text-5xl font-bold">{branding.company_name || 'Prawn ERP'}</h1>
+                <p className="text-blue-100 text-lg">{branding.sidebar_label || 'Aquaculture Export Management'}</p>
               </div>
             </div>
 
