@@ -65,6 +65,30 @@ class Token(BaseModel):
     access_token: str
     token_type: str
 
+class ClientCreate(BaseModel):
+    tenant_id: str
+    business_name: str
+    contact_person: Optional[str] = None
+    contact_email: EmailStr
+    plan_id: str
+    subscription_status: str = "trial"
+    trial_days: int = 30
+    max_users: Optional[int] = None
+    max_lots_per_month: Optional[int] = None
+    storage_limit_gb: Optional[int] = None
+
+class ClientUpdate(BaseModel):
+    tenant_id: Optional[str] = None
+    business_name: Optional[str] = None
+    contact_person: Optional[str] = None
+    contact_email: Optional[EmailStr] = None
+    plan_id: Optional[str] = None
+    subscription_status: Optional[str] = None
+    max_users: Optional[int] = None
+    max_lots_per_month: Optional[int] = None
+    storage_limit_gb: Optional[int] = None
+    is_active: Optional[bool] = None
+
 class ClientSummary(BaseModel):
     id: str
     tenant_id: str
@@ -177,6 +201,159 @@ async def get_clients(current_admin = Depends(get_current_super_admin)):
     """
     clients = await database.fetch_all(query=query)
     return clients
+
+
+@app.post("/clients")
+async def create_client(client_data: ClientCreate, current_admin = Depends(get_current_super_admin)):
+    """Create a new client/tenant"""
+    # Check if tenant_id already exists
+    check_query = "SELECT id FROM clients WHERE tenant_id = :tenant_id"
+    existing = await database.fetch_one(query=check_query, values={"tenant_id": client_data.tenant_id})
+    
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Tenant ID '{client_data.tenant_id}' already exists")
+    
+    # Check if plan exists
+    plan_query = "SELECT id FROM subscription_plans WHERE id::text = :plan_id"
+    plan = await database.fetch_one(query=plan_query, values={"plan_id": client_data.plan_id})
+    
+    if not plan:
+        raise HTTPException(status_code=400, detail="Invalid plan_id")
+    
+    # Calculate trial end date
+    trial_ends_at = datetime.utcnow() + timedelta(days=client_data.trial_days)
+    
+    # Insert new client
+    insert_query = """
+        INSERT INTO clients (
+            tenant_id, business_name, contact_person, contact_email,
+            plan_id, subscription_status, trial_ends_at,
+            max_users, max_lots_per_month, storage_limit_gb,
+            is_active, onboarded_at
+        ) VALUES (
+            :tenant_id, :business_name, :contact_person, :contact_email,
+            :plan_id::uuid, :subscription_status, :trial_ends_at,
+            :max_users, :max_lots_per_month, :storage_limit_gb,
+            true, NOW()
+        )
+        RETURNING id, tenant_id, business_name, contact_email, subscription_status, onboarded_at
+    """
+    
+    new_client = await database.fetch_one(
+        query=insert_query,
+        values={
+            "tenant_id": client_data.tenant_id,
+            "business_name": client_data.business_name,
+            "contact_person": client_data.contact_person,
+            "contact_email": client_data.contact_email,
+            "plan_id": client_data.plan_id,
+            "subscription_status": client_data.subscription_status,
+            "trial_ends_at": trial_ends_at,
+            "max_users": client_data.max_users,
+            "max_lots_per_month": client_data.max_lots_per_month,
+            "storage_limit_gb": client_data.storage_limit_gb
+        }
+    )
+    
+    return {
+        "message": "Client created successfully",
+        "client": dict(new_client)
+    }
+
+@app.put("/clients/{client_id}")
+async def update_client(client_id: str, client_data: ClientUpdate, current_admin = Depends(get_current_super_admin)):
+    """Update client details including tenant_id"""
+    # Check if client exists
+    check_query = "SELECT id, tenant_id FROM clients WHERE id::text = :client_id"
+    existing_client = await database.fetch_one(query=check_query, values={"client_id": client_id})
+    
+    if not existing_client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    
+    # If updating tenant_id, check it doesn't conflict
+    if client_data.tenant_id and client_data.tenant_id != existing_client["tenant_id"]:
+        conflict_query = "SELECT id FROM clients WHERE tenant_id = :tenant_id AND id::text != :client_id"
+        conflict = await database.fetch_one(
+            query=conflict_query, 
+            values={"tenant_id": client_data.tenant_id, "client_id": client_id}
+        )
+        if conflict:
+            raise HTTPException(status_code=400, detail=f"Tenant ID '{client_data.tenant_id}' already exists")
+    
+    # Build update query dynamically
+    update_fields = []
+    values = {"client_id": client_id}
+    
+    if client_data.tenant_id is not None:
+        update_fields.append("tenant_id = :tenant_id")
+        values["tenant_id"] = client_data.tenant_id
+    if client_data.business_name is not None:
+        update_fields.append("business_name = :business_name")
+        values["business_name"] = client_data.business_name
+    if client_data.contact_person is not None:
+        update_fields.append("contact_person = :contact_person")
+        values["contact_person"] = client_data.contact_person
+    if client_data.contact_email is not None:
+        update_fields.append("contact_email = :contact_email")
+        values["contact_email"] = client_data.contact_email
+    if client_data.plan_id is not None:
+        update_fields.append("plan_id = :plan_id::uuid")
+        values["plan_id"] = client_data.plan_id
+    if client_data.subscription_status is not None:
+        update_fields.append("subscription_status = :subscription_status")
+        values["subscription_status"] = client_data.subscription_status
+    if client_data.max_users is not None:
+        update_fields.append("max_users = :max_users")
+        values["max_users"] = client_data.max_users
+    if client_data.max_lots_per_month is not None:
+        update_fields.append("max_lots_per_month = :max_lots_per_month")
+        values["max_lots_per_month"] = client_data.max_lots_per_month
+    if client_data.storage_limit_gb is not None:
+        update_fields.append("storage_limit_gb = :storage_limit_gb")
+        values["storage_limit_gb"] = client_data.storage_limit_gb
+    if client_data.is_active is not None:
+        update_fields.append("is_active = :is_active")
+        values["is_active"] = client_data.is_active
+    
+    if not update_fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    
+    update_query = f"""
+        UPDATE clients 
+        SET {', '.join(update_fields)}
+        WHERE id::text = :client_id
+        RETURNING id, tenant_id, business_name, contact_email, subscription_status
+    """
+    
+    updated_client = await database.fetch_one(query=update_query, values=values)
+    
+    return {
+        "message": "Client updated successfully",
+        "client": dict(updated_client)
+    }
+
+@app.get("/subscription-plans")
+async def get_subscription_plans(current_admin = Depends(get_current_super_admin)):
+    """Get all available subscription plans"""
+    query = """
+        SELECT 
+            id::text as id,
+            plan_code,
+            plan_name,
+            description,
+            price_monthly,
+            price_yearly,
+            max_users,
+            max_lots_per_month,
+            storage_limit_gb,
+            is_active
+        FROM subscription_plans
+        WHERE is_active = true
+        ORDER BY price_monthly
+    """
+    plans = await database.fetch_all(query=query)
+    return [dict(plan) for plan in plans]
+
 
 @app.get("/clients/{client_id}")
 async def get_client_detail(client_id: str, current_admin = Depends(get_current_super_admin)):
