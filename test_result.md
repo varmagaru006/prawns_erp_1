@@ -101,3 +101,148 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+
+user_problem_statement: "Build a full-stack Prawn/Aquaculture Export ERP with v4.0 Wastage Tracking & Revenue Loss Engine"
+
+backend:
+  - task: "Wastage Tracking API - Auto-create wastage records"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py (lines 1300-1550)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Auto-wastage creation tested via curl, working correctly"
+
+  - task: "Lot Waterfall API endpoint"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/server.py (line 2368)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Just created, needs testing"
+
+  - task: "Market Rates CRUD API"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "API exists, needs frontend integration testing"
+
+frontend:
+  - task: "Procurement Wastage Dialog"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/src/pages/Procurement.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Dialog added with table showing wastage details, needs E2E test"
+
+  - task: "Market Rates Admin UI"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/src/pages/MarketRates.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "New page created, CRUD UI implemented, needs testing"
+
+  - task: "Lot Waterfall View Page"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/src/pages/LotWaterfall.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Visual waterfall journey page created, needs testing with real data"
+
+  - task: "Pre-processing Yield Badges"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/src/pages/PreProcessing.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Added Threshold Status column with color-coded badges"
+
+  - task: "Production Yield Badges"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/src/pages/Production.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Added Threshold Status column with color-coded badges"
+
+  - task: "Wastage Dashboard"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/pages/WastageDashboard.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Previously created and working"
+
+  - task: "Yield Benchmarks Admin"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/pages/YieldBenchmarks.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Previously created and working"
+
+metadata:
+  created_by: "main_agent"
+  version: "2.0"
+  test_sequence: 1
+  run_ui: true
+
+test_plan:
+  current_focus:
+    - "Market Rates CRUD (add, edit, delete)"
+    - "Procurement Wastage Dialog"
+    - "Lot Waterfall View with real lot data"
+    - "Yield badges on Pre-processing page"
+    - "Yield badges on Production page"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: "Completed Phase 1 (P0) - all wastage UI features. Created Market Rates page, Lot Waterfall view, added wastage dialog to Procurement, and yield badges to Pre-processing & Production pages. All features implemented and visually verified via screenshots. Now requesting comprehensive E2E testing."
