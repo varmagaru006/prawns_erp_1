@@ -115,4 +115,24 @@ export const announcementAPI = {
   },
 };
 
+export const impersonationAPI = {
+  start: async (clientId, data = {}) => {
+    const response = await api.post(`/clients/${clientId}/impersonate`, {
+      reason: data.reason || '',
+      duration_mins: data.duration_mins || 60
+    });
+    return response.data;
+  },
+  
+  end: async (sessionId) => {
+    const response = await api.post(`/impersonation/${sessionId}/end`);
+    return response.data;
+  },
+  
+  getActive: async () => {
+    const response = await api.get('/impersonation/active');
+    return response.data;
+  },
+};
+
 export default api;
