@@ -2703,6 +2703,82 @@ async def update_procurement_lot(
         "requires_approval_from": ["admin", "owner", "production_supervisor"]
     }
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# CLIENT ANNOUNCEMENTS ENDPOINT
+# ═══════════════════════════════════════════════════════════════════════════════
+@api_router.get("/announcements/active")
+async def get_active_announcements(request: Request, current_user: dict = Depends(get_current_user)):
+    """Get active announcements for the current tenant"""
+    from datetime import datetime, timezone
+    
+    tenant_id = current_user.get("tenant_id")
+    if not tenant_id:
+        return []
+    
+    now = datetime.now(timezone.utc)
+    
+    # Fetch announcements from MongoDB
+    announcements = await db.active_announcements.find({
+        "$or": [
+            {"target_all": True},
+            {"target_tenant_ids": tenant_id}
+        ],
+        "show_from": {"$lte": now.isoformat()},
+        "$or": [
+            {"show_until": None},
+            {"show_until": {"$gte": now.isoformat()}}
+        ]
+    }).to_list(length=20)
+    
+    # Get dismissals for this tenant
+    dismissals = await db.announcement_dismissals.find({
+        "tenant_id": tenant_id
+    }).to_list(length=100)
+    
+    dismissed_ids = {d["announcement_id"] for d in dismissals}
+    
+    # Filter out dismissed announcements
+    active = []
+    for ann in announcements:
+        if ann.get("announcement_id") not in dismissed_ids:
+            active.append({
+                "id": ann.get("announcement_id"),
+                "title": ann.get("title"),
+                "body": ann.get("body"),
+                "type": ann.get("announcement_type", "info"),
+                "show_from": ann.get("show_from"),
+                "show_until": ann.get("show_until")
+            })
+    
+    return active
+
+@api_router.post("/announcements/{announcement_id}/dismiss")
+async def dismiss_announcement(
+    announcement_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """Dismiss an announcement for the current tenant"""
+    tenant_id = current_user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="Tenant ID required")
+    
+    # Record dismissal in MongoDB
+    await db.announcement_dismissals.update_one(
+        {"tenant_id": tenant_id, "announcement_id": announcement_id},
+        {
+            "$set": {
+                "tenant_id": tenant_id,
+                "announcement_id": announcement_id,
+                "dismissed_at": datetime.utcnow().isoformat(),
+                "dismissed_by": str(current_user.get("_id", ""))
+            }
+        },
+        upsert=True
+    )
+    
+    return {"message": "Announcement dismissed"}
+
 app.include_router(api_router)
 
 app.add_middleware(
