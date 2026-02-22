@@ -869,10 +869,12 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     return User(**user_doc)
 
 def generate_lot_number() -> str:
+    """Generate unique lot number with configurable prefix per tenant"""
+    prefix = tenant_context.lot_number_prefix
     now = datetime.now()
     date_str = now.strftime("%Y-%m-%d")
     counter = now.strftime("%H%M%S")
-    return f"PRW-{date_str}-{counter}"
+    return f"{prefix}-{date_str}-{counter}"
 
 def generate_batch_number() -> str:
     now = datetime.now()
