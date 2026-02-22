@@ -1,0 +1,118 @@
+{
+  "summary": "Tested Super Admin Portal feature toggle bug fix. Backend API tests confirm the core bug is FIXED - bulk feature updates now correctly persist to PostgreSQL and reads return the updated state. However, the frontend is calling a DIFFERENT API ENDPOINT (aqua-export-hub) than configured (aqua-admin-dashboard), causing a database mismatch issue in the UI. This is a platform/infrastructure configuration issue, not a code bug.",
+  
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/super-admin/auth/login (proxy)",
+        "issue": "Proxy returns HTTP 200 even for invalid credentials - should forward HTTP 401 status code",
+        "priority": "LOW"
+      }
+    ]
+  },
+  
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "ClientDetail.jsx",
+        "issue": "Features Enabled count shows 0/46 when API returns 46/46 enabled",
+        "selector": "Features Enabled display",
+        "priority": "HIGH",
+        "root_cause": "Frontend is calling aqua-export-hub.preview.emergentagent.com instead of aqua-admin-dashboard.preview.emergentagent.com - different databases"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Dashboard -> Client Detail navigation",
+        "issue": "Client IDs in dashboard links don't match actual PostgreSQL database IDs",
+        "affected_selectors": ["Manage Features links"],
+        "root_cause": "Frontend served at aqua-admin-dashboard is actually connecting to aqua-export-hub API - platform/infrastructure mismatch"
+      }
+    ],
+    "design_issues": []
+  },
+  
+  "test_report_links": [
+    "/app/backend/tests/test_super_admin_api.py",
+    "/app/test_reports/pytest/super_admin_test_results.xml"
+  ],
+  
+  "features_verified": {
+    "super_admin_login": {
+      "status": "WORKING",
+      "details": "POST /api/super-admin/auth/login returns valid JWT token"
+    },
+    "clients_list": {
+      "status": "WORKING",
+      "details": "GET /api/super-admin/clients returns all clients from PostgreSQL"
+    },
+    "client_features": {
+      "status": "WORKING",
+      "details": "GET /api/super-admin/clients/{id}/features returns feature flags with is_enabled state"
+    },
+    "single_toggle": {
+      "status": "WORKING",
+      "details": "POST /api/super-admin/clients/{id}/features/toggle correctly updates PostgreSQL and MongoDB"
+    },
+    "bulk_enable": {
+      "status": "WORKING - BUG FIXED",
+      "details": "POST /api/super-admin/clients/{id}/bulk-features with is_enabled=true persists to PostgreSQL and reads return updated state"
+    },
+    "bulk_disable": {
+      "status": "WORKING - BUG FIXED",
+      "details": "POST /api/super-admin/clients/{id}/bulk-features with is_enabled=false persists to PostgreSQL and reads return updated state"
+    },
+    "module_level_toggle": {
+      "status": "WORKING",
+      "details": "Bulk toggle for module features works and persists"
+    }
+  },
+  
+  "action_items": [
+    "CRITICAL: Fix platform/infrastructure configuration - super-admin-frontend at aqua-admin-dashboard.preview.emergentagent.com is connecting to aqua-export-hub.preview.emergentagent.com API instead of local super-admin-api",
+    "The VITE_API_URL in .env is correctly set to aqua-admin-dashboard but the deployed frontend is somehow using aqua-export-hub",
+    "LOW: Update proxy routes in server.py to forward HTTP status codes instead of always returning 200"
+  ],
+  
+  "critical_code_review_comments": [
+    "The bulk-features endpoint in super-admin-api/main.py correctly writes to BOTH PostgreSQL AND MongoDB - bug fix is verified",
+    "The frontend VITE_API_URL is correct in .env but the deployed/served version is using a different URL - this is an infrastructure issue",
+    "Consider adding data-testid attributes to ClientDetail.jsx for better testing"
+  ],
+  
+  "updated_files": [
+    "/app/backend/tests/test_super_admin_api.py - Created comprehensive API test suite"
+  ],
+  
+  "success_rate": {
+    "backend": "91% (10/11 tests passed - 1 minor proxy issue)",
+    "frontend": "N/A - Frontend connected to wrong API endpoint"
+  },
+  
+  "test_credentials": {
+    "email": "superadmin@prawnrp.com",
+    "password": "admin123",
+    "portal_url": "https://aqua-admin-dashboard.preview.emergentagent.com/super-admin/"
+  },
+  
+  "seed_data_creation": "Used existing test client cli_ui_test (ID: 0f54ec40-eb9e-4fea-ab13-b0183e938ff5)",
+  
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  
+  "context_for_next_testing_agent": "The core bug fix for bulk feature toggle persistence is VERIFIED WORKING via API tests. The frontend issue is NOT a code bug - it's an infrastructure/platform configuration issue where the super-admin-frontend deployed at aqua-admin-dashboard is calling aqua-export-hub API instead of the local super-admin-api. The .env file has correct VITE_API_URL but something at the CDN/ingress level is routing differently. Backend tests in /app/backend/tests/test_super_admin_api.py confirm all CRUD and bulk operations work correctly.",
+  
+  "rca_of_issue": {
+    "original_bug": "Bulk feature updates were writing to MongoDB but reads came from PostgreSQL, causing state mismatch",
+    "fix_verification": "VERIFIED - bulk-features endpoint now correctly writes to BOTH PostgreSQL (client_feature_flags table) AND MongoDB (feature_flags collection)",
+    "remaining_issue": "Frontend is calling wrong API endpoint (aqua-export-hub vs aqua-admin-dashboard) - this is platform/infrastructure config, not code",
+    "reproduction_steps": [
+      "1. Open browser DevTools Network tab",
+      "2. Navigate to https://aqua-admin-dashboard.preview.emergentagent.com/super-admin/",
+      "3. Login and observe API calls go to aqua-export-hub.preview.emergentagent.com instead of aqua-admin-dashboard",
+      "4. This causes client IDs to not match since different databases"
+    ],
+    "mitigation": "Fix the platform routing configuration so the frontend at aqua-admin-dashboard calls the local super-admin-api instead of aqua-export-hub"
+  }
+}
