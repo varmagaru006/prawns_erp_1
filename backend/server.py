@@ -1262,30 +1262,21 @@ async def get_public_config():
     """Get public branding/config for the client ERP (no auth required)"""
     tenant_id = tenant_context.get_tenant()
     
-    # Try to fetch tenant_config from MongoDB
-    config = await db.tenant_config.find_one(
-        {"tenant_id": tenant_id},
-        {"_id": 0}
-    )
+    # Fetch all branding-related configs from tenant_config
+    config_keys = ["company_name", "sidebar_label", "primary_color", "login_bg_color", "logo_url", "favicon_url"]
     
-    # Default branding if no config exists
-    if not config:
-        return {
-            "company_name": "Prawn ERP",
-            "sidebar_label": "Prawn ERP",
-            "primary_color": "#1e40af",
-            "login_bg_color": "#0f1117",
-            "logo_url": "",
-            "favicon_url": ""
-        }
+    config_values = {}
+    async for doc in db.tenant_config.find({"key": {"$in": config_keys}}, {"_id": 0}):
+        config_values[doc["key"]] = doc.get("value", "")
     
+    # Return with defaults for missing values
     return {
-        "company_name": config.get("company_name", "Prawn ERP"),
-        "sidebar_label": config.get("sidebar_label", config.get("company_name", "Prawn ERP")),
-        "primary_color": config.get("primary_color", "#1e40af"),
-        "login_bg_color": config.get("login_bg_color", "#0f1117"),
-        "logo_url": config.get("logo_url", ""),
-        "favicon_url": config.get("favicon_url", "")
+        "company_name": config_values.get("company_name") or "Prawn ERP",
+        "sidebar_label": config_values.get("sidebar_label") or config_values.get("company_name") or "Prawn ERP",
+        "primary_color": config_values.get("primary_color") or "#1e40af",
+        "login_bg_color": config_values.get("login_bg_color") or "#0f1117",
+        "logo_url": config_values.get("logo_url") or "",
+        "favicon_url": config_values.get("favicon_url") or ""
     }
 
 @api_router.post("/auth/impersonation/validate")
