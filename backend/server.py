@@ -2855,6 +2855,52 @@ async def super_admin_get_plans(request: Request):
         )
         return response.json()
 
+@super_admin_router.delete("/clients/{client_id}")
+async def super_admin_delete_client(client_id: str, request: Request):
+    """Proxy delete/suspend client"""
+    headers = {}
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+    async with httpx.AsyncClient() as client:
+        response = await client.delete(
+            f"http://localhost:8002/clients/{client_id}",
+            headers=headers,
+            timeout=10.0
+        )
+        return response.json()
+
+@super_admin_router.post("/clients/{client_id}/activate")
+async def super_admin_activate_client(client_id: str, request: Request):
+    """Proxy activate client"""
+    headers = {}
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"http://localhost:8002/clients/{client_id}/activate",
+            headers=headers,
+            timeout=10.0
+        )
+        return response.json()
+
+@super_admin_router.post("/clients/{client_id}/bulk-features")
+async def super_admin_bulk_features(client_id: str, data: dict, request: Request):
+    """Proxy bulk feature toggle"""
+    headers = {"Content-Type": "application/json"}
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"http://localhost:8002/clients/{client_id}/bulk-features",
+            json=data,
+            headers=headers,
+            timeout=10.0
+        )
+        return response.json()
+
 app.include_router(super_admin_router)
 
 logging.basicConfig(

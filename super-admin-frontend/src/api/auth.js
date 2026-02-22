@@ -70,6 +70,21 @@ export const clientAPI = {
     return response.data;
   },
 
+  deleteClient: async (id) => {
+    const response = await api.delete(`/clients/${id}`);
+    return response.data;
+  },
+
+  activateClient: async (id) => {
+    const response = await api.post(`/clients/${id}/activate`);
+    return response.data;
+  },
+
+  bulkToggleFeatures: async (clientId, data) => {
+    const response = await api.post(`/clients/${clientId}/bulk-features`, data);
+    return response.data;
+  },
+
   getPlans: async () => {
     const response = await api.get('/subscription-plans');
     return response.data;
