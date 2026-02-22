@@ -3024,6 +3024,53 @@ async def super_admin_delete_announcement(announcement_id: str, request: Request
         )
         return response.json()
 
+@super_admin_router.post("/clients/{client_id}/impersonate")
+async def super_admin_impersonate(client_id: str, request: Request):
+    """Proxy impersonation request"""
+    headers = {"Content-Type": "application/json"}
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+    data = await request.json()
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"http://localhost:8002/clients/{client_id}/impersonate",
+            json=data,
+            headers=headers,
+            timeout=10.0
+        )
+        return response.json()
+
+@super_admin_router.post("/impersonation/{session_id}/end")
+async def super_admin_end_impersonation(session_id: str, request: Request):
+    """Proxy end impersonation"""
+    headers = {}
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"http://localhost:8002/impersonation/{session_id}/end",
+            headers=headers,
+            timeout=10.0
+        )
+        return response.json()
+
+@super_admin_router.get("/impersonation/active")
+async def super_admin_get_active_impersonations(request: Request):
+    """Proxy get active impersonations"""
+    headers = {}
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            "http://localhost:8002/impersonation/active",
+            headers=headers,
+            timeout=10.0
+        )
+        return response.json()
+
 app.include_router(super_admin_router)
 
 # ══════════════════════════════════════════════════════════════════════════════
