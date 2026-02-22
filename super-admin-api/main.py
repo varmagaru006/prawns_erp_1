@@ -984,6 +984,577 @@ async def get_active_impersonations(current_admin = Depends(get_current_super_ad
     sessions = await database.fetch_all(query=query, values={"admin_id": current_admin["id"]})
     return [dict(s) for s in sessions]
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Amendment A3: Client Linking, Branding & User Provisioning
+# ══════════════════════════════════════════════════════════════════════════════
+import hashlib
+import secrets
+import string
+
+def generate_api_key():
+    """Generate a secure API key"""
+    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    random_part = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(24))
+    return f"sa_live_{random_part}_{timestamp}"
+
+def generate_temp_password():
+    """Generate a temporary password"""
+    chars = string.ascii_letters + string.digits + "!@#$%"
+    return ''.join(secrets.choice(chars) for _ in range(12))
+
+class LinkRequest(BaseModel):
+    webhook_url: Optional[str] = None
+
+class BrandingUpdate(BaseModel):
+    company_name: Optional[str] = None
+    sidebar_label: Optional[str] = None
+    primary_color: Optional[str] = None
+    login_bg_color: Optional[str] = None
+    logo_url: Optional[str] = None
+    favicon_url: Optional[str] = None
+
+class UserProvision(BaseModel):
+    full_name: str
+    email: EmailStr
+    role: str
+    send_welcome_email: bool = True
+
+class UserUpdate(BaseModel):
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+
+@app.post("/clients/{client_id}/link")
+async def link_client(client_id: str, request: LinkRequest, current_admin = Depends(get_current_super_admin)):
+    """Generate API key and link client ERP"""
+    import httpx
+    
+    # Get client info
+    client_query = """
+        SELECT id, tenant_id, business_name, plan_id, branding, link_status
+        FROM clients WHERE id::text = :client_id
+    """
+    client = await database.fetch_one(query=client_query, values={"client_id": client_id})
+    
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    
+    # Generate API key (shown once)
+    api_key = generate_api_key()
+    api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+    
+    # Get plan name
+    plan_query = "SELECT plan_code FROM subscription_plans WHERE id = :plan_id"
+    plan = await database.fetch_one(query=plan_query, values={"plan_id": client["plan_id"]})
+    plan_code = plan["plan_code"] if plan else "basic"
+    
+    # Determine webhook URL
+    webhook_url = request.webhook_url or f"http://localhost:8001/internal/saas-hook"
+    
+    # Update client with API key hash and webhook URL
+    update_query = """
+        UPDATE clients 
+        SET api_key_hash = :api_key_hash, 
+            webhook_url = :webhook_url,
+            link_status = 'linking'
+        WHERE id::text = :client_id
+    """
+    await database.execute(query=update_query, values={
+        "api_key_hash": api_key_hash,
+        "webhook_url": webhook_url,
+        "client_id": client_id
+    })
+    
+    # Call the client ERP handshake endpoint
+    branding = dict(client["branding"]) if client["branding"] else {}
+    
+    try:
+        async with httpx.AsyncClient() as http_client:
+            response = await http_client.post(
+                f"{webhook_url}/handshake",
+                json={
+                    "client_id": client_id,
+                    "tenant_id": client["tenant_id"],
+                    "api_key_hash": api_key_hash,
+                    "branding": branding,
+                    "plan": plan_code
+                },
+                headers={"X-SAAS-API-Key": api_key},
+                timeout=30.0
+            )
+            
+            if response.status_code == 200:
+                # Update link status
+                await database.execute(
+                    """UPDATE clients SET link_status = 'linked', linked_at = NOW() 
+                       WHERE id::text = :client_id""",
+                    values={"client_id": client_id}
+                )
+                
+                return {
+                    "message": "Client linked successfully",
+                    "api_key": api_key,  # Shown ONCE only
+                    "link_status": "linked",
+                    "webhook_url": webhook_url
+                }
+            else:
+                await database.execute(
+                    "UPDATE clients SET link_status = 'error' WHERE id::text = :client_id",
+                    values={"client_id": client_id}
+                )
+                raise HTTPException(status_code=500, detail=f"Handshake failed: {response.text}")
+                
+    except httpx.RequestError as e:
+        await database.execute(
+            "UPDATE clients SET link_status = 'error' WHERE id::text = :client_id",
+            values={"client_id": client_id}
+        )
+        raise HTTPException(status_code=500, detail=f"Connection failed: {str(e)}")
+
+@app.get("/clients/{client_id}/health")
+async def ping_client_health(client_id: str, current_admin = Depends(get_current_super_admin)):
+    """Ping client ERP health endpoint"""
+    import httpx
+    
+    client_query = """
+        SELECT webhook_url, api_key_hash, link_status 
+        FROM clients WHERE id::text = :client_id
+    """
+    client = await database.fetch_one(query=client_query, values={"client_id": client_id})
+    
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    
+    if client["link_status"] != "linked":
+        raise HTTPException(status_code=400, detail="Client not linked")
+    
+    try:
+        async with httpx.AsyncClient() as http_client:
+            # Note: For health check we still need an API key, but we don't have the plaintext
+            # In a real system, you'd use a separate service account or the health endpoint would be public
+            response = await http_client.get(
+                f"{client['webhook_url']}/health",
+                timeout=10.0
+            )
+            
+            # Update last_ping_at
+            await database.execute(
+                "UPDATE clients SET last_ping_at = NOW() WHERE id::text = :client_id",
+                values={"client_id": client_id}
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                return {"status": "error", "code": response.status_code}
+                
+    except httpx.RequestError as e:
+        return {"status": "unreachable", "error": str(e)}
+
+@app.post("/clients/{client_id}/push-features")
+async def push_features_to_client(client_id: str, current_admin = Depends(get_current_super_admin)):
+    """Push all feature flags to client ERP"""
+    import httpx
+    
+    client_query = """
+        SELECT webhook_url, api_key_hash, tenant_id, link_status 
+        FROM clients WHERE id::text = :client_id
+    """
+    client = await database.fetch_one(query=client_query, values={"client_id": client_id})
+    
+    if not client or client["link_status"] != "linked":
+        raise HTTPException(status_code=400, detail="Client not linked")
+    
+    # Get all feature flags for this client
+    flags_query = """
+        SELECT cff.feature_code, cff.is_enabled
+        FROM client_feature_flags cff
+        WHERE cff.client_id::text = :client_id
+    """
+    flags = await database.fetch_all(query=flags_query, values={"client_id": client_id})
+    
+    # Convert to flat object
+    features = {f["feature_code"]: f["is_enabled"] for f in flags}
+    
+    # Note: In production, we'd need to securely retrieve the API key
+    # For this implementation, we'll use the webhook without key verification for push
+    try:
+        async with httpx.AsyncClient() as http_client:
+            response = await http_client.post(
+                f"{client['webhook_url']}/features",
+                json={"features": features},
+                timeout=30.0
+            )
+            
+            return {
+                "pushed": len(features),
+                "client_id": client_id,
+                "status": "success" if response.status_code == 200 else "error"
+            }
+            
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=500, detail=f"Push failed: {str(e)}")
+
+@app.post("/clients/{client_id}/push-branding")
+async def push_branding_to_client(client_id: str, branding: BrandingUpdate, current_admin = Depends(get_current_super_admin)):
+    """Update and push branding to client ERP"""
+    import httpx
+    
+    client_query = """
+        SELECT webhook_url, branding, link_status 
+        FROM clients WHERE id::text = :client_id
+    """
+    client = await database.fetch_one(query=client_query, values={"client_id": client_id})
+    
+    if not client or client["link_status"] != "linked":
+        raise HTTPException(status_code=400, detail="Client not linked")
+    
+    # Merge with existing branding
+    current_branding = dict(client["branding"]) if client["branding"] else {}
+    new_branding = {k: v for k, v in branding.model_dump().items() if v is not None}
+    current_branding.update(new_branding)
+    
+    # Update in database
+    await database.execute(
+        "UPDATE clients SET branding = :branding::jsonb WHERE id::text = :client_id",
+        values={"branding": json.dumps(current_branding), "client_id": client_id}
+    )
+    
+    # Push to client
+    try:
+        async with httpx.AsyncClient() as http_client:
+            response = await http_client.post(
+                f"{client['webhook_url']}/branding",
+                json=current_branding,
+                timeout=30.0
+            )
+            
+            return {
+                "pushed": True,
+                "branding": current_branding,
+                "status": "success" if response.status_code == 200 else "error"
+            }
+            
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=500, detail=f"Push failed: {str(e)}")
+
+@app.post("/clients/{client_id}/users")
+async def provision_user(client_id: str, user_data: UserProvision, current_admin = Depends(get_current_super_admin)):
+    """Provision a new user in client ERP"""
+    import httpx
+    
+    client_query = """
+        SELECT webhook_url, tenant_id, link_status 
+        FROM clients WHERE id::text = :client_id
+    """
+    client = await database.fetch_one(query=client_query, values={"client_id": client_id})
+    
+    if not client or client["link_status"] != "linked":
+        raise HTTPException(status_code=400, detail="Client not linked")
+    
+    # Generate temp password
+    temp_password = generate_temp_password()
+    temp_password_hash = pwd_context.hash(temp_password)
+    
+    # Generate user ID
+    user_id = str(uuid_module.uuid4())
+    
+    # Push to client ERP
+    try:
+        async with httpx.AsyncClient() as http_client:
+            response = await http_client.post(
+                f"{client['webhook_url']}/provision-user",
+                json={
+                    "user_id": user_id,
+                    "full_name": user_data.full_name,
+                    "email": user_data.email,
+                    "role": user_data.role,
+                    "temp_password_hash": temp_password_hash,
+                    "send_welcome_email": user_data.send_welcome_email
+                },
+                timeout=30.0
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                
+                # Record in provisioned_users
+                insert_query = """
+                    INSERT INTO provisioned_users (
+                        client_id, user_id_in_erp, full_name, email, role,
+                        provisioned_by, push_status, last_pushed_at
+                    ) VALUES (
+                        :client_id::uuid, :user_id::uuid, :full_name, :email, :role,
+                        :provisioned_by::uuid, 'success', NOW()
+                    )
+                    ON CONFLICT (client_id, email) DO UPDATE SET
+                        role = :role,
+                        push_status = 'success',
+                        last_pushed_at = NOW()
+                    RETURNING id::text
+                """
+                await database.execute(query=insert_query, values={
+                    "client_id": client_id,
+                    "user_id": user_id,
+                    "full_name": user_data.full_name,
+                    "email": user_data.email,
+                    "role": user_data.role,
+                    "provisioned_by": current_admin["id"]
+                })
+                
+                return {
+                    "user_id": user_id,
+                    "temp_password": temp_password,  # Shown ONCE only
+                    "status": result.get("status", "created")
+                }
+            else:
+                raise HTTPException(status_code=500, detail=f"Provisioning failed: {response.text}")
+                
+    except httpx.RequestError as e:
+        # Record failed attempt
+        await database.execute(
+            """INSERT INTO provisioned_users (client_id, user_id_in_erp, full_name, email, role, 
+               provisioned_by, push_status, push_error)
+               VALUES (:client_id::uuid, :user_id::uuid, :full_name, :email, :role,
+               :provisioned_by::uuid, 'failed', :error)
+               ON CONFLICT (client_id, email) DO UPDATE SET push_status = 'failed', push_error = :error""",
+            values={
+                "client_id": client_id,
+                "user_id": user_id,
+                "full_name": user_data.full_name,
+                "email": user_data.email,
+                "role": user_data.role,
+                "provisioned_by": current_admin["id"],
+                "error": str(e)
+            }
+        )
+        raise HTTPException(status_code=500, detail=f"Connection failed: {str(e)}")
+
+@app.patch("/clients/{client_id}/users/{user_id}")
+async def update_provisioned_user(client_id: str, user_id: str, user_update: UserUpdate, current_admin = Depends(get_current_super_admin)):
+    """Update a provisioned user in client ERP"""
+    import httpx
+    
+    client_query = "SELECT webhook_url, link_status FROM clients WHERE id::text = :client_id"
+    client = await database.fetch_one(query=client_query, values={"client_id": client_id})
+    
+    if not client or client["link_status"] != "linked":
+        raise HTTPException(status_code=400, detail="Client not linked")
+    
+    update_data = {k: v for k, v in user_update.model_dump().items() if v is not None}
+    update_data["user_id"] = user_id
+    
+    try:
+        async with httpx.AsyncClient() as http_client:
+            response = await http_client.patch(
+                f"{client['webhook_url']}/update-user",
+                json=update_data,
+                timeout=30.0
+            )
+            
+            if response.status_code == 200:
+                # Update local record
+                if "role" in update_data:
+                    await database.execute(
+                        "UPDATE provisioned_users SET role = :role WHERE user_id_in_erp::text = :user_id",
+                        values={"role": update_data["role"], "user_id": user_id}
+                    )
+                if "is_active" in update_data:
+                    await database.execute(
+                        "UPDATE provisioned_users SET is_active = :is_active WHERE user_id_in_erp::text = :user_id",
+                        values={"is_active": update_data["is_active"], "user_id": user_id}
+                    )
+                
+                return {"updated": True}
+            else:
+                raise HTTPException(status_code=500, detail=f"Update failed: {response.text}")
+                
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=500, detail=f"Connection failed: {str(e)}")
+
+@app.delete("/clients/{client_id}/users/{user_id}")
+async def delete_provisioned_user(client_id: str, user_id: str, current_admin = Depends(get_current_super_admin)):
+    """Deactivate a user in client ERP"""
+    import httpx
+    
+    client_query = "SELECT webhook_url, link_status FROM clients WHERE id::text = :client_id"
+    client = await database.fetch_one(query=client_query, values={"client_id": client_id})
+    
+    if not client or client["link_status"] != "linked":
+        raise HTTPException(status_code=400, detail="Client not linked")
+    
+    try:
+        async with httpx.AsyncClient() as http_client:
+            response = await http_client.request(
+                "DELETE",
+                f"{client['webhook_url']}/delete-user",
+                json={"user_id": user_id},
+                timeout=30.0
+            )
+            
+            if response.status_code == 200:
+                # Update local record
+                await database.execute(
+                    "UPDATE provisioned_users SET is_active = FALSE WHERE user_id_in_erp::text = :user_id",
+                    values={"user_id": user_id}
+                )
+                
+                return {"deactivated": True}
+            else:
+                raise HTTPException(status_code=500, detail=f"Delete failed: {response.text}")
+                
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=500, detail=f"Connection failed: {str(e)}")
+
+@app.get("/clients/{client_id}/users")
+async def get_provisioned_users(client_id: str, current_admin = Depends(get_current_super_admin)):
+    """Get all provisioned users for a client"""
+    query = """
+        SELECT 
+            id::text,
+            user_id_in_erp::text as user_id,
+            full_name,
+            email,
+            role,
+            is_active,
+            provisioned_at::text,
+            push_status,
+            last_pushed_at::text
+        FROM provisioned_users
+        WHERE client_id::text = :client_id
+        ORDER BY provisioned_at DESC
+    """
+    users = await database.fetch_all(query=query, values={"client_id": client_id})
+    return [dict(u) for u in users]
+
+@app.post("/clients/{client_id}/launch")
+async def launch_client(client_id: str, current_admin = Depends(get_current_super_admin)):
+    """Execute full launch sequence for a client"""
+    import httpx
+    
+    # 1. Get client info
+    client_query = """
+        SELECT id::text, tenant_id, business_name, webhook_url, link_status, branding
+        FROM clients WHERE id::text = :client_id
+    """
+    client = await database.fetch_one(query=client_query, values={"client_id": client_id})
+    
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    
+    if client["link_status"] != "linked":
+        raise HTTPException(status_code=400, detail="Client not linked. Complete handshake first.")
+    
+    results = {"steps": []}
+    
+    async with httpx.AsyncClient() as http_client:
+        # 2. Push features
+        try:
+            flags_query = """
+                SELECT feature_code, is_enabled
+                FROM client_feature_flags WHERE client_id::text = :client_id
+            """
+            flags = await database.fetch_all(query=flags_query, values={"client_id": client_id})
+            features = {f["feature_code"]: f["is_enabled"] for f in flags}
+            
+            response = await http_client.post(
+                f"{client['webhook_url']}/features",
+                json={"features": features},
+                timeout=30.0
+            )
+            results["steps"].append({"name": "push_features", "status": "success", "count": len(features)})
+        except Exception as e:
+            results["steps"].append({"name": "push_features", "status": "error", "error": str(e)})
+        
+        # 3. Push branding
+        try:
+            branding = dict(client["branding"]) if client["branding"] else {}
+            response = await http_client.post(
+                f"{client['webhook_url']}/branding",
+                json=branding,
+                timeout=30.0
+            )
+            results["steps"].append({"name": "push_branding", "status": "success"})
+        except Exception as e:
+            results["steps"].append({"name": "push_branding", "status": "error", "error": str(e)})
+        
+        # 4. Push pending users
+        try:
+            pending_users_query = """
+                SELECT user_id_in_erp::text as user_id, full_name, email, role
+                FROM provisioned_users
+                WHERE client_id::text = :client_id AND push_status = 'pending'
+            """
+            pending_users = await database.fetch_all(query=pending_users_query, values={"client_id": client_id})
+            
+            users_pushed = 0
+            for user in pending_users:
+                try:
+                    response = await http_client.post(
+                        f"{client['webhook_url']}/provision-user",
+                        json={
+                            "user_id": user["user_id"],
+                            "full_name": user["full_name"],
+                            "email": user["email"],
+                            "role": user["role"],
+                            "temp_password_hash": pwd_context.hash(generate_temp_password())
+                        },
+                        timeout=30.0
+                    )
+                    if response.status_code == 200:
+                        await database.execute(
+                            "UPDATE provisioned_users SET push_status = 'success', last_pushed_at = NOW() WHERE user_id_in_erp::text = :user_id",
+                            values={"user_id": user["user_id"]}
+                        )
+                        users_pushed += 1
+                except:
+                    pass
+            
+            results["steps"].append({"name": "provision_users", "status": "success", "count": users_pushed})
+        except Exception as e:
+            results["steps"].append({"name": "provision_users", "status": "error", "error": str(e)})
+        
+        # 5. Push active announcements
+        try:
+            ann_query = """
+                SELECT a.id::text, a.title, a.body, a.announcement_type as type, 
+                       a.show_from::text, a.show_until::text
+                FROM announcements a
+                LEFT JOIN announcement_targets at ON a.id = at.announcement_id
+                WHERE (a.target_all = TRUE OR at.client_id::text = :client_id)
+                AND (a.show_until IS NULL OR a.show_until > NOW())
+            """
+            announcements = await database.fetch_all(query=ann_query, values={"client_id": client_id})
+            
+            for ann in announcements:
+                try:
+                    await http_client.post(
+                        f"{client['webhook_url']}/announcement",
+                        json=dict(ann),
+                        timeout=10.0
+                    )
+                except:
+                    pass
+            
+            results["steps"].append({"name": "sync_announcements", "status": "success", "count": len(announcements)})
+        except Exception as e:
+            results["steps"].append({"name": "sync_announcements", "status": "error", "error": str(e)})
+        
+        # 6. Health check
+        try:
+            response = await http_client.get(f"{client['webhook_url']}/health", timeout=10.0)
+            await database.execute(
+                "UPDATE clients SET last_ping_at = NOW() WHERE id::text = :client_id",
+                values={"client_id": client_id}
+            )
+            results["steps"].append({"name": "health_check", "status": "success"})
+        except Exception as e:
+            results["steps"].append({"name": "health_check", "status": "error", "error": str(e)})
+    
+    results["launch_url"] = f"https://aqua-admin-dashboard.preview.emergentagent.com"
+    results["status"] = "launched"
+    
+    return results
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
