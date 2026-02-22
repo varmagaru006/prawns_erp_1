@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useFeatureFlags } from '../context/FeatureFlagContext';
+import { useBranding } from '../context/BrandingContext';
 import { moduleConfig, isModuleAccessible, canAccessDashboard } from '../config/moduleConfig';
 import { Button } from './ui/button';
 import AnnouncementBanner from './AnnouncementBanner';
