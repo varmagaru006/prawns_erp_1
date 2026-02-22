@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { clientAPI } from '../api/auth';
-import { Users, Search, ExternalLink, CheckCircle, XCircle, Plus } from 'lucide-react';
+import { Users, Search, ExternalLink, CheckCircle, XCircle, Plus, Edit2, Power, PowerOff } from 'lucide-react';
 import CreateClientModal from '../components/CreateClientModal';
+import EditClientModal from '../components/EditClientModal';
 
 export default function Dashboard() {
   const [clients, setClients] = useState([]);
@@ -10,6 +11,8 @@ export default function Dashboard() {
   const [searchTerm, setSearchTerm] = useState('');
   const [error, setError] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [selectedClient, setSelectedClient] = useState(null);
 
   useEffect(() => {
     loadClients();
@@ -23,6 +26,24 @@ export default function Dashboard() {
       setError('Failed to load clients');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleEdit = (client) => {
+    setSelectedClient(client);
+    setShowEditModal(true);
+  };
+
+  const handleToggleActive = async (client) => {
+    try {
+      if (client.is_active) {
+        await clientAPI.deleteClient(client.id);
+      } else {
+        await clientAPI.activateClient(client.id);
+      }
+      loadClients();
+    } catch (err) {
+      setError('Failed to update client status');
     }
   };
 
@@ -186,6 +207,14 @@ export default function Dashboard() {
         isOpen={showCreateModal}
         onClose={() => setShowCreateModal(false)}
         onSuccess={loadClients}
+      />
+
+      {/* Edit Client Modal */}
+      <EditClientModal
+        isOpen={showEditModal}
+        onClose={() => setShowEditModal(false)}
+        onSuccess={loadClients}
+        client={selectedClient}
       />
     </div>
   );
