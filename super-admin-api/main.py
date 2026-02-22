@@ -833,6 +833,150 @@ async def delete_announcement(announcement_id: str, current_admin = Depends(get_
     
     return {"message": "Announcement deleted successfully", "announcement": dict(deleted)}
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Impersonation Management
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ImpersonationRequest(BaseModel):
+    reason: Optional[str] = None
+    duration_mins: int = 60  # Default 1 hour
+
+@app.post("/clients/{client_id}/impersonate")
+async def start_impersonation(
+    client_id: str,
+    request: ImpersonationRequest,
+    current_admin = Depends(get_current_super_admin)
+):
+    """Generate an impersonation token for a client's admin"""
+    # Get client info
+    client_query = """
+        SELECT c.id, c.tenant_id, c.business_name, c.client_admin_email, c.is_active
+        FROM clients c
+        WHERE c.id::text = :client_id
+    """
+    client = await database.fetch_one(query=client_query, values={"client_id": client_id})
+    
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    
+    if not client["is_active"]:
+        raise HTTPException(status_code=400, detail="Cannot impersonate suspended client")
+    
+    # Create impersonation session record
+    session_query = """
+        INSERT INTO impersonation_sessions (
+            super_admin_id, client_id, client_user_id, duration_mins, reason
+        ) VALUES (
+            :super_admin_id::uuid, :client_id::uuid, :client_user_id, :duration_mins, :reason
+        )
+        RETURNING id::text, started_at::text
+    """
+    session = await database.fetch_one(
+        query=session_query,
+        values={
+            "super_admin_id": current_admin["id"],
+            "client_id": client_id,
+            "client_user_id": client["client_admin_email"],
+            "duration_mins": request.duration_mins,
+            "reason": request.reason
+        }
+    )
+    
+    # Generate impersonation token with special claims
+    expires = datetime.utcnow() + timedelta(minutes=request.duration_mins)
+    impersonation_payload = {
+        "sub": client["client_admin_email"],
+        "type": "impersonation",
+        "tenant_id": client["tenant_id"],
+        "client_id": client_id,
+        "session_id": session["id"],
+        "impersonator": current_admin["email"],
+        "impersonator_name": current_admin["name"],
+        "exp": expires
+    }
+    
+    impersonation_token = jwt.encode(impersonation_payload, SECRET_KEY, algorithm=ALGORITHM)
+    
+    # Store in MongoDB for client ERP to validate
+    await mongo_db.impersonation_tokens.update_one(
+        {"session_id": session["id"]},
+        {
+            "$set": {
+                "session_id": session["id"],
+                "token": impersonation_token,
+                "tenant_id": client["tenant_id"],
+                "client_admin_email": client["client_admin_email"],
+                "impersonator": current_admin["email"],
+                "impersonator_name": current_admin["name"],
+                "expires_at": expires.isoformat(),
+                "created_at": datetime.utcnow().isoformat()
+            }
+        },
+        upsert=True
+    )
+    
+    return {
+        "message": "Impersonation session started",
+        "session_id": session["id"],
+        "token": impersonation_token,
+        "expires_at": expires.isoformat(),
+        "client": {
+            "id": str(client["id"]),
+            "tenant_id": client["tenant_id"],
+            "business_name": client["business_name"],
+            "admin_email": client["client_admin_email"]
+        }
+    }
+
+@app.post("/impersonation/{session_id}/end")
+async def end_impersonation(
+    session_id: str,
+    current_admin = Depends(get_current_super_admin)
+):
+    """End an active impersonation session"""
+    # Update session record
+    update_query = """
+        UPDATE impersonation_sessions
+        SET ended_at = NOW()
+        WHERE id::text = :session_id AND super_admin_id::text = :admin_id
+        RETURNING id::text, started_at::text, ended_at::text
+    """
+    session = await database.fetch_one(
+        query=update_query,
+        values={"session_id": session_id, "admin_id": current_admin["id"]}
+    )
+    
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found or unauthorized")
+    
+    # Remove from MongoDB
+    await mongo_db.impersonation_tokens.delete_one({"session_id": session_id})
+    
+    return {"message": "Impersonation session ended", "session": dict(session)}
+
+@app.get("/impersonation/active")
+async def get_active_impersonations(current_admin = Depends(get_current_super_admin)):
+    """Get all active impersonation sessions for the current admin"""
+    query = """
+        SELECT 
+            i.id::text,
+            i.client_id::text,
+            c.business_name,
+            c.tenant_id,
+            i.client_user_id,
+            i.started_at::text,
+            i.duration_mins,
+            i.reason
+        FROM impersonation_sessions i
+        JOIN clients c ON i.client_id = c.id
+        WHERE i.super_admin_id::text = :admin_id
+        AND i.ended_at IS NULL
+        AND i.started_at + (i.duration_mins || ' minutes')::interval > NOW()
+        ORDER BY i.started_at DESC
+    """
+    sessions = await database.fetch_all(query=query, values={"admin_id": current_admin["id"]})
+    return [dict(s) for s in sessions]
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
