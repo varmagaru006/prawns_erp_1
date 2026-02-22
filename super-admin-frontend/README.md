@@ -1,16 +1,79 @@
-# React + Vite
+# Super Admin Portal Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+## Overview
+A modern React application for managing multi-tenant SaaS clients, subscriptions, and feature flags.
 
-Currently, two official plugins are available:
+**Running on:** `http://localhost:3001`  
+**API Backend:** `http://localhost:8002`
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+---
 
-## React Compiler
+## Tech Stack
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- **React 18** - UI framework
+- **Vite** - Build tool & dev server
+- **React Router** - Client-side routing
+- **Tailwind CSS** - Styling
+- **Axios** - HTTP client
+- **Lucide React** - Icon library
 
-## Expanding the ESLint configuration
+---
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## Pages
+
+### 1. Login (`/login`)
+- Super admin authentication
+- Email/password form
+- JWT token management
+- Auto-redirect to dashboard
+
+**Credentials:**
+- Email: `superadmin@prawnrp.com`
+- Password: `admin123`
+
+### 2. Dashboard (`/dashboard`)
+- List all clients
+- Search/filter clients
+- View client stats
+- Quick access to feature management
+
+### 3. Client Detail (`/clients/:id`)
+- Client information card
+- Feature flag management
+- Real-time toggle switches
+- Grouped by module
+
+---
+
+## API Integration
+
+All API calls go through `/src/api/auth.js`:
+
+```javascript
+// Login
+authAPI.login(email, password)
+
+// Get clients  
+clientAPI.getAll()
+
+// Toggle feature
+clientAPI.toggleFeature(clientId, data)
+```
+
+---
+
+## Development
+
+```bash
+cd /app/super-admin-frontend
+yarn dev
+```
+
+---
+
+## Access
+
+- **Local:** http://localhost:3001
+- **Credentials:** superadmin@prawnrp.com / admin123
+
+**Status:** ✅ COMPLETE AND RUNNING
