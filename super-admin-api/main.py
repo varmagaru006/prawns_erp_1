@@ -232,7 +232,7 @@ async def create_client(client_data: ClientCreate, current_admin = Depends(get_c
             is_active, onboarded_at
         ) VALUES (
             :tenant_id, :business_name, :contact_person, :contact_email,
-            :plan_id::uuid, :subscription_status, :trial_ends_at,
+            :plan_id_param::uuid, :subscription_status, :trial_ends_at,
             :max_users, :max_lots_per_month, :storage_limit_gb,
             true, NOW()
         )
@@ -246,7 +246,7 @@ async def create_client(client_data: ClientCreate, current_admin = Depends(get_c
             "business_name": client_data.business_name,
             "contact_person": client_data.contact_person,
             "contact_email": client_data.contact_email,
-            "plan_id": client_data.plan_id,
+            "plan_id_param": client_data.plan_id,
             "subscription_status": client_data.subscription_status,
             "trial_ends_at": trial_ends_at,
             "max_users": client_data.max_users,
