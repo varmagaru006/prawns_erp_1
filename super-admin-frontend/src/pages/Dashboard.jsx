@@ -207,13 +207,33 @@ export default function Dashboard() {
                     )}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                    <Link
-                      to={`/clients/${client.id}`}
-                      className="inline-flex items-center text-primary-600 hover:text-primary-900"
-                    >
-                      Manage Features
-                      <ExternalLink className="ml-1 h-4 w-4" />
-                    </Link>
+                    <div className="flex items-center justify-end space-x-2">
+                      <button
+                        onClick={() => handleImpersonate(client)}
+                        disabled={impersonating === client.id || !client.is_active}
+                        className={`inline-flex items-center px-2 py-1 text-xs font-medium rounded ${
+                          client.is_active
+                            ? 'text-purple-600 hover:bg-purple-50'
+                            : 'text-gray-400 cursor-not-allowed'
+                        }`}
+                        title={client.is_active ? 'Login as this client' : 'Cannot impersonate suspended client'}
+                        data-testid={`impersonate-${client.id}`}
+                      >
+                        {impersonating === client.id ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <UserCheck className="h-4 w-4" />
+                        )}
+                        <span className="ml-1">Impersonate</span>
+                      </button>
+                      <Link
+                        to={`/clients/${client.id}`}
+                        className="inline-flex items-center px-2 py-1 text-xs font-medium text-primary-600 hover:bg-primary-50 rounded"
+                      >
+                        <ExternalLink className="h-4 w-4" />
+                        <span className="ml-1">Manage</span>
+                      </Link>
+                    </div>
                   </td>
                 </tr>
               ))
