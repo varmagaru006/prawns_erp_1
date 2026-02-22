@@ -2128,6 +2128,47 @@ async def get_active_market_rates(current_user: User = Depends(get_current_user)
     }, {"_id": 0}).to_list(1000)
     return rates
 
+@api_router.put("/market-rates/{rate_id}", response_model=MarketRate)
+async def update_market_rate(
+    rate_id: str,
+    rate_data: MarketRateCreate,
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.role not in ['admin', 'owner']:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    existing = await db.market_rates.find_one({"id": rate_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Market rate not found")
+    
+    update_data = rate_data.model_dump()
+    update_data['effective_from'] = update_data['effective_from'].isoformat()
+    if update_data.get('effective_to'):
+        update_data['effective_to'] = update_data['effective_to'].isoformat()
+    
+    await db.market_rates.update_one(
+        {"id": rate_id},
+        {"$set": update_data}
+    )
+    
+    updated = await db.market_rates.find_one({"id": rate_id}, {"_id": 0})
+    return updated
+
+@api_router.delete("/market-rates/{rate_id}")
+async def delete_market_rate(
+    rate_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.role not in ['admin', 'owner']:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    existing = await db.market_rates.find_one({"id": rate_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Market rate not found")
+    
+    await db.market_rates.delete_one({"id": rate_id})
+    return {"message": "Market rate deleted successfully"}
+
 # Lot Stage Wastage
 @api_router.post("/lot-stage-wastage", response_model=LotStageWastage)
 async def create_lot_stage_wastage(
