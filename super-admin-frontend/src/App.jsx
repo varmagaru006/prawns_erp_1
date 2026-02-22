@@ -11,7 +11,7 @@ import './index.css';
 function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
+      <BrowserRouter basename="/super-admin">
         <Routes>
           {/* Public Routes */}
           <Route path="/login" element={<Login />} />
