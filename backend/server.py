@@ -2733,11 +2733,12 @@ async def super_admin_login(credentials: dict):
         return response.json()
 
 @super_admin_router.get("/auth/me")
-async def super_admin_me(authorization: str = None):
+async def super_admin_me(request: Request):
     """Proxy super admin me endpoint"""
     headers = {}
-    if authorization:
-        headers["Authorization"] = authorization
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
     async with httpx.AsyncClient() as client:
         response = await client.get(
             "http://localhost:8002/auth/me",
@@ -2747,11 +2748,12 @@ async def super_admin_me(authorization: str = None):
         return response.json()
 
 @super_admin_router.get("/clients")
-async def super_admin_get_clients(authorization: str = None):
+async def super_admin_get_clients(request: Request):
     """Proxy get clients"""
     headers = {}
-    if authorization:
-        headers["Authorization"] = authorization
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
     async with httpx.AsyncClient() as client:
         response = await client.get(
             "http://localhost:8002/clients",
@@ -2761,11 +2763,12 @@ async def super_admin_get_clients(authorization: str = None):
         return response.json()
 
 @super_admin_router.get("/clients/{client_id}")
-async def super_admin_get_client(client_id: str, authorization: str = None):
+async def super_admin_get_client(client_id: str, request: Request):
     """Proxy get client detail"""
     headers = {}
-    if authorization:
-        headers["Authorization"] = authorization
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
     async with httpx.AsyncClient() as client:
         response = await client.get(
             f"http://localhost:8002/clients/{client_id}",
@@ -2775,11 +2778,12 @@ async def super_admin_get_client(client_id: str, authorization: str = None):
         return response.json()
 
 @super_admin_router.get("/clients/{client_id}/features")
-async def super_admin_get_features(client_id: str, authorization: str = None):
+async def super_admin_get_features(client_id: str, request: Request):
     """Proxy get client features"""
     headers = {}
-    if authorization:
-        headers["Authorization"] = authorization
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
     async with httpx.AsyncClient() as client:
         response = await client.get(
             f"http://localhost:8002/clients/{client_id}/features",
@@ -2789,11 +2793,12 @@ async def super_admin_get_features(client_id: str, authorization: str = None):
         return response.json()
 
 @super_admin_router.post("/clients/{client_id}/features/toggle")
-async def super_admin_toggle_feature(client_id: str, data: dict, authorization: str = None):
+async def super_admin_toggle_feature(client_id: str, data: dict, request: Request):
     """Proxy toggle feature"""
     headers = {}
-    if authorization:
-        headers["Authorization"] = authorization
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
     async with httpx.AsyncClient() as client:
         response = await client.post(
             f"http://localhost:8002/clients/{client_id}/features/toggle",
