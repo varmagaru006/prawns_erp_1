@@ -65,6 +65,8 @@ export default function ClientDetail() {
   };
 
   const handleBulkToggle = async (featureCodes, isEnabled, label) => {
+    if (featureCodes.length === 0) return;
+    
     setBulkLoading(true);
     try {
       await clientAPI.bulkToggleFeatures(id, {
@@ -72,16 +74,18 @@ export default function ClientDetail() {
         is_enabled: isEnabled
       });
 
-      setFeatures(features.map(f => 
+      // Update local state immediately - don't reload to avoid race condition
+      setFeatures(prev => prev.map(f => 
         featureCodes.includes(f.feature_code)
           ? { ...f, is_enabled: isEnabled }
           : f
       ));
 
       showNotification(`${label} - ${featureCodes.length} features ${isEnabled ? 'enabled' : 'disabled'}`, 'success');
-      loadClientData(); // Reload to get fresh data
     } catch (err) {
       showNotification(`Bulk update failed: ${err.message}`, 'error');
+      // Only reload on error to restore correct state
+      loadClientData();
     } finally {
       setBulkLoading(false);
     }
