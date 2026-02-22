@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 import redis
 import json
+import uuid as uuid_module
 
 load_dotenv()
 
