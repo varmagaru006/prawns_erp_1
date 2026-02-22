@@ -6,6 +6,7 @@ import Layout from './components/Layout';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import ClientDetail from './pages/ClientDetail';
+import Announcements from './pages/Announcements';
 import './index.css';
 
 function App() {
@@ -28,6 +29,7 @@ function App() {
             <Route index element={<Navigate to="/dashboard" replace />} />
             <Route path="dashboard" element={<Dashboard />} />
             <Route path="clients/:id" element={<ClientDetail />} />
+            <Route path="announcements" element={<Announcements />} />
           </Route>
 
           {/* Catch-all redirect */}
