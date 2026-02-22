@@ -19,6 +19,7 @@ import MarketRates from './pages/MarketRates';
 import LotWaterfall from './pages/LotWaterfall';
 import Layout from './components/Layout';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { FeatureFlagProvider } from './context/FeatureFlagContext';
 import { Toaster } from './components/ui/sonner';
 import { canAccessDashboard } from './config/moduleConfig';
 import './App.css';
