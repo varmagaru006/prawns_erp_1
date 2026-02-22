@@ -852,13 +852,62 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         token = credentials.credentials
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
+        token_type: str = payload.get("type", "regular")
+        
         if email is None:
             raise HTTPException(status_code=401, detail="Invalid authentication credentials")
+        
+        # Handle impersonation tokens
+        if token_type == "impersonation":
+            # Validate impersonation session
+            session_id = payload.get("session_id")
+            tenant_id = payload.get("tenant_id")
+            impersonator = payload.get("impersonator")
+            impersonator_name = payload.get("impersonator_name")
+            
+            # Check if session is still valid in MongoDB
+            session = await db.impersonation_tokens.find_one({
+                "session_id": session_id,
+                "tenant_id": tenant_id
+            })
+            
+            if not session:
+                raise HTTPException(status_code=401, detail="Impersonation session expired or invalid")
+            
+            # Find the user being impersonated
+            user_doc = await db.users.find_one({"email": email, "tenant_id": tenant_id}, {"_id": 0})
+            
+            if user_doc is None:
+                # If user doesn't exist, create a temporary admin user object
+                user_doc = {
+                    "email": email,
+                    "name": f"Admin ({payload.get('impersonator_name', 'Super Admin')})",
+                    "role": "admin",
+                    "tenant_id": tenant_id,
+                    "is_impersonated": True,
+                    "impersonator": impersonator,
+                    "impersonator_name": impersonator_name,
+                    "session_id": session_id,
+                    "created_at": datetime.utcnow()
+                }
+            else:
+                # Mark as impersonated
+                user_doc["is_impersonated"] = True
+                user_doc["impersonator"] = impersonator
+                user_doc["impersonator_name"] = impersonator_name
+                user_doc["session_id"] = session_id
+            
+            if isinstance(user_doc.get('created_at'), str):
+                user_doc['created_at'] = datetime.fromisoformat(user_doc['created_at'])
+            
+            return User(**user_doc)
+            
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token has expired")
     except jwt.JWTError:
         raise HTTPException(status_code=401, detail="Invalid authentication credentials")
     
+    # Regular token flow
     user_doc = await db.users.find_one({"email": email}, {"_id": 0})
     if user_doc is None:
         raise HTTPException(status_code=401, detail="User not found")
