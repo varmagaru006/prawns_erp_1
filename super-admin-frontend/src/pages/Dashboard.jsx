@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { clientAPI } from '../api/auth';
-import { Users, Search, ExternalLink, CheckCircle, XCircle, Plus, Edit2, Power, PowerOff } from 'lucide-react';
+import { clientAPI, impersonationAPI } from '../api/auth';
+import { Users, Search, ExternalLink, CheckCircle, XCircle, Plus, Edit2, Power, PowerOff, UserCheck, Loader2 } from 'lucide-react';
 import CreateClientModal from '../components/CreateClientModal';
 import EditClientModal from '../components/EditClientModal';
 
@@ -13,6 +13,8 @@ export default function Dashboard() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [selectedClient, setSelectedClient] = useState(null);
+  const [impersonating, setImpersonating] = useState(null);
+  const [notification, setNotification] = useState(null);
 
   useEffect(() => {
     loadClients();
@@ -44,6 +46,44 @@ export default function Dashboard() {
       loadClients();
     } catch (err) {
       setError('Failed to update client status');
+    }
+  };
+
+  const handleImpersonate = async (client) => {
+    if (!client.is_active) {
+      setNotification({ message: 'Cannot impersonate suspended client', type: 'error' });
+      setTimeout(() => setNotification(null), 3000);
+      return;
+    }
+    
+    setImpersonating(client.id);
+    try {
+      const result = await impersonationAPI.start(client.id, {
+        reason: 'Admin access via Super Admin Portal',
+        duration_mins: 60
+      });
+      
+      // Store the impersonation token and redirect to client ERP
+      const clientErpUrl = window.location.origin.replace('/super-admin', '');
+      const redirectUrl = `${clientErpUrl}?impersonation_token=${result.token}`;
+      
+      // Open in new tab
+      window.open(redirectUrl, '_blank');
+      
+      setNotification({ 
+        message: `Impersonating ${client.business_name} - opened in new tab`, 
+        type: 'success' 
+      });
+      setTimeout(() => setNotification(null), 5000);
+      
+    } catch (err) {
+      setNotification({ 
+        message: err.response?.data?.detail || 'Failed to start impersonation', 
+        type: 'error' 
+      });
+      setTimeout(() => setNotification(null), 3000);
+    } finally {
+      setImpersonating(null);
     }
   };
 
