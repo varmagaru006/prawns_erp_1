@@ -2901,6 +2901,53 @@ async def super_admin_bulk_features(client_id: str, data: dict, request: Request
         )
         return response.json()
 
+@super_admin_router.get("/announcements")
+async def super_admin_get_announcements(request: Request):
+    """Proxy get announcements"""
+    headers = {}
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            "http://localhost:8002/announcements",
+            headers=headers,
+            timeout=10.0
+        )
+        return response.json()
+
+@super_admin_router.post("/announcements")
+async def super_admin_create_announcement(request: Request):
+    """Proxy create announcement"""
+    headers = {}
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+    data = await request.json()
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "http://localhost:8002/announcements",
+            json=data,
+            headers=headers,
+            timeout=10.0
+        )
+        return response.json()
+
+@super_admin_router.delete("/announcements/{announcement_id}")
+async def super_admin_delete_announcement(announcement_id: str, request: Request):
+    """Proxy delete announcement"""
+    headers = {}
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+    async with httpx.AsyncClient() as client:
+        response = await client.delete(
+            f"http://localhost:8002/announcements/{announcement_id}",
+            headers=headers,
+            timeout=10.0
+        )
+        return response.json()
+
 app.include_router(super_admin_router)
 
 # ══════════════════════════════════════════════════════════════════════════════
