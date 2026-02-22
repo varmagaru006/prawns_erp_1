@@ -1,13 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { clientAPI } from '../api/auth';
-import { Users, Search, ExternalLink, CheckCircle, XCircle } from 'lucide-react';
+import { Users, Search, ExternalLink, CheckCircle, XCircle, Plus } from 'lucide-react';
+import CreateClientModal from '../components/CreateClientModal';
 
 export default function Dashboard() {
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [error, setError] = useState('');
+  const [showCreateModal, setShowCreateModal] = useState(false);
 
   useEffect(() => {
     loadClients();
@@ -40,12 +42,21 @@ export default function Dashboard() {
   return (
     <div>
       {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900 flex items-center">
-          <Users className="h-8 w-8 mr-3 text-primary-600" />
-          Client Management
-        </h1>
-        <p className="mt-2 text-gray-600">Manage all client subscriptions and feature flags</p>
+      <div className="mb-8 flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900 flex items-center">
+            <Users className="h-8 w-8 mr-3 text-primary-600" />
+            Client Management
+          </h1>
+          <p className="mt-2 text-gray-600">Manage all client subscriptions and feature flags</p>
+        </div>
+        <button
+          onClick={() => setShowCreateModal(true)}
+          className="inline-flex items-center px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 font-medium"
+        >
+          <Plus className="h-5 w-5 mr-2" />
+          Create New Client
+        </button>
       </div>
 
       {/* Search */}
@@ -169,6 +180,13 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* Create Client Modal */}
+      <CreateClientModal
+        isOpen={showCreateModal}
+        onClose={() => setShowCreateModal(false)}
+        onSuccess={loadClients}
+      />
     </div>
   );
 }
