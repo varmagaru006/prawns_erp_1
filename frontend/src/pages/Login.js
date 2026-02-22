@@ -155,14 +155,20 @@ const Login = () => {
           {/* Right Side - Login Form */}
           <Card className="backdrop-blur-xl bg-white/95 shadow-2xl border-0 animate-scaleIn" data-testid="login-card">
             <CardHeader className="space-y-1 text-center">
-              <div className="mx-auto w-16 h-16 bg-gradient-to-br from-blue-600 to-purple-600 rounded-2xl flex items-center justify-center mb-4">
-                <Fish className="h-8 w-8 text-white" />
-              </div>
-              <CardTitle className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
+              {branding.logo_url ? (
+                <div className="mx-auto w-16 h-16 rounded-2xl flex items-center justify-center mb-4 overflow-hidden">
+                  <img src={branding.logo_url} alt={branding.company_name} className="h-16 object-contain" />
+                </div>
+              ) : (
+                <div className="mx-auto w-16 h-16 rounded-2xl flex items-center justify-center mb-4" style={{ backgroundColor: branding.primary_color || '#2563eb' }}>
+                  <Fish className="h-8 w-8 text-white" />
+                </div>
+              )}
+              <CardTitle className="text-3xl font-bold" style={{ color: branding.primary_color || '#2563eb' }}>
                 {isLogin ? 'Welcome Back' : 'Create Account'}
               </CardTitle>
               <CardDescription className="text-base">
-                {isLogin ? 'Sign in to access your dashboard' : 'Register to get started with Prawn ERP'}
+                {isLogin ? `Sign in to access ${branding.company_name || 'your dashboard'}` : `Register to get started with ${branding.company_name || 'Prawn ERP'}`}
               </CardDescription>
             </CardHeader>
             <CardContent>
