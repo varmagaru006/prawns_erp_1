@@ -867,18 +867,18 @@ async def start_impersonation(
         INSERT INTO impersonation_sessions (
             super_admin_id, client_id, client_user_id, duration_mins, reason
         ) VALUES (
-            :super_admin_id::uuid, :client_id::uuid, :client_user_id, :duration_mins, :reason
+            :admin_id::uuid, :cid::uuid, :user_id, :dur, :rsn
         )
         RETURNING id::text, started_at::text
     """
     session = await database.fetch_one(
         query=session_query,
         values={
-            "super_admin_id": current_admin["id"],
-            "client_id": client_id,
-            "client_user_id": client["client_admin_email"],
-            "duration_mins": request.duration_mins,
-            "reason": request.reason
+            "admin_id": current_admin["id"],
+            "cid": client_id,
+            "user_id": client["client_admin_email"],
+            "dur": request.duration_mins,
+            "rsn": request.reason
         }
     )
     
