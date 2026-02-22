@@ -15,30 +15,31 @@ Build a full-stack, production-ready Prawn/Aquaculture Export ERP web applicatio
 - Fixed bulk feature toggle not persisting correctly
 - Root cause: Updates went to MongoDB but reads from PostgreSQL
 - Solution: Updated `bulk-features` endpoint to write to both databases
-- Fixed BrowserRouter basename for proper SPA routing
-- Resolved CDN caching issue by copying build to main frontend's public folder
 
 #### Phase 6: Announcement System ✅
+- Super Admin can create/manage announcements (info/warning/critical types)
+- Target all clients or specific ones
+- Client ERP shows banners with dismiss functionality
+
+#### Phase 7: Impersonation Flow ✅
 - **Super Admin API** (`/app/super-admin-api/main.py`):
-  - `GET /announcements` - List all announcements
-  - `POST /announcements` - Create announcement
-  - `DELETE /announcements/{id}` - Delete announcement
-  - Syncs to MongoDB for client access
-
-- **Super Admin Frontend** (`/app/super-admin-frontend/src/pages/Announcements.jsx`):
-  - Announcements management page
-  - Create announcement modal with title, message, type (info/warning/critical)
-  - Target all clients or specific clients
-  - Schedule show_from and show_until dates
-
-- **Client ERP Backend** (`/app/backend/server.py`):
-  - `GET /api/announcements/active` - Fetch active announcements for tenant
-  - `POST /api/announcements/{id}/dismiss` - Dismiss announcement
-
-- **Client ERP Frontend** (`/app/frontend/src/components/AnnouncementBanner.js`):
-  - Banner component integrated into Layout
-  - Displays active announcements with dismiss functionality
-  - Color-coded by type (blue=info, yellow=warning, red=critical)
+  - `POST /clients/{id}/impersonate` - Generate impersonation token
+  - `POST /impersonation/{session_id}/end` - End session
+  - `GET /impersonation/active` - List active sessions
+  
+- **Super Admin Frontend**:
+  - "Impersonate" button on client list
+  - Opens client ERP in new tab with impersonation token
+  
+- **Client ERP Backend**:
+  - Modified auth to handle impersonation tokens
+  - User model includes impersonation fields
+  - `/api/auth/impersonation/validate` endpoint
+  
+- **Client ERP Frontend**:
+  - Purple banner showing "You are impersonating this account"
+  - "End Impersonation" button
+  - Auto-login via URL parameter `?impersonation_token=...`
 
 ## Test Credentials
 
@@ -52,14 +53,10 @@ Build a full-stack, production-ready Prawn/Aquaculture Export ERP web applicatio
 
 ## Prioritized Backlog
 
-### P0 (Critical)
-- None currently
-
 ### P1 (High Priority)
-- **Phase 7**: Impersonation Flow (super admin generates temp token to login as client admin)
+- Phases 8-10 of Amendment A2 (activity logs, usage snapshots, billing)
 
 ### P2 (Medium Priority)
-- Phases 8-10 of Amendment A2 (activity logs, usage snapshots)
 - Refactor monolithic `server.py` file
 
 ### P3 (Low Priority/Future)
@@ -68,12 +65,9 @@ Build a full-stack, production-ready Prawn/Aquaculture Export ERP web applicatio
 - Audit trail interface
 
 ## Key Files Reference
-- `/app/super-admin-frontend/src/pages/Announcements.jsx` - Announcement management UI
-- `/app/super-admin-frontend/src/pages/ClientDetail.jsx` - Feature flag management
-- `/app/super-admin-api/main.py` - Super Admin backend
-- `/app/backend/server.py` - Main ERP backend with proxy routes
-- `/app/frontend/src/components/AnnouncementBanner.js` - Client-side banner
-
-## Database Schema
-- **PostgreSQL** (`saas_control_db`): clients, subscription_plans, feature_registry, client_feature_flags, super_admins, announcements, announcement_targets
-- **MongoDB** (`test_database`): All collections have `tenant_id` field, plus `active_announcements`, `announcement_dismissals`
+- `/app/super-admin-frontend/src/pages/Dashboard.jsx` - Client list with Impersonate button
+- `/app/super-admin-frontend/src/pages/Announcements.jsx` - Announcement management
+- `/app/super-admin-api/main.py` - Super Admin backend (impersonation at line ~840)
+- `/app/backend/server.py` - Main ERP backend (auth at line ~850)
+- `/app/frontend/src/context/AuthContext.js` - Handles impersonation token login
+- `/app/frontend/src/components/Layout.js` - Impersonation banner
