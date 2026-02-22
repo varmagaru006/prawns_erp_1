@@ -157,6 +157,12 @@ class User(BaseModel):
     phone: Optional[str] = None
     is_active: bool = True
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    tenant_id: Optional[str] = None
+    # Impersonation fields
+    is_impersonated: bool = False
+    impersonator: Optional[str] = None
+    impersonator_name: Optional[str] = None
+    session_id: Optional[str] = None
 
 class UserCreate(BaseModel):
     email: EmailStr
