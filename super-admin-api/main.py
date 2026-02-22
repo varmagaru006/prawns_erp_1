@@ -342,7 +342,7 @@ async def get_subscription_plans(current_admin = Depends(get_current_super_admin
             plan_name,
             description,
             price_inr_monthly as price_monthly,
-            price_inr_yearly as price_yearly,
+            price_inr_annual as price_yearly,
             max_users,
             max_lots_per_month,
             storage_limit_gb,
