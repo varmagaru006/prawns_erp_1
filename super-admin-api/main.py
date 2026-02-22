@@ -394,25 +394,47 @@ async def activate_client(client_id: str, current_admin = Depends(get_current_su
 async def bulk_toggle_features(client_id: str, data: dict, current_admin = Depends(get_current_super_admin)):
     """Bulk enable/disable features for a client"""
     # Get client info
-    client_query = "SELECT tenant_id FROM clients WHERE id::text = :client_id"
+    client_query = "SELECT id, tenant_id FROM clients WHERE id::text = :client_id"
     client = await database.fetch_one(query=client_query, values={"client_id": client_id})
     
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
     
     tenant_id = client["tenant_id"]
+    client_uuid = client["id"]
     feature_codes = data.get("feature_codes", [])
     is_enabled = data.get("is_enabled", True)
     
-    # Get MongoDB connection
-    from motor.motor_asyncio import AsyncIOMotorClient
-    mongo_client = AsyncIOMotorClient(MONGO_URL)
-    db = mongo_client[MONGO_DB_NAME]
-    
     updated_count = 0
     for feature_code in feature_codes:
-        # Update or insert in MongoDB
-        await db.feature_flags.update_one(
+        # Upsert feature flag in PostgreSQL
+        upsert_query = """
+            INSERT INTO client_feature_flags (
+                client_id, feature_code, is_enabled, is_override,
+                enabled_by, enabled_at
+            ) VALUES (
+                :client_id, :feature_code, :is_enabled, false,
+                :enabled_by, NOW()
+            )
+            ON CONFLICT (client_id, feature_code)
+            DO UPDATE SET
+                is_enabled = :is_enabled,
+                enabled_by = :enabled_by,
+                enabled_at = NOW()
+        """
+        
+        await database.execute(
+            query=upsert_query,
+            values={
+                "client_id": client_uuid,
+                "feature_code": feature_code,
+                "is_enabled": is_enabled,
+                "enabled_by": current_admin["id"]
+            }
+        )
+        
+        # Also sync to MongoDB for client ERP
+        await mongo_db.feature_flags.update_one(
             {"tenant_id": tenant_id, "feature_code": feature_code},
             {
                 "$set": {
@@ -425,11 +447,13 @@ async def bulk_toggle_features(client_id: str, data: dict, current_admin = Depen
             upsert=True
         )
         
-        # Invalidate Redis cache
-        redis_client = redis.Redis(host='localhost', port=6379, db=0)
-        redis_client.delete(f"flags:{tenant_id}")
-        
         updated_count += 1
+    
+    # Invalidate Redis cache
+    try:
+        redis_client.delete(f"flags:{tenant_id}")
+    except:
+        pass  # Redis might not be running
     
     return {
         "message": f"Bulk update successful: {updated_count} features updated",
