@@ -229,12 +229,10 @@ async def create_client(client_data: ClientCreate, current_admin = Depends(get_c
         INSERT INTO clients (
             tenant_id, business_name, contact_person, contact_email,
             plan_id, subscription_status, trial_ends_at,
-            max_users, max_lots_per_month, storage_limit_gb,
             is_active, onboarded_at
         ) VALUES (
             :tenant_id, :business_name, :contact_person, :contact_email,
             :plan_id, :subscription_status, :trial_ends_at,
-            :max_users, :max_lots_per_month, :storage_limit_gb,
             true, NOW()
         )
         RETURNING id::text, tenant_id, business_name, contact_email, subscription_status, onboarded_at::text
@@ -249,10 +247,7 @@ async def create_client(client_data: ClientCreate, current_admin = Depends(get_c
             "contact_email": client_data.contact_email,
             "plan_id": UUID(client_data.plan_id),
             "subscription_status": client_data.subscription_status,
-            "trial_ends_at": trial_ends_at,
-            "max_users": client_data.max_users,
-            "max_lots_per_month": client_data.max_lots_per_month,
-            "storage_limit_gb": client_data.storage_limit_gb
+            "trial_ends_at": trial_ends_at
         }
     )
     
