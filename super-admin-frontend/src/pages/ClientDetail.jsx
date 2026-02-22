@@ -90,9 +90,15 @@ export default function ClientDetail() {
   const handleToggleModule = async (module) => {
     const moduleFeatures = features.filter(f => f.module === module);
     const allEnabled = moduleFeatures.every(f => f.is_enabled);
-    const featureCodes = moduleFeatures.map(f => f.feature_code);
     
-    await handleBulkToggle(featureCodes, !allEnabled, `${module} module`);
+    // Only get features that need to be changed
+    const featuresToChange = allEnabled 
+      ? moduleFeatures.filter(f => f.is_enabled).map(f => f.feature_code)  // Disable only enabled ones
+      : moduleFeatures.filter(f => !f.is_enabled).map(f => f.feature_code); // Enable only disabled ones
+    
+    if (featuresToChange.length === 0) return;
+    
+    await handleBulkToggle(featuresToChange, !allEnabled, `${module} module`);
   };
 
   // Group features by module
@@ -108,15 +114,30 @@ export default function ClientDetail() {
   const quickSetups = [
     {
       label: 'Enable All Features',
-      action: () => handleBulkToggle(features.map(f => f.feature_code), true, 'All features'),
+      action: () => {
+        const disabledFeatures = features.filter(f => !f.is_enabled).map(f => f.feature_code);
+        if (disabledFeatures.length > 0) {
+          handleBulkToggle(disabledFeatures, true, 'All features');
+        }
+      },
       color: 'green'
     },
     {
       label: 'Basic Features Only',
       action: () => {
-        const basicFeatures = ['procurement', 'preprocessing', 'production', 'qc'];
-        const codes = features.filter(f => basicFeatures.includes(f.module)).map(f => f.feature_code);
-        handleBulkToggle(codes, true, 'Basic features');
+        const basicModules = ['procurement', 'preprocessing', 'production', 'qc'];
+        const featuresToEnable = features.filter(f => basicModules.includes(f.module) && !f.is_enabled).map(f => f.feature_code);
+        const featuresToDisable = features.filter(f => !basicModules.includes(f.module) && f.is_enabled).map(f => f.feature_code);
+        
+        if (featuresToDisable.length > 0) {
+          handleBulkToggle(featuresToDisable, false, 'Non-basic features').then(() => {
+            if (featuresToEnable.length > 0) {
+              handleBulkToggle(featuresToEnable, true, 'Basic features');
+            }
+          });
+        } else if (featuresToEnable.length > 0) {
+          handleBulkToggle(featuresToEnable, true, 'Basic features');
+        }
       },
       color: 'blue'
     },
@@ -124,14 +145,21 @@ export default function ClientDetail() {
       label: 'Production Setup',
       action: () => {
         const productionModules = ['procurement', 'preprocessing', 'production', 'cold_storage'];
-        const codes = features.filter(f => productionModules.includes(f.module)).map(f => f.feature_code);
-        handleBulkToggle(codes, true, 'Production setup');
+        const featuresToEnable = features.filter(f => productionModules.includes(f.module) && !f.is_enabled).map(f => f.feature_code);
+        if (featuresToEnable.length > 0) {
+          handleBulkToggle(featuresToEnable, true, 'Production setup');
+        }
       },
       color: 'purple'
     },
     {
       label: 'Disable All',
-      action: () => handleBulkToggle(features.map(f => f.feature_code), false, 'All features'),
+      action: () => {
+        const enabledFeatures = features.filter(f => f.is_enabled).map(f => f.feature_code);
+        if (enabledFeatures.length > 0) {
+          handleBulkToggle(enabledFeatures, false, 'All features');
+        }
+      },
       color: 'red'
     }
   ];
