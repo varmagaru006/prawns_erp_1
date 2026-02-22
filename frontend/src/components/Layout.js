@@ -90,6 +90,29 @@ const Layout = () => {
 
   return (
     <div className="min-h-screen bg-slate-50">
+      {/* Impersonation Banner */}
+      {isImpersonating && (
+        <div className="bg-purple-600 text-white px-4 py-2 flex items-center justify-between">
+          <div className="flex items-center">
+            <span className="font-medium">
+              You are impersonating this account
+            </span>
+            {user?.impersonator_name && (
+              <span className="ml-2 text-purple-200">
+                (as {user.impersonator_name})
+              </span>
+            )}
+          </div>
+          <button
+            onClick={handleEndImpersonation}
+            className="px-3 py-1 bg-white text-purple-600 rounded text-sm font-medium hover:bg-purple-100"
+            data-testid="end-impersonation-btn"
+          >
+            End Impersonation
+          </button>
+        </div>
+      )}
+      
       {/* Announcement Banners */}
       <AnnouncementBanner token={user?.token} />
       
