@@ -3443,6 +3443,154 @@ async def super_admin_get_active_impersonations(request: Request):
         )
         return response.json()
 
+# A3 Proxy Routes - Client Linking, Branding & User Provisioning
+
+@super_admin_router.post("/clients/{client_id}/link")
+async def super_admin_link_client(client_id: str, request: Request):
+    """Proxy link client"""
+    headers = {"Content-Type": "application/json"}
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+    try:
+        data = await request.json()
+    except:
+        data = {}
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"http://localhost:8002/clients/{client_id}/link",
+            json=data,
+            headers=headers,
+            timeout=30.0
+        )
+        return response.json()
+
+@super_admin_router.get("/clients/{client_id}/health")
+async def super_admin_client_health(client_id: str, request: Request):
+    """Proxy client health check"""
+    headers = {}
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"http://localhost:8002/clients/{client_id}/health",
+            headers=headers,
+            timeout=15.0
+        )
+        return response.json()
+
+@super_admin_router.post("/clients/{client_id}/push-features")
+async def super_admin_push_features(client_id: str, request: Request):
+    """Proxy push features to client"""
+    headers = {}
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"http://localhost:8002/clients/{client_id}/push-features",
+            headers=headers,
+            timeout=30.0
+        )
+        return response.json()
+
+@super_admin_router.post("/clients/{client_id}/push-branding")
+async def super_admin_push_branding(client_id: str, request: Request):
+    """Proxy push branding to client"""
+    headers = {"Content-Type": "application/json"}
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+    data = await request.json()
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"http://localhost:8002/clients/{client_id}/push-branding",
+            json=data,
+            headers=headers,
+            timeout=30.0
+        )
+        return response.json()
+
+@super_admin_router.get("/clients/{client_id}/users")
+async def super_admin_get_users(client_id: str, request: Request):
+    """Proxy get provisioned users"""
+    headers = {}
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"http://localhost:8002/clients/{client_id}/users",
+            headers=headers,
+            timeout=15.0
+        )
+        return response.json()
+
+@super_admin_router.post("/clients/{client_id}/users")
+async def super_admin_provision_user(client_id: str, request: Request):
+    """Proxy provision user"""
+    headers = {"Content-Type": "application/json"}
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+    data = await request.json()
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"http://localhost:8002/clients/{client_id}/users",
+            json=data,
+            headers=headers,
+            timeout=30.0
+        )
+        return response.json()
+
+@super_admin_router.patch("/clients/{client_id}/users/{user_id}")
+async def super_admin_update_user(client_id: str, user_id: str, request: Request):
+    """Proxy update user"""
+    headers = {"Content-Type": "application/json"}
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+    data = await request.json()
+    async with httpx.AsyncClient() as client:
+        response = await client.patch(
+            f"http://localhost:8002/clients/{client_id}/users/{user_id}",
+            json=data,
+            headers=headers,
+            timeout=30.0
+        )
+        return response.json()
+
+@super_admin_router.delete("/clients/{client_id}/users/{user_id}")
+async def super_admin_delete_user(client_id: str, user_id: str, request: Request):
+    """Proxy delete user"""
+    headers = {}
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+    async with httpx.AsyncClient() as client:
+        response = await client.delete(
+            f"http://localhost:8002/clients/{client_id}/users/{user_id}",
+            headers=headers,
+            timeout=30.0
+        )
+        return response.json()
+
+@super_admin_router.post("/clients/{client_id}/launch")
+async def super_admin_launch_client(client_id: str, request: Request):
+    """Proxy launch client"""
+    headers = {}
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"http://localhost:8002/clients/{client_id}/launch",
+            headers=headers,
+            timeout=60.0
+        )
+        return response.json()
+
 app.include_router(super_admin_router)
 
 # ══════════════════════════════════════════════════════════════════════════════
