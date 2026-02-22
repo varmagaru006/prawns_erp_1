@@ -858,6 +858,9 @@ def generate_lot_number() -> str:
 
 def generate_batch_number() -> str:
     now = datetime.now()
+    date_str = now.strftime("%Y%m%d")
+    counter = now.strftime("%H%M%S")
+    return f"BATCH-{date_str}-{counter}"
 
 
 # ============================================================================
