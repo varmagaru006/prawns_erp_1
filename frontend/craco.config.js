@@ -100,16 +100,6 @@ webpackConfig.devServer = (devServerConfig) => {
     };
   }
 
-  // Add proxy for super-admin frontend
-  devServerConfig.proxy = [
-    {
-      context: ['/super-admin'],
-      target: 'http://localhost:3002',
-      changeOrigin: true,
-      ws: true,
-    }
-  ];
-
   return devServerConfig;
 };
 
