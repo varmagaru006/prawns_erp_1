@@ -1179,7 +1179,16 @@ async def login(credentials: UserLogin):
 
 @api_router.get("/auth/me", response_model=User)
 async def get_me(current_user: User = Depends(get_current_user)):
-    return current_user
+    # Add tenant info and feature flags to user response
+    tenant_id = tenant_context.get_tenant()
+    features = await feature_service.get_all_flags(tenant_id)
+    
+    user_dict = current_user.model_dump()
+    user_dict["tenant_id"] = tenant_id
+    user_dict["lot_number_prefix"] = tenant_context.lot_number_prefix
+    user_dict["features"] = features
+    
+    return user_dict
 
 # Agents endpoints
 @api_router.post("/agents", response_model=Agent)
