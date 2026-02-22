@@ -1240,12 +1240,57 @@ async def get_me(current_user: User = Depends(get_current_user)):
     tenant_id = tenant_context.get_tenant()
     features = await feature_service.get_all_flags(tenant_id)
     
-    return {
+    response = {
         **current_user.model_dump(),
         "tenant_id": tenant_id,
         "lot_number_prefix": tenant_context.lot_number_prefix,
         "features": features
     }
+    
+    # Add impersonation info if present
+    if current_user.is_impersonated:
+        response["is_impersonated"] = True
+        response["impersonator"] = current_user.impersonator
+        response["impersonator_name"] = current_user.impersonator_name
+        response["session_id"] = current_user.session_id
+    
+    return response
+
+@api_router.post("/auth/impersonation/validate")
+async def validate_impersonation(token: str):
+    """Validate an impersonation token and return session info"""
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        
+        if payload.get("type") != "impersonation":
+            raise HTTPException(status_code=400, detail="Not an impersonation token")
+        
+        session_id = payload.get("session_id")
+        tenant_id = payload.get("tenant_id")
+        
+        # Check if session is still valid
+        session = await db.impersonation_tokens.find_one({
+            "session_id": session_id,
+            "tenant_id": tenant_id
+        })
+        
+        if not session:
+            raise HTTPException(status_code=401, detail="Impersonation session not found or expired")
+        
+        return {
+            "valid": True,
+            "session_id": session_id,
+            "tenant_id": tenant_id,
+            "email": payload.get("sub"),
+            "impersonator": payload.get("impersonator"),
+            "impersonator_name": payload.get("impersonator_name"),
+            "expires_at": session.get("expires_at")
+        }
+        
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Impersonation token has expired")
+    except jwt.JWTError:
+        raise HTTPException(status_code=401, detail="Invalid impersonation token")
 
 # Agents endpoints
 @api_router.post("/agents", response_model=Agent)
