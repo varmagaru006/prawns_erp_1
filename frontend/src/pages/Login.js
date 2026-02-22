@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useBranding } from '../context/BrandingContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -19,6 +20,7 @@ const Login = () => {
   const [floatingElements, setFloatingElements] = useState([]);
   
   const { login, register } = useAuth();
+  const { branding } = useBranding();
   const navigate = useNavigate();
 
   useEffect(() => {
