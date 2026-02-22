@@ -59,6 +59,21 @@ export const clientAPI = {
     const response = await api.post(`/clients/${clientId}/features/toggle`, data);
     return response.data;
   },
+
+  createClient: async (data) => {
+    const response = await api.post('/clients', data);
+    return response.data;
+  },
+
+  updateClient: async (id, data) => {
+    const response = await api.put(`/clients/${id}`, data);
+    return response.data;
+  },
+
+  getPlans: async () => {
+    const response = await api.get('/subscription-plans');
+    return response.data;
+  },
 };
 
 export const featureAPI = {
