@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, UploadFile, File, Form
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, UploadFile, File, Form, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -23,6 +23,9 @@ from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 import io
 from enum import Enum
 
+# Multi-tenant services
+from services.multi_tenant import tenant_context, FeatureFlagService, tenant_middleware
+
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
@@ -30,6 +33,9 @@ load_dotenv(ROOT_DIR / '.env')
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
+
+# Feature Flag Service
+feature_service = FeatureFlagService(db)
 
 # Security
 SECRET_KEY = os.environ.get('SECRET_KEY', 'your-secret-key-change-in-production')
@@ -43,11 +49,23 @@ security = HTTPBearer()
 UPLOADS_DIR = ROOT_DIR / 'uploads'
 UPLOADS_DIR.mkdir(exist_ok=True)
 
-app = FastAPI()
+app = FastAPI(title="Prawn ERP - Multi-Tenant")
 api_router = APIRouter(prefix="/api")
 
 # Mount uploads directory for static file serving
 app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
+
+# CORS Middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Multi-Tenant Middleware
+app.middleware("http")(tenant_middleware)
 
 # Enums
 class UserRole(str, Enum):
