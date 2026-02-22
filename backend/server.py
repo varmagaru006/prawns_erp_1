@@ -2881,6 +2881,278 @@ async def dismiss_announcement(
 
 app.include_router(api_router)
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# INTERNAL SAAS HOOK ENDPOINTS (A3)
+# Receives pushes FROM super admin. Protected by API key.
+# ═══════════════════════════════════════════════════════════════════════════════
+import hashlib
+
+internal_router = APIRouter(prefix="/internal/saas-hook", tags=["Internal SAAS Hook"])
+
+async def verify_saas_api_key(request: Request):
+    """Verify the X-SAAS-API-Key header against stored hash"""
+    api_key = request.headers.get("X-SAAS-API-Key")
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Missing API key")
+    
+    # Get stored hash from tenant_config
+    config = await db.tenant_config.find_one({"key": "api_key_hash"})
+    if not config:
+        raise HTTPException(status_code=401, detail="Client not linked")
+    
+    # Verify hash
+    provided_hash = hashlib.sha256(api_key.encode()).hexdigest()
+    if provided_hash != config.get("value"):
+        # Log failed attempt
+        await db.audit_logs.insert_one({
+            "entity_type": "saas_hook",
+            "action": "auth_failed",
+            "details": {"provided_hash": provided_hash[:16] + "..."},
+            "created_at": datetime.utcnow().isoformat()
+        })
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    
+    return True
+
+@internal_router.post("/handshake")
+async def saas_handshake(request: Request, body: dict):
+    """Complete the link handshake with super admin"""
+    # Verify API key
+    api_key = request.headers.get("X-SAAS-API-Key")
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Missing API key")
+    
+    client_id = body.get("client_id")
+    tenant_id = body.get("tenant_id")
+    api_key_hash = body.get("api_key_hash")
+    branding = body.get("branding", {})
+    plan = body.get("plan")
+    
+    # Verify the hash matches what we compute
+    computed_hash = hashlib.sha256(api_key.encode()).hexdigest()
+    if computed_hash != api_key_hash:
+        raise HTTPException(status_code=401, detail="API key hash mismatch")
+    
+    # Store all config values
+    configs = [
+        {"key": "client_id", "value": client_id},
+        {"key": "tenant_id", "value": tenant_id},
+        {"key": "api_key_hash", "value": api_key_hash},
+        {"key": "plan", "value": plan},
+        {"key": "linked", "value": "true"},
+        {"key": "linked_at", "value": datetime.utcnow().isoformat()},
+    ]
+    
+    # Add branding configs
+    for key, value in branding.items():
+        configs.append({"key": key, "value": str(value) if value else ""})
+    
+    # Upsert all configs
+    for cfg in configs:
+        await db.tenant_config.update_one(
+            {"key": cfg["key"]},
+            {"$set": {"key": cfg["key"], "value": cfg["value"], "synced_at": datetime.utcnow().isoformat()}},
+            upsert=True
+        )
+    
+    return {"status": "linked", "erp_version": "5.0"}
+
+@internal_router.post("/features")
+async def saas_push_features(request: Request, body: dict, _=Depends(verify_saas_api_key)):
+    """Receive feature flags push from super admin"""
+    features = body.get("features", {})
+    
+    # Get tenant_id
+    config = await db.tenant_config.find_one({"key": "tenant_id"})
+    tenant_id = config.get("value") if config else "default"
+    
+    # Clear existing flags and insert new ones
+    await db.feature_flags.delete_many({"tenant_id": tenant_id})
+    
+    count = 0
+    for feature_code, is_enabled in features.items():
+        await db.feature_flags.insert_one({
+            "tenant_id": tenant_id,
+            "feature_code": feature_code,
+            "is_enabled": bool(is_enabled),
+            "synced_at": datetime.utcnow().isoformat()
+        })
+        count += 1
+    
+    # Invalidate Redis cache
+    try:
+        import redis
+        redis_client = redis.Redis(host='localhost', port=6379, db=0)
+        redis_client.delete(f"flags:{tenant_id}")
+    except:
+        pass
+    
+    return {"synced": count}
+
+@internal_router.post("/branding")
+async def saas_push_branding(request: Request, body: dict, _=Depends(verify_saas_api_key)):
+    """Receive branding config push from super admin"""
+    branding_keys = ["company_name", "primary_color", "logo_url", "favicon_url", 
+                     "login_bg_color", "sidebar_label"]
+    
+    count = 0
+    for key in branding_keys:
+        if key in body:
+            await db.tenant_config.update_one(
+                {"key": key},
+                {"$set": {"key": key, "value": str(body[key]) if body[key] else "", "synced_at": datetime.utcnow().isoformat()}},
+                upsert=True
+            )
+            count += 1
+    
+    return {"updated": count}
+
+@internal_router.post("/provision-user")
+async def saas_provision_user(request: Request, body: dict, _=Depends(verify_saas_api_key)):
+    """Create or update a user from super admin"""
+    user_id = body.get("user_id", str(uuid.uuid4()))
+    full_name = body.get("full_name")
+    email = body.get("email")
+    role = body.get("role", "admin")
+    temp_password_hash = body.get("temp_password_hash")
+    send_welcome_email = body.get("send_welcome_email", False)
+    
+    # Get tenant_id
+    config = await db.tenant_config.find_one({"key": "tenant_id"})
+    tenant_id = config.get("value") if config else "default"
+    
+    # Check if user exists
+    existing = await db.users.find_one({"email": email, "tenant_id": tenant_id})
+    
+    if existing:
+        # Update existing user
+        await db.users.update_one(
+            {"email": email, "tenant_id": tenant_id},
+            {"$set": {
+                "name": full_name,
+                "role": role,
+                "updated_at": datetime.utcnow().isoformat()
+            }}
+        )
+        status = "updated"
+    else:
+        # Create new user
+        user_doc = {
+            "id": user_id,
+            "email": email,
+            "name": full_name,
+            "role": role,
+            "password_hash": temp_password_hash or pwd_context.hash("TempPass123!"),
+            "tenant_id": tenant_id,
+            "is_active": True,
+            "created_at": datetime.utcnow().isoformat(),
+            "provisioned_by_saas": True
+        }
+        await db.users.insert_one(user_doc)
+        status = "created"
+    
+    # Log the action
+    await db.audit_logs.insert_one({
+        "entity_type": "saas_hook",
+        "action": f"user_{status}",
+        "entity_id": user_id,
+        "details": {"email": email, "role": role},
+        "created_at": datetime.utcnow().isoformat()
+    })
+    
+    return {"user_id": user_id, "status": status}
+
+@internal_router.patch("/update-user")
+async def saas_update_user(request: Request, body: dict, _=Depends(verify_saas_api_key)):
+    """Update a user from super admin"""
+    user_id = body.get("user_id")
+    
+    update_fields = {}
+    if "role" in body:
+        update_fields["role"] = body["role"]
+    if "is_active" in body:
+        update_fields["is_active"] = body["is_active"]
+    
+    if update_fields:
+        update_fields["updated_at"] = datetime.utcnow().isoformat()
+        await db.users.update_one(
+            {"id": user_id},
+            {"$set": update_fields}
+        )
+    
+    return {"updated": True}
+
+@internal_router.delete("/delete-user")
+async def saas_delete_user(request: Request, body: dict, _=Depends(verify_saas_api_key)):
+    """Soft delete a user from super admin"""
+    user_id = body.get("user_id")
+    
+    await db.users.update_one(
+        {"id": user_id},
+        {"$set": {"is_active": False, "deactivated_at": datetime.utcnow().isoformat()}}
+    )
+    
+    return {"deactivated": True}
+
+@internal_router.get("/health")
+async def saas_health(request: Request, _=Depends(verify_saas_api_key)):
+    """Return health status for super admin ping"""
+    config = await db.tenant_config.find_one({"key": "tenant_id"})
+    tenant_id = config.get("value") if config else "unknown"
+    
+    linked_config = await db.tenant_config.find_one({"key": "linked_at"})
+    linked_at = linked_config.get("value") if linked_config else None
+    
+    # Count active users today
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    active_users = await db.users.count_documents({
+        "tenant_id": tenant_id,
+        "is_active": True
+    })
+    
+    return {
+        "status": "ok",
+        "tenant_id": tenant_id,
+        "linked_at": linked_at,
+        "db_size_mb": 0,  # Would need actual calculation
+        "active_users_today": active_users
+    }
+
+@internal_router.post("/announcement")
+async def saas_push_announcement(request: Request, body: dict, _=Depends(verify_saas_api_key)):
+    """Receive announcement push from super admin"""
+    await db.active_announcements.update_one(
+        {"announcement_id": body.get("id")},
+        {"$set": {
+            "announcement_id": body.get("id"),
+            "title": body.get("title"),
+            "body": body.get("body"),
+            "announcement_type": body.get("type", "info"),
+            "show_from": body.get("show_from"),
+            "show_until": body.get("show_until"),
+            "synced_at": datetime.utcnow().isoformat()
+        }},
+        upsert=True
+    )
+    
+    return {"synced": True}
+
+app.include_router(internal_router)
+
+# Public config endpoint for client ERP branding
+@app.get("/api/config")
+async def get_public_config():
+    """Return public config for client ERP branding (no auth required)"""
+    config_keys = ["company_name", "sidebar_label", "primary_color", "login_bg_color",
+                   "logo_url", "favicon_url", "tenant_id"]
+    
+    result = {}
+    for key in config_keys:
+        doc = await db.tenant_config.find_one({"key": key})
+        result[key] = doc.get("value") if doc else None
+    
+    return result
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
