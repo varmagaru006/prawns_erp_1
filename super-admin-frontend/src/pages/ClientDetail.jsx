@@ -37,30 +37,31 @@ export default function ClientDetail() {
   };
 
   const handleToggleFeature = async (feature) => {
-    setToggling({ ...toggling, [feature.feature_code]: true });
+    const newState = !feature.is_enabled;
+    setToggling(prev => ({ ...prev, [feature.feature_code]: true }));
 
     try {
       await clientAPI.toggleFeature(id, {
         tenant_id: client.tenant_id,
         feature_code: feature.feature_code,
-        is_enabled: !feature.is_enabled,
+        is_enabled: newState,
         is_override: false
       });
 
-      setFeatures(features.map(f => 
+      setFeatures(prev => prev.map(f => 
         f.feature_code === feature.feature_code 
-          ? { ...f, is_enabled: !f.is_enabled }
+          ? { ...f, is_enabled: newState }
           : f
       ));
 
       showNotification(
-        `Feature "${feature.feature_name}" ${!feature.is_enabled ? 'enabled' : 'disabled'}`,
+        `Feature "${feature.feature_name}" ${newState ? 'enabled' : 'disabled'}`,
         'success'
       );
     } catch (err) {
       showNotification(`Failed to toggle feature: ${err.message}`, 'error');
     } finally {
-      setToggling({ ...toggling, [feature.feature_code]: false });
+      setToggling(prev => ({ ...prev, [feature.feature_code]: false }));
     }
   };
 
