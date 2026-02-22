@@ -330,7 +330,25 @@ async def update_client(client_id: str, client_data: ClientUpdate, current_admin
 
 @app.get("/subscription-plans")
 async def get_subscription_plans(current_admin = Depends(get_current_super_admin)):
-
+    """Get all available subscription plans"""
+    query = """
+        SELECT 
+            id::text as id,
+            plan_code,
+            plan_name,
+            description,
+            price_inr_monthly as price_monthly,
+            price_inr_annual as price_yearly,
+            max_users,
+            max_lots_per_month,
+            storage_limit_gb,
+            is_active
+        FROM subscription_plans
+        WHERE is_active = true
+        ORDER BY price_inr_monthly
+    """
+    plans = await database.fetch_all(query=query)
+    return [dict(plan) for plan in plans]
 
 @app.delete("/clients/{client_id}")
 async def delete_client(client_id: str, current_admin = Depends(get_current_super_admin)):
