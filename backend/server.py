@@ -2808,6 +2808,53 @@ async def super_admin_toggle_feature(client_id: str, data: dict, request: Reques
         )
         return response.json()
 
+@super_admin_router.post("/clients")
+async def super_admin_create_client(data: dict, request: Request):
+    """Proxy create client"""
+    headers = {"Content-Type": "application/json"}
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "http://localhost:8002/clients",
+            json=data,
+            headers=headers,
+            timeout=10.0
+        )
+        return response.json()
+
+@super_admin_router.put("/clients/{client_id}")
+async def super_admin_update_client(client_id: str, data: dict, request: Request):
+    """Proxy update client"""
+    headers = {"Content-Type": "application/json"}
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+    async with httpx.AsyncClient() as client:
+        response = await client.put(
+            f"http://localhost:8002/clients/{client_id}",
+            json=data,
+            headers=headers,
+            timeout=10.0
+        )
+        return response.json()
+
+@super_admin_router.get("/subscription-plans")
+async def super_admin_get_plans(request: Request):
+    """Proxy get subscription plans"""
+    headers = {}
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            "http://localhost:8002/subscription-plans",
+            headers=headers,
+            timeout=10.0
+        )
+        return response.json()
+
 app.include_router(super_admin_router)
 
 logging.basicConfig(
