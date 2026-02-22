@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { useFeatureFlags } from '../context/FeatureFlagContext';
 import { moduleConfig, isModuleAccessible, canAccessDashboard } from '../config/moduleConfig';
 import { Button } from './ui/button';
+import AnnouncementBanner from './AnnouncementBanner';
 import { 
   LayoutDashboard, 
   ShoppingCart, 
