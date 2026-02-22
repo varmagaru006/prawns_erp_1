@@ -556,6 +556,86 @@ const Procurement = () => {
           </CardContent>
         </Card>
       )}
+
+      {/* View Wastage Dialog */}
+      <Dialog open={viewWastageDialog} onOpenChange={setViewWastageDialog}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Wastage Details - {selectedLotWastage?.lot?.lot_number}</DialogTitle>
+          </DialogHeader>
+          {selectedLotWastage && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-sm text-slate-600">Species</p>
+                  <p className="font-semibold">{selectedLotWastage.lot.species}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-slate-600">Agent</p>
+                  <p className="font-semibold">{selectedLotWastage.lot.agent_name}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-slate-600">Gross Weight</p>
+                  <p className="font-semibold">{selectedLotWastage.lot.gross_weight_kg.toFixed(2)} KG</p>
+                </div>
+                <div>
+                  <p className="text-sm text-slate-600">Net Weight</p>
+                  <p className="font-semibold">{selectedLotWastage.lot.net_weight_kg.toFixed(2)} KG</p>
+                </div>
+              </div>
+
+              <div className="border-t pt-4">
+                <h3 className="font-semibold mb-3">Stage-wise Wastage</h3>
+                {selectedLotWastage.wastage.length > 0 ? (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Stage</TableHead>
+                        <TableHead>Input (KG)</TableHead>
+                        <TableHead>Output (KG)</TableHead>
+                        <TableHead>Wastage (KG)</TableHead>
+                        <TableHead>Yield %</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Revenue Loss</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {selectedLotWastage.wastage.map((w, idx) => (
+                        <TableRow key={idx}>
+                          <TableCell className="font-medium capitalize">
+                            {w.process_type?.replace(/_/g, ' ')}
+                          </TableCell>
+                          <TableCell>{w.input_weight_kg?.toFixed(2)}</TableCell>
+                          <TableCell>{w.output_weight_kg?.toFixed(2)}</TableCell>
+                          <TableCell className="text-red-600 font-semibold">
+                            {w.wastage_kg?.toFixed(2)}
+                          </TableCell>
+                          <TableCell>{getYieldBadge(w.yield_pct, w.threshold_status)}</TableCell>
+                          <TableCell>
+                            <span className={`px-2 py-1 rounded text-xs font-semibold ${
+                              w.threshold_status === 'green' ? 'bg-green-100 text-green-800' :
+                              w.threshold_status === 'amber' ? 'bg-yellow-100 text-yellow-800' :
+                              w.threshold_status === 'red' ? 'bg-red-100 text-red-800' :
+                              'bg-gray-100 text-gray-800'
+                            }`}>
+                              {w.threshold_status || 'N/A'}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-red-600 font-semibold">
+                            ₹{w.revenue_loss_inr?.toFixed(2) || '0.00'}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                ) : (
+                  <p className="text-slate-500 text-center py-4">No wastage data available for this lot</p>
+                )}
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
