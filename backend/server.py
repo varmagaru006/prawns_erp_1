@@ -2947,7 +2947,14 @@ async def serve_super_admin_root():
     """Serve the Super Admin frontend root"""
     index_file = SUPER_ADMIN_DIST_DIR / "index.html"
     if index_file.exists():
-        return FileResponse(index_file)
+        return FileResponse(
+            index_file,
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+        )
     return {"error": "Super Admin frontend not built"}
 
 logging.basicConfig(
