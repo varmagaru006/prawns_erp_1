@@ -2367,6 +2367,57 @@ async def get_stage_wastage_summary(current_user: User = Depends(get_current_use
     return summary
 
 
+@api_router.get("/wastage/lot-waterfall/{lot_id}")
+async def get_lot_waterfall(lot_id: str, current_user: User = Depends(get_current_user)):
+    """Get complete waterfall view of a lot showing all stages and wastage"""
+    # Get lot details
+    lot = await db.procurement_lots.find_one({"id": lot_id}, {"_id": 0})
+    if not lot:
+        raise HTTPException(status_code=404, detail="Lot not found")
+    
+    # Get all wastage records for this lot
+    wastage_records = await db.lot_stage_wastage.find(
+        {"lot_id": lot_id}, 
+        {"_id": 0}
+    ).sort("created_at", 1).to_list(100)
+    
+    # Calculate total losses
+    total_wastage_kg = sum(w.get("wastage_kg", 0) for w in wastage_records)
+    total_revenue_loss = sum(w.get("revenue_loss_inr", 0) for w in wastage_records)
+    total_net_loss = sum(w.get("net_loss_inr", 0) for w in wastage_records)
+    
+    # Build waterfall stages
+    stages = []
+    current_weight = lot.get("gross_weight_kg", 0)
+    
+    for record in wastage_records:
+        stages.append({
+            "stage_name": record.get("stage_name", "Unknown"),
+            "process_type": record.get("process_type", "Unknown"),
+            "input_weight_kg": record.get("input_weight_kg", 0),
+            "output_weight_kg": record.get("output_weight_kg", 0),
+            "wastage_kg": record.get("wastage_kg", 0),
+            "yield_pct": record.get("yield_pct", 0),
+            "threshold_status": record.get("threshold_status", "info"),
+            "revenue_loss_inr": record.get("revenue_loss_inr", 0),
+            "net_loss_inr": record.get("net_loss_inr", 0),
+            "created_at": record.get("created_at", "")
+        })
+    
+    return {
+        "lot_id": lot_id,
+        "lot_number": lot.get("lot_number", ""),
+        "species": lot.get("species", ""),
+        "agent_name": lot.get("agent_name", ""),
+        "initial_weight_kg": lot.get("gross_weight_kg", 0),
+        "final_weight_kg": stages[-1].get("output_weight_kg", 0) if stages else lot.get("net_weight_kg", 0),
+        "total_wastage_kg": total_wastage_kg,
+        "total_revenue_loss_inr": total_revenue_loss,
+        "total_net_loss_inr": total_net_loss,
+        "stages": stages
+    }
+
+
 
 
 # Photo Tracker Endpoints
