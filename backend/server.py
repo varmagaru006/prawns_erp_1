@@ -1978,8 +1978,31 @@ async def create_wage_bill(bill_data: WageBillCreate, current_user: User = Depen
     return wage_bill
 
 @api_router.get("/wage-bills", response_model=List[WageBill])
-async def get_wage_bills(current_user: User = Depends(get_current_user)):
-    bills = await db.wage_bills.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+async def get_wage_bills(
+    bill_type: Optional[str] = None,
+    department: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    period_from: Optional[str] = None,
+    period_to: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Get all wage bills with optional filters"""
+    query = {}
+    
+    if bill_type:
+        query['bill_type'] = bill_type
+    if department:
+        query['department'] = department
+    if payment_status:
+        query['payment_status'] = payment_status
+    if period_from:
+        query['period_from'] = {"$gte": datetime.fromisoformat(period_from)}
+    if period_to:
+        if 'period_to' not in query:
+            query['period_to'] = {}
+        query['period_to']['$lte'] = datetime.fromisoformat(period_to)
+    
+    bills = await db.wage_bills.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
     for bill in bills:
         if isinstance(bill.get('created_at'), str):
             bill['created_at'] = datetime.fromisoformat(bill['created_at'])
@@ -1990,6 +2013,91 @@ async def get_wage_bills(current_user: User = Depends(get_current_user)):
         if bill.get('payment_date') and isinstance(bill['payment_date'], str):
             bill['payment_date'] = datetime.fromisoformat(bill['payment_date'])
     return bills
+
+@api_router.get("/wage-bills/{bill_id}", response_model=WageBill)
+async def get_wage_bill(bill_id: str, current_user: User = Depends(get_current_user)):
+    """Get a single wage bill by ID"""
+    bill = await db.wage_bills.find_one({"id": bill_id}, {"_id": 0})
+    if not bill:
+        raise HTTPException(status_code=404, detail="Wage bill not found")
+    
+    if isinstance(bill.get('created_at'), str):
+        bill['created_at'] = datetime.fromisoformat(bill['created_at'])
+    if isinstance(bill.get('period_from'), str):
+        bill['period_from'] = datetime.fromisoformat(bill['period_from'])
+    if isinstance(bill.get('period_to'), str):
+        bill['period_to'] = datetime.fromisoformat(bill['period_to'])
+    if bill.get('payment_date') and isinstance(bill['payment_date'], str):
+        bill['payment_date'] = datetime.fromisoformat(bill['payment_date'])
+    
+    return bill
+
+@api_router.put("/wage-bills/{bill_id}", response_model=WageBill)
+async def update_wage_bill(bill_id: str, bill_data: WageBillCreate, current_user: User = Depends(get_current_user)):
+    """Update an existing wage bill"""
+    existing_bill = await db.wage_bills.find_one({"id": bill_id}, {"_id": 0})
+    if not existing_bill:
+        raise HTTPException(status_code=404, detail="Wage bill not found")
+    
+    net_payable = bill_data.gross_amount - bill_data.tds_deduction
+    
+    update_data = {
+        "bill_type": bill_data.bill_type,
+        "period_from": bill_data.period_from.isoformat(),
+        "period_to": bill_data.period_to.isoformat(),
+        "department": bill_data.department,
+        "gross_amount": bill_data.gross_amount,
+        "tds_deduction": bill_data.tds_deduction,
+        "net_payable": net_payable,
+        "notes": bill_data.notes
+    }
+    
+    await db.wage_bills.update_one({"id": bill_id}, {"$set": update_data})
+    await create_audit_log(current_user.id, "UPDATE_WAGE_BILL", "accounts", {"bill_id": bill_id})
+    
+    # Fetch and return updated bill
+    updated_bill = await db.wage_bills.find_one({"id": bill_id}, {"_id": 0})
+    if isinstance(updated_bill.get('created_at'), str):
+        updated_bill['created_at'] = datetime.fromisoformat(updated_bill['created_at'])
+    if isinstance(updated_bill.get('period_from'), str):
+        updated_bill['period_from'] = datetime.fromisoformat(updated_bill['period_from'])
+    if isinstance(updated_bill.get('period_to'), str):
+        updated_bill['period_to'] = datetime.fromisoformat(updated_bill['period_to'])
+    if updated_bill.get('payment_date') and isinstance(updated_bill['payment_date'], str):
+        updated_bill['payment_date'] = datetime.fromisoformat(updated_bill['payment_date'])
+    
+    return updated_bill
+
+@api_router.post("/wage-bills/{bill_id}/mark-paid")
+async def mark_wage_bill_paid(bill_id: str, current_user: User = Depends(get_current_user)):
+    """Mark a wage bill as paid"""
+    bill = await db.wage_bills.find_one({"id": bill_id}, {"_id": 0})
+    if not bill:
+        raise HTTPException(status_code=404, detail="Wage bill not found")
+    
+    payment_date = datetime.now(timezone.utc)
+    await db.wage_bills.update_one(
+        {"id": bill_id},
+        {"$set": {
+            "payment_status": "paid",
+            "payment_date": payment_date.isoformat()
+        }}
+    )
+    
+    await create_audit_log(current_user.id, "MARK_PAID_WAGE_BILL", "accounts", {"bill_id": bill_id})
+    
+    return {"status": "success", "message": "Wage bill marked as paid", "payment_date": payment_date.isoformat()}
+
+@api_router.delete("/wage-bills/{bill_id}")
+async def delete_wage_bill(bill_id: str, current_user: User = Depends(get_current_user)):
+    """Delete a wage bill"""
+    result = await db.wage_bills.delete_one({"id": bill_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Wage bill not found")
+    
+    await create_audit_log(current_user.id, "DELETE_WAGE_BILL", "accounts", {"bill_id": bill_id})
+    
+    return {"status": "success", "message": "Wage bill deleted"}
 
 # Universal Attachments & Notes
 @api_router.post("/attachments/upload")
