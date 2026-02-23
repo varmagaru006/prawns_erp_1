@@ -9,41 +9,32 @@ Build a full-stack, production-ready Prawn/Aquaculture Export ERP web applicatio
 
 ## What's Been Implemented
 
-### Session Date: Feb 22, 2026
+### Session Date: Feb 22-23, 2026
 
-#### P0 Bug Fix: Feature Toggle UI ✅
-- Fixed bulk feature toggle not persisting correctly
-- Root cause: Updates went to MongoDB but reads from PostgreSQL
-- Solution: Updated `bulk-features` endpoint to write to both databases
+#### Amendment A3: Client Linking & Provisioning ✅ (COMPLETED & TESTED)
 
-#### Phase 6: Announcement System ✅
-- Super Admin can create/manage announcements (info/warning/critical types)
-- Target all clients or specific ones
-- Client ERP shows banners with dismiss functionality
+**Backend APIs (All Tested via Curl):**
+1. ✅ `POST /clients/{id}/link` - Generate API key and link client
+2. ✅ `POST /clients/{id}/push-branding` - Push branding config to client ERP
+3. ✅ `POST /clients/{id}/users` - Provision users in client ERP
+4. ✅ `GET /api/public-config` - Client ERP endpoint for fetching branding
 
-#### Phase 7: Impersonation Flow ✅
-- Super Admin can log in as any client admin
-- Purple banner in client ERP shows impersonation status
-- One-click end impersonation
+**Test Results:**
+- Client linking: Successfully linked with API key hash stored
+- Branding push: Config saved to both PostgreSQL and MongoDB
+- User provisioning: User created in both super admin DB and client ERP
+- Public config: Returns dynamic branding from MongoDB
 
-#### Amendment A3: Client Linking & Provisioning ✅ (Completed)
-- **Client Detail Page**: New tabbed UI with Features, Link & Branding, and Users tabs
-- **Link & Branding Tab**: 
-  - Connection status display (linked/not linked)
-  - API key generation and linking functionality
-  - Branding configuration (company name, colors, logos)
-- **Users Tab**:
-  - User provisioning interface
-  - Create, edit, deactivate users in client ERP
-  - Role assignment
-  - Requires client to be linked first
-- **Client-side Branding**:
-  - `/api/public-config` endpoint for fetching branding
-  - BrandingContext.js for dynamic runtime branding
-  - Login page and Layout updated to use dynamic branding
-- **Backend Endpoints**:
-  - Internal `/internal/saas-hook/*` endpoints on client ERP
-  - Orchestration endpoints on Super Admin API
+**UI Components (Built & Deployed):**
+- `ClientDetail.jsx` - Tabbed UI with Features, Link & Branding, Users
+- `UsersTab.jsx` - User provisioning interface
+- `LinkBrandingTab.jsx` - Connection status and branding configuration
+- `BrandingContext.js` - Client-side dynamic branding
+
+#### Previous Implementations
+- P0 Bug Fix: Feature Toggle UI ✅
+- Phase 6: Announcement System ✅
+- Phase 7: Impersonation Flow ✅
 
 ## Test Credentials
 
@@ -53,13 +44,12 @@ Build a full-stack, production-ready Prawn/Aquaculture Export ERP web applicatio
 - **Password**: admin123
 
 ### Client ERP
-- See `/app/TEST_CREDENTIALS.md`
+- **Provisioned User**: john@aquapremium.com (temp password shown during provisioning)
 
 ## Prioritized Backlog
 
 ### P1 (High Priority)
 - Amendment A2 Phases 8-10: Activity logs, usage snapshots, billing integration
-- Test the full A3 flow end-to-end (linking → branding push → user provisioning)
 
 ### P2 (Medium Priority)
 - Refactor monolithic `server.py` file into modular structure
@@ -72,43 +62,36 @@ Build a full-stack, production-ready Prawn/Aquaculture Export ERP web applicatio
 
 ## Key Files Reference
 
-### Super Admin Frontend
-- `/app/super-admin-frontend/src/pages/ClientDetail.jsx` - Main client management page with tabs
-- `/app/super-admin-frontend/src/components/LinkBrandingTab.jsx` - Linking and branding configuration
-- `/app/super-admin-frontend/src/components/UsersTab.jsx` - User provisioning UI
-- `/app/super-admin-frontend/src/pages/Dashboard.jsx` - Client list with Impersonate button
-- `/app/super-admin-frontend/src/api/auth.js` - API functions for A3 features
-
 ### Super Admin API
-- `/app/super-admin-api/main.py` - Backend with A3 orchestration endpoints (lines ~988-1557)
+- `/app/super-admin-api/main.py` - A3 endpoints (link, push-branding, users)
 
 ### Client ERP Backend
-- `/app/backend/server.py` - Main ERP backend
-  - `/api/public-config` endpoint (line ~1262)
-  - `/internal/saas-hook/*` endpoints (lines ~2890+)
+- `/app/backend/server.py`:
+  - `/api/public-config` - Public branding endpoint
+  - `/internal/saas-hook/*` - Internal push endpoints
 
 ### Client ERP Frontend
-- `/app/frontend/src/context/BrandingContext.js` - Dynamic branding context
-- `/app/frontend/src/context/AuthContext.js` - Auth with impersonation support
-- `/app/frontend/src/components/Layout.js` - Uses branding context
-- `/app/frontend/src/pages/Login.js` - Dynamic login page branding
+- `/app/frontend/src/context/BrandingContext.js` - Dynamic branding
+- `/app/frontend/src/pages/Login.js` - Branded login page
 
 ## Database Schema
 
 ### PostgreSQL (saas_control_db)
-- `clients` - Client records with A3 fields (api_key_hash, webhook_url, link_status, branding)
-- `provisioned_users` - Users created in client ERPs by super admin
-- `super_admins`, `subscription_plans`, `feature_registry`, `announcements`, etc.
+- `clients` - With A3 fields (api_key_hash, webhook_url, link_status, branding)
+- `provisioned_users` - Users created via super admin
 
-### MongoDB (Client ERP)
-- `tenant_config` - Stores branding config pushed from super admin (key-value format)
-- All other collections are multi-tenant filtered by `tenant_id`
+### MongoDB (Client ERP - test_database)
+- `tenant_config` - Branding config (key-value format)
+- `users` - Users including those provisioned by super admin
 
 ## Known Issues
-- Environment services (PostgreSQL/Redis) need to be restarted manually after session changes
-- Super-admin-frontend production build must be copied to `/app/frontend/public/super-admin/` for CDN serving
+- Environment services need manual restart after session changes
+- Super-admin-frontend must be rebuilt and copied to `/app/frontend/public/super-admin/`
 
-## Build Notes
-- Super Admin Frontend: `cd /app/super-admin-frontend && yarn build`
-- After build, copy to: `cp -r dist /app/frontend/public/super-admin`
-- Restart frontend: `sudo supervisorctl restart frontend`
+## Build Commands
+```bash
+# Super Admin Frontend
+cd /app/super-admin-frontend && yarn build
+cp -r dist /app/frontend/public/super-admin
+sudo supervisorctl restart frontend
+```
