@@ -1228,9 +1228,12 @@ async def push_branding_to_client(client_id: str, branding: BrandingUpdate, curr
     new_branding = {k: v for k, v in branding.model_dump().items() if v is not None}
     current_branding.update(new_branding)
     
-    # Update in database
-    update_sql = "UPDATE clients SET branding = cast(:branding as jsonb) WHERE id = :client_id::uuid"
-    await database.execute(query=update_sql, values={"branding": json.dumps(current_branding), "client_id": client_id})
+    # Update in database using raw SQL
+    conn = await database.acquire()
+    try:
+        await conn.execute(f"UPDATE clients SET branding = '{json.dumps(current_branding)}'::jsonb WHERE id = '{client_id}'::uuid")
+    finally:
+        await conn.release()
     
     # Push to client
     try:
