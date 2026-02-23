@@ -11,6 +11,7 @@ from typing import List, Optional, Dict
 from datetime import datetime, timedelta
 import databases
 import sqlalchemy
+from sqlalchemy import text
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 import os
