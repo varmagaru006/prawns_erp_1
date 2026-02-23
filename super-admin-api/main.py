@@ -513,10 +513,9 @@ async def link_client(client_id: str, request: LinkRequest, current_admin = Depe
             "link_status": "linked"
         }
     
-    # Get the API key hash (already stored when client was created)
-    api_key_hash = client.get("api_key_hash")
-    if not api_key_hash:
-        raise HTTPException(status_code=400, detail="API key not found for client")
+    # Generate a new API key for linking (since we can't retrieve the old one)
+    api_key = f"pk_{uuid.uuid4().hex}"
+    api_key_hash = hash_api_key(api_key)
     
     # Get plan details
     plan_code = "free"
@@ -525,12 +524,13 @@ async def link_client(client_id: str, request: LinkRequest, current_admin = Depe
         plan_code = plan.get("plan_name", "free").lower() if plan else "free"
     
     # Determine webhook URL
-    webhook_url = request.webhook_url or "http://localhost:8001/api/internal/saas-hook"
+    webhook_url = request.webhook_url or "http://localhost:8001/api/internal/handshake"
     
-    # Update client with webhook URL and set status to 'linking'
+    # Update client with new API key hash, webhook URL and set status to 'linking'
     await db.clients.update_one(
         {"id": client_id},
         {"$set": {
+            "api_key_hash": api_key_hash,
             "webhook_url": webhook_url,
             "link_status": "linking",
             "updated_at": datetime.now(timezone.utc).isoformat()
@@ -547,15 +547,13 @@ async def link_client(client_id: str, request: LinkRequest, current_admin = Depe
     }
     
     # Call client ERP handshake endpoint
-    # We need to retrieve the original API key to send it (it's not stored, so we need another approach)
-    # Instead, let's use the client ERP's internal endpoint directly without needing the API key
     try:
         async with httpx.AsyncClient() as http_client:
             # Call the internal handshake endpoint on client ERP
             response = await http_client.post(
                 webhook_url,
                 json=handshake_payload,
-                headers={"X-SAAS-API-Key": "internal-link"},  # Use a special header for linking
+                headers={"X-SAAS-API-Key": api_key},
                 timeout=30.0
             )
             
@@ -583,7 +581,8 @@ async def link_client(client_id: str, request: LinkRequest, current_admin = Depe
                 return {
                     "status": "success",
                     "message": "Client linked successfully",
-                    "link_status": "linked"
+                    "link_status": "linked",
+                    "api_key": api_key  # Return the new API key for reference
                 }
             else:
                 # Link failed, update status back to pending
