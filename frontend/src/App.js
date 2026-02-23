@@ -17,6 +17,7 @@ import YieldBenchmarks from './pages/YieldBenchmarks';
 import WastageDashboard from './pages/WastageDashboard';
 import MarketRates from './pages/MarketRates';
 import LotWaterfall from './pages/LotWaterfall';
+import AttachmentsDemo from './pages/AttachmentsDemo';
 import Layout from './components/Layout';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { FeatureFlagProvider } from './context/FeatureFlagContext';
@@ -69,6 +70,7 @@ function AppRoutes() {
         <Route path="admin/market-rates" element={<MarketRates />} />
         <Route path="admin/wastage-dashboard" element={<WastageDashboard />} />
         <Route path="admin/lot/:lotId/wastage" element={<LotWaterfall />} />
+        <Route path="admin/attachments-demo" element={<AttachmentsDemo />} />
         <Route path="notifications" element={<Notifications />} />
       </Route>
     </Routes>
