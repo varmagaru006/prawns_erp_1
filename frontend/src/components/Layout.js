@@ -23,7 +23,8 @@ import {
   Receipt,
   Settings,
   TrendingDown,
-  Target
+  Target,
+  Paperclip
 } from 'lucide-react';
 
 const Layout = () => {
@@ -59,6 +60,7 @@ const Layout = () => {
     Bell,
     TrendingDown,
     Target,
+    Paperclip,
     DollarSign: Receipt  // Reuse Receipt icon for Market Rates
   };
 
@@ -76,6 +78,7 @@ const Layout = () => {
     { name: 'Wastage Dashboard', path: '/admin/wastage-dashboard', icon: 'TrendingDown', moduleKey: 'wastageDashboard' },
     { name: 'Yield Benchmarks', path: '/admin/yield-benchmarks', icon: 'Target', moduleKey: 'yieldBenchmarks' },
     { name: 'Market Rates', path: '/admin/market-rates', icon: 'DollarSign', moduleKey: 'marketRates' },
+    { name: 'Attachments Demo', path: '/admin/attachments-demo', icon: 'Paperclip', moduleKey: 'admin' },
     { name: 'Admin Panel', path: '/admin', icon: 'Settings', moduleKey: 'admin' },
     { name: 'Notifications', path: '/notifications', icon: 'Bell', moduleKey: 'notifications' },
   ];
