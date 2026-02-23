@@ -524,7 +524,7 @@ async def link_client(client_id: str, request: LinkRequest, current_admin = Depe
         plan_code = plan.get("plan_name", "free").lower() if plan else "free"
     
     # Determine webhook URL
-    webhook_url = request.webhook_url or "http://localhost:8001/api/internal/handshake"
+    webhook_url = request.webhook_url or "http://localhost:8001/api/internal/saas-hook/handshake"
     
     # Update client with new API key hash, webhook URL and set status to 'linking'
     await db.clients.update_one(
