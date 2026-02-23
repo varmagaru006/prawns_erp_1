@@ -1,40 +1,33 @@
 """
 Super Admin API - Main Application
 Manages all tenants, feature flags, subscriptions, and announcements
-Uses PostgreSQL (saas_control_db) for all data
+Uses MongoDB for all data storage
 """
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr
 from typing import List, Optional, Dict
-from datetime import datetime, timedelta
-import databases
-import sqlalchemy
-from sqlalchemy import text
+from datetime import datetime, timedelta, timezone
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 import os
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
-import redis
 import json
 import uuid as uuid_module
 
 load_dotenv()
 
-# Database connections
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres@localhost/saas_control_db")
-database = databases.Database(DATABASE_URL)
-
-# MongoDB for syncing feature flags to client databases
+# MongoDB connection (unified database for both Super Admin and Client ERP)
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
-MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "prawn_erp")
 mongo_client = AsyncIOMotorClient(MONGO_URL)
-mongo_db = mongo_client[MONGO_DB_NAME]
 
-# Redis for cache invalidation
-redis_client = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/1"), decode_responses=True)
+# Super Admin DB - separate database for SaaS control
+super_admin_db = mongo_client["prawn_erp_super_admin"]
+
+# Client ERP DB - for syncing feature flags
+client_db = mongo_client[os.getenv("MONGO_DB_NAME", "prawn_erp")]
 
 # Security
 SECRET_KEY = os.getenv("SECRET_KEY", "super-admin-secret-key")
@@ -118,13 +111,31 @@ class FeatureToggleRequest(BaseModel):
 
 @app.on_event("startup")
 async def startup():
-    await database.connect()
-    print("✅ Connected to PostgreSQL (saas_control_db)")
+    # Create indexes for better performance
+    await super_admin_db.super_admins.create_index("email", unique=True)
+    await super_admin_db.clients.create_index("id", unique=True)
+    await super_admin_db.clients.create_index("name")
+    await super_admin_db.provisioned_users.create_index([("client_id", 1), ("email", 1)], unique=True)
+    
+    # Ensure default super admin exists
+    existing_admin = await super_admin_db.super_admins.find_one({"email": "superadmin@prawnrp.com"})
+    if not existing_admin:
+        hashed_password = pwd_context.hash("admin123")
+        await super_admin_db.super_admins.insert_one({
+            "id": str(uuid_module.uuid4()),
+            "email": "superadmin@prawnrp.com",
+            "password_hash": hashed_password,
+            "name": "Super Administrator",
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
+        print("✅ Created default super admin")
+    
+    print("✅ Connected to MongoDB (Super Admin DB)")
 
 @app.on_event("shutdown")
 async def shutdown():
-    await database.disconnect()
-    print("✅ Disconnected from PostgreSQL")
+    mongo_client.close()
+    print("✅ Disconnected from MongoDB")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Auth Functions
