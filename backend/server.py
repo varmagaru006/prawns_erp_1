@@ -581,6 +581,7 @@ class WageBill(BaseModel):
     net_payable: float
     payment_status: PaymentStatus = PaymentStatus.pending
     payment_date: Optional[datetime] = None
+    line_items: List[Dict[str, Any]] = []
     notes: Optional[str] = None
     created_by: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -592,6 +593,7 @@ class WageBillCreate(BaseModel):
     department: str
     gross_amount: float
     tds_deduction: float
+    line_items: List[Dict[str, Any]] = []
     notes: Optional[str] = None
 
 class WageBillLine(BaseModel):
@@ -1962,6 +1964,7 @@ async def create_wage_bill(bill_data: WageBillCreate, current_user: User = Depen
         gross_amount=bill_data.gross_amount,
         tds_deduction=bill_data.tds_deduction,
         net_payable=net_payable,
+        line_items=bill_data.line_items,
         notes=bill_data.notes,
         created_by=current_user.id
     )
@@ -2049,6 +2052,7 @@ async def update_wage_bill(bill_id: str, bill_data: WageBillCreate, current_user
         "gross_amount": bill_data.gross_amount,
         "tds_deduction": bill_data.tds_deduction,
         "net_payable": net_payable,
+        "line_items": bill_data.line_items,
         "notes": bill_data.notes
     }
     
