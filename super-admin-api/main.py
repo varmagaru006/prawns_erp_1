@@ -98,7 +98,7 @@ class LinkRequest(BaseModel):
 class ProvisionUserRequest(BaseModel):
     email: EmailStr
     name: str
-    role: str = "user"
+    role: str = "worker"
     password: str
 
 class AnnouncementCreate(BaseModel):
