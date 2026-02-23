@@ -5,7 +5,7 @@
 - **Full credentials**: See /app/TEST_CREDENTIALS.md
 
 ## App URL
-https://prawn-erp-saas.preview.emergentagent.com
+https://erp-docs-hub.preview.emergentagent.com
 
 ---
 

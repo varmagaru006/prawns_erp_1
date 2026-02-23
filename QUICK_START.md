@@ -75,7 +75,7 @@
 
 ## 🔗 Quick Links
 
-- **App**: https://prawn-erp-saas.preview.emergentagent.com
+- **App**: https://erp-docs-hub.preview.emergentagent.com
 - **Admin Login**: admin@prawnexport.com / admin123
 - **Test Report**: `/app/test_reports/iteration_2.json`
 - **Test Suite**: `/app/backend/tests/test_wastage_features.py`

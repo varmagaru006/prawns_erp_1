@@ -39,7 +39,7 @@ Build a full-stack, production-ready Prawn/Aquaculture Export ERP web applicatio
 ## Test Credentials
 
 ### Super Admin Portal
-- **URL**: https://prawn-erp-saas.preview.emergentagent.com/super-admin/
+- **URL**: https://erp-docs-hub.preview.emergentagent.com/super-admin/
 - **Email**: superadmin@prawnrp.com
 - **Password**: admin123
 
