@@ -18,6 +18,8 @@ import WastageDashboard from './pages/WastageDashboard';
 import MarketRates from './pages/MarketRates';
 import LotWaterfall from './pages/LotWaterfall';
 import AttachmentsDemo from './pages/AttachmentsDemo';
+import CreateWageBill from './pages/CreateWageBill';
+import WageBillDetail from './pages/WageBillDetail';
 import Layout from './components/Layout';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { FeatureFlagProvider } from './context/FeatureFlagContext';
@@ -65,6 +67,8 @@ function AppRoutes() {
         <Route path="cold-storage" element={<ColdStorage />} />
         <Route path="sales" element={<Sales />} />
         <Route path="accounts" element={<Accounts />} />
+        <Route path="accounts/create" element={<CreateWageBill />} />
+        <Route path="accounts/:billId" element={<WageBillDetail />} />
         <Route path="admin" element={<AdminPanel />} />
         <Route path="admin/yield-benchmarks" element={<YieldBenchmarks />} />
         <Route path="admin/market-rates" element={<MarketRates />} />
