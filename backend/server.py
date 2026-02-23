@@ -1223,13 +1223,17 @@ async def login(credentials: UserLogin):
     if not user_doc:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
-    if not verify_password(credentials.password, user_doc['password']):
+    # Support both 'password' and 'password_hash' fields for compatibility
+    stored_password = user_doc.get('password') or user_doc.get('password_hash')
+    if not stored_password or not verify_password(credentials.password, stored_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
     if isinstance(user_doc.get('created_at'), str):
         user_doc['created_at'] = datetime.fromisoformat(user_doc['created_at'])
     
-    user = User(**{k: v for k, v in user_doc.items() if k != 'password'})
+    # Remove both password fields before creating user object
+    user_data = {k: v for k, v in user_doc.items() if k not in ['password', 'password_hash']}
+    user = User(**user_data)
     access_token = create_access_token(data={"sub": user.email})
     
     return Token(access_token=access_token, token_type="bearer", user=user)
