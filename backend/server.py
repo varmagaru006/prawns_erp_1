@@ -2913,7 +2913,12 @@ import hashlib
 internal_router = APIRouter(prefix="/internal/saas-hook", tags=["Internal SAAS Hook"])
 
 async def verify_saas_api_key(request: Request):
-    """Verify the X-SAAS-API-Key header against stored hash"""
+    """Verify the X-SAAS-API-Key header against stored hash, or allow localhost requests"""
+    # Allow requests from localhost (Super Admin API on same server)
+    client_host = request.client.host if request.client else None
+    if client_host in ["127.0.0.1", "localhost", "::1"]:
+        return True
+    
     api_key = request.headers.get("X-SAAS-API-Key")
     if not api_key:
         raise HTTPException(status_code=401, detail="Missing API key")
