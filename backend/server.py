@@ -2578,6 +2578,78 @@ async def download_cold_storage_report_pdf(
         }
     )
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Audit Trail Interface
+# ══════════════════════════════════════════════════════════════════════════════
+
+@api_router.get("/audit-logs")
+async def get_audit_logs(
+    module: Optional[str] = None,
+    action: Optional[str] = None,
+    user_id: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: int = 100,
+    skip: int = 0,
+    current_user: User = Depends(get_current_user)
+):
+    """Get audit logs with filters"""
+    # Build query
+    query = {}
+    
+    if module:
+        query['module'] = module
+    if action:
+        query['action'] = action
+    if user_id:
+        query['user_id'] = user_id
+    if date_from or date_to:
+        query['timestamp'] = {}
+        if date_from:
+            query['timestamp']['$gte'] = date_from
+        if date_to:
+            query['timestamp']['$lte'] = date_to
+    
+    # Fetch logs
+    logs = await db.audit_logs.find(query, {"_id": 0}).sort("timestamp", -1).skip(skip).limit(limit).to_list(limit)
+    
+    # Get total count
+    total = await db.audit_logs.count_documents(query)
+    
+    # Enrich logs with user names
+    for log in logs:
+        if log.get('user_id'):
+            user = await db.users.find_one({"id": log['user_id']}, {"_id": 0, "name": 1, "email": 1})
+            if user:
+                log['user_name'] = user.get('name', 'Unknown')
+                log['user_email'] = user.get('email', 'Unknown')
+    
+    return {
+        "logs": logs,
+        "total": total,
+        "limit": limit,
+        "skip": skip
+    }
+
+@api_router.get("/audit-logs/modules")
+async def get_audit_modules(current_user: User = Depends(get_current_user)):
+    """Get list of modules with audit logs"""
+    modules = await db.audit_logs.distinct("module")
+    return {"modules": sorted(modules)}
+
+@api_router.get("/audit-logs/actions")
+async def get_audit_actions(
+    module: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Get list of actions with audit logs"""
+    query = {}
+    if module:
+        query['module'] = module
+    
+    actions = await db.audit_logs.distinct("action", query)
+    return {"actions": sorted(actions)}
+
 # Universal Attachments & Notes
 @api_router.post("/attachments/upload")
 async def upload_attachment(
