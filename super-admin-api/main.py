@@ -1217,7 +1217,13 @@ async def push_branding_to_client(client_id: str, branding: BrandingUpdate, curr
         raise HTTPException(status_code=400, detail="Client not linked")
     
     # Merge with existing branding
-    current_branding = dict(client["branding"]) if client["branding"] else {}
+    branding_data = client["branding"]
+    if isinstance(branding_data, str):
+        current_branding = json.loads(branding_data) if branding_data else {}
+    elif isinstance(branding_data, dict):
+        current_branding = branding_data
+    else:
+        current_branding = {}
     new_branding = {k: v for k, v in branding.model_dump().items() if v is not None}
     current_branding.update(new_branding)
     
