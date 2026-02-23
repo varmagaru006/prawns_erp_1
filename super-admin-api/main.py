@@ -486,6 +486,128 @@ async def bulk_toggle_features(
     return {"status": "success", "message": f"Updated {len(features)} features"}
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Client Linking
+# ══════════════════════════════════════════════════════════════════════════════
+
+class LinkRequest(BaseModel):
+    webhook_url: Optional[str] = None
+
+@app.post("/clients/{client_id}/link")
+async def link_client(client_id: str, request: LinkRequest, current_admin = Depends(get_current_super_admin)):
+    """Link client ERP by calling its handshake endpoint"""
+    import httpx
+    
+    # Get client info
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    
+    # Check if already linked
+    if client.get("link_status") == "linked":
+        return {
+            "status": "success",
+            "message": "Client already linked",
+            "link_status": "linked"
+        }
+    
+    # Get the API key hash (already stored when client was created)
+    api_key_hash = client.get("api_key_hash")
+    if not api_key_hash:
+        raise HTTPException(status_code=400, detail="API key not found for client")
+    
+    # Get plan details
+    plan_code = "free"
+    if client.get("plan_id"):
+        plan = await db.subscription_plans.find_one({"id": client["plan_id"]}, {"_id": 0})
+        plan_code = plan.get("plan_name", "free").lower() if plan else "free"
+    
+    # Determine webhook URL
+    webhook_url = request.webhook_url or "http://localhost:8001/api/internal/saas-hook"
+    
+    # Update client with webhook URL and set status to 'linking'
+    await db.clients.update_one(
+        {"id": client_id},
+        {"$set": {
+            "webhook_url": webhook_url,
+            "link_status": "linking",
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    # Prepare handshake payload
+    handshake_payload = {
+        "client_id": client_id,
+        "tenant_id": client["tenant_id"],
+        "api_key_hash": api_key_hash,
+        "branding": client.get("branding", {}),
+        "plan": plan_code
+    }
+    
+    # Call client ERP handshake endpoint
+    # We need to retrieve the original API key to send it (it's not stored, so we need another approach)
+    # Instead, let's use the client ERP's internal endpoint directly without needing the API key
+    try:
+        async with httpx.AsyncClient() as http_client:
+            # Call the internal handshake endpoint on client ERP
+            response = await http_client.post(
+                webhook_url,
+                json=handshake_payload,
+                headers={"X-SAAS-API-Key": "internal-link"},  # Use a special header for linking
+                timeout=30.0
+            )
+            
+            if response.status_code == 200:
+                # Update link status to 'linked'
+                await db.clients.update_one(
+                    {"id": client_id},
+                    {"$set": {
+                        "link_status": "linked",
+                        "linked_at": datetime.now(timezone.utc).isoformat(),
+                        "updated_at": datetime.now(timezone.utc).isoformat()
+                    }}
+                )
+                
+                # Log activity
+                await db.activity_logs.insert_one({
+                    "id": str(uuid.uuid4()),
+                    "admin_id": current_admin["id"],
+                    "action": "LINK_CLIENT",
+                    "entity_id": client_id,
+                    "details": {"tenant_id": client["tenant_id"]},
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                })
+                
+                return {
+                    "status": "success",
+                    "message": "Client linked successfully",
+                    "link_status": "linked"
+                }
+            else:
+                # Link failed, update status back to pending
+                await db.clients.update_one(
+                    {"id": client_id},
+                    {"$set": {
+                        "link_status": "pending",
+                        "updated_at": datetime.now(timezone.utc).isoformat()
+                    }}
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to link client: {response.text}"
+                )
+    
+    except httpx.HTTPError as e:
+        # Link failed, update status back to pending
+        await db.clients.update_one(
+            {"id": client_id},
+            {"$set": {
+                "link_status": "pending",
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+        raise HTTPException(status_code=500, detail=f"Failed to connect to client ERP: {str(e)}")
+
+# ══════════════════════════════════════════════════════════════════════════════
 # User Provisioning
 # ══════════════════════════════════════════════════════════════════════════════
 
