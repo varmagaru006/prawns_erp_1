@@ -1229,10 +1229,8 @@ async def push_branding_to_client(client_id: str, branding: BrandingUpdate, curr
     current_branding.update(new_branding)
     
     # Update in database
-    await database.execute(
-        text("UPDATE clients SET branding = cast(:branding as jsonb) WHERE id::text = :client_id"),
-        values={"branding": json.dumps(current_branding), "client_id": client_id}
-    )
+    update_sql = "UPDATE clients SET branding = cast(:branding as jsonb) WHERE id = :client_id::uuid"
+    await database.execute(query=update_sql, values={"branding": json.dumps(current_branding), "client_id": client_id})
     
     # Push to client
     try:
