@@ -2235,6 +2235,39 @@ async def delete_wage_bill(bill_id: str, current_user: User = Depends(get_curren
     
     return {"status": "success", "message": "Wage bill deleted"}
 
+@api_router.get("/wage-bills/{bill_id}/pdf")
+async def download_wage_bill_pdf(bill_id: str, current_user: User = Depends(get_current_user)):
+    """Download wage bill as PDF"""
+    bill = await db.wage_bills.find_one({"id": bill_id}, {"_id": 0})
+    if not bill:
+        raise HTTPException(status_code=404, detail="Wage bill not found")
+    
+    # Convert datetime strings back to datetime objects
+    if isinstance(bill.get('created_at'), str):
+        bill['created_at'] = datetime.fromisoformat(bill['created_at'])
+    if isinstance(bill.get('period_from'), str):
+        bill['period_from'] = datetime.fromisoformat(bill['period_from'])
+    if isinstance(bill.get('period_to'), str):
+        bill['period_to'] = datetime.fromisoformat(bill['period_to'])
+    if bill.get('payment_date') and isinstance(bill['payment_date'], str):
+        bill['payment_date'] = datetime.fromisoformat(bill['payment_date'])
+    
+    # Create WageBill object
+    wage_bill = WageBill(**bill)
+    
+    # Generate PDF
+    pdf_bytes = generate_wage_bill_pdf(wage_bill)
+    
+    # Return as downloadable file
+    from fastapi.responses import Response
+    return Response(
+        content=pdf_bytes,
+        media_type='application/pdf',
+        headers={
+            'Content-Disposition': f'attachment; filename=wage_bill_{bill["bill_number"]}.pdf'
+        }
+    )
+
 # Universal Attachments & Notes
 @api_router.post("/attachments/upload")
 async def upload_attachment(
