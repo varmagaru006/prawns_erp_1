@@ -54,6 +54,28 @@ export default function WageBillDetail() {
     }
   };
 
+  const handleDownloadPDF = async () => {
+    try {
+      const response = await axios.get(`${API}/wage-bills/${billId}/pdf`, {
+        responseType: 'blob'
+      });
+      
+      // Create download link
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `wage_bill_${bill.bill_number}.pdf`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      
+      toast.success('PDF downloaded successfully');
+    } catch (error) {
+      toast.error('Failed to download PDF');
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -279,7 +301,7 @@ export default function WageBillDetail() {
                 Mark as Paid
               </Button>
             )}
-            <Button variant="outline" className="gap-2" disabled>
+            <Button variant="outline" className="gap-2" onClick={handleDownloadPDF}>
               <Download className="h-4 w-4" />
               Download PDF
             </Button>
