@@ -1197,6 +1197,138 @@ def generate_procurement_receipt_pdf(lot: ProcurementLot, agent: Agent) -> bytes
     buffer.seek(0)
     return buffer.getvalue()
 
+
+def generate_wage_bill_pdf(bill: WageBill) -> bytes:
+    """Generate PDF for wage bill with worker line items"""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    elements = []
+    styles = getSampleStyleSheet()
+    
+    # Title
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=20,
+        textColor=colors.HexColor('#1e40af'),
+        spaceAfter=20,
+        alignment=TA_CENTER
+    )
+    elements.append(Paragraph("WAGE BILL", title_style))
+    elements.append(Spacer(1, 0.1*inch))
+    
+    # Bill Info
+    info_data = [
+        ['Bill Number:', bill.bill_number, 'Bill Type:', bill.bill_type.upper()],
+        ['Department:', bill.department, 'Status:', bill.payment_status.value.upper()],
+        ['Period From:', bill.period_from.strftime('%d-%m-%Y'), 'Period To:', bill.period_to.strftime('%d-%m-%Y')],
+        ['Created:', bill.created_at.strftime('%d-%m-%Y %H:%M'), '', ''],
+    ]
+    
+    info_table = Table(info_data, colWidths=[1.5*inch, 2*inch, 1.5*inch, 2*inch])
+    info_table.setStyle(TableStyle([
+        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+        ('FONTNAME', (2, 0), (2, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('TEXTCOLOR', (0, 0), (0, -1), colors.HexColor('#374151')),
+        ('TEXTCOLOR', (2, 0), (2, -1), colors.HexColor('#374151')),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+    ]))
+    elements.append(info_table)
+    elements.append(Spacer(1, 0.3*inch))
+    
+    # Worker Line Items Table
+    if bill.line_items and len(bill.line_items) > 0:
+        elements.append(Paragraph("<b>Worker Details</b>", styles['Heading2']))
+        elements.append(Spacer(1, 0.1*inch))
+        
+        worker_data = [['Code', 'Name', 'Days', 'Rate', 'Basic', 'VA', 'TDS', 'Net']]
+        
+        for item in bill.line_items:
+            worker_data.append([
+                item.get('worker_code', ''),
+                item.get('worker_name', ''),
+                str(item.get('days_worked', 0)),
+                f"₹{item.get('rate_per_day', 0):.0f}",
+                f"₹{item.get('basic_amount', 0):.2f}",
+                f"₹{item.get('va_allowance', 0):.2f}",
+                f"₹{item.get('tds_deducted', 0):.2f}",
+                f"₹{item.get('net_amount', 0):.2f}",
+            ])
+        
+        # Calculate totals
+        total_basic = sum(item.get('basic_amount', 0) for item in bill.line_items)
+        total_va = sum(item.get('va_allowance', 0) for item in bill.line_items)
+        total_tds = sum(item.get('tds_deducted', 0) for item in bill.line_items)
+        total_net = sum(item.get('net_amount', 0) for item in bill.line_items)
+        
+        worker_data.append([
+            '', 'TOTAL', '', '',
+            f"₹{total_basic:.2f}",
+            f"₹{total_va:.2f}",
+            f"₹{total_tds:.2f}",
+            f"₹{total_net:.2f}"
+        ])
+        
+        worker_table = Table(worker_data, colWidths=[0.6*inch, 1.8*inch, 0.5*inch, 0.7*inch, 0.9*inch, 0.9*inch, 0.9*inch, 1*inch])
+        worker_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1e40af')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 8),
+            ('FONTSIZE', (0, 1), (-1, -1), 7),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#e5e7eb')),
+            ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ]))
+        elements.append(worker_table)
+        elements.append(Spacer(1, 0.3*inch))
+    
+    # Summary Table
+    elements.append(Paragraph("<b>Bill Summary</b>", styles['Heading2']))
+    elements.append(Spacer(1, 0.1*inch))
+    
+    summary_data = [
+        ['Gross Amount', f"₹{bill.gross_amount:,.2f}"],
+        ['TDS Deduction', f"₹{bill.tds_deduction:,.2f}"],
+        ['Net Payable', f"₹{bill.net_payable:,.2f}"],
+    ]
+    
+    summary_table = Table(summary_data, colWidths=[3*inch, 3*inch])
+    summary_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#f3f4f6')),
+        ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+        ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+        ('FONTNAME', (1, -1), (1, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -2), 10),
+        ('FONTSIZE', (0, -1), (-1, -1), 12),
+        ('TEXTCOLOR', (1, -1), (1, -1), colors.HexColor('#10b981')),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+        ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+    ]))
+    elements.append(summary_table)
+    
+    # Notes
+    if bill.notes:
+        elements.append(Spacer(1, 0.3*inch))
+        elements.append(Paragraph(f"<b>Notes:</b> {bill.notes}", styles['Normal']))
+    
+    # Payment Status
+    if bill.payment_date:
+        elements.append(Spacer(1, 0.2*inch))
+        payment_text = f"<b>Payment Date:</b> {bill.payment_date.strftime('%d-%m-%Y %H:%M')}"
+        elements.append(Paragraph(payment_text, styles['Normal']))
+    
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer.getvalue()
+
 # Auth endpoints
 @api_router.post("/auth/register", response_model=User)
 async def register(user_data: UserCreate):
