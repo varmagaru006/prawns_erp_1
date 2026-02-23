@@ -157,13 +157,13 @@ async def get_current_super_admin(credentials: HTTPAuthorizationCredentials = De
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
     
-    query = "SELECT * FROM super_admins WHERE email = :email AND is_active = true"
-    admin = await database.fetch_one(query=query, values={"email": email})
+    # Find super admin in MongoDB
+    admin = await super_admin_db.super_admins.find_one({"email": email, "is_active": True}, {"_id": 0})
     
     if admin is None:
         raise HTTPException(status_code=401, detail="Super admin not found")
     
-    return dict(admin)
+    return admin
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Routes
