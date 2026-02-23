@@ -2268,6 +2268,316 @@ async def download_wage_bill_pdf(bill_id: str, current_user: User = Depends(get_
         }
     )
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Comprehensive Reports - PDF & Excel Generation
+# ══════════════════════════════════════════════════════════════════════════════
+
+def generate_procurement_report_pdf(lots: List[dict], filters: dict) -> bytes:
+    """Generate PDF report for procurement lots"""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    elements = []
+    styles = getSampleStyleSheet()
+    
+    # Title
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=18,
+        textColor=colors.HexColor('#1e40af'),
+        spaceAfter=20,
+        alignment=TA_CENTER
+    )
+    elements.append(Paragraph("Procurement Report", title_style))
+    elements.append(Spacer(1, 0.3*inch))
+    
+    # Filter info
+    filter_text = f"Period: {filters.get('date_from', 'All')} to {filters.get('date_to', 'All')}"
+    elements.append(Paragraph(filter_text, styles['Normal']))
+    elements.append(Spacer(1, 0.2*inch))
+    
+    # Data table
+    data = [['Lot #', 'Date', 'Supplier', 'Species', 'Quantity (kg)', 'Rate', 'Amount']]
+    
+    total_qty = 0
+    total_amt = 0
+    
+    for lot in lots:
+        data.append([
+            lot.get('lot_number', 'N/A'),
+            lot.get('purchase_date', '')[:10] if lot.get('purchase_date') else 'N/A',
+            lot.get('supplier_name', 'N/A'),
+            lot.get('species', 'N/A'),
+            f"{lot.get('quantity', 0):.2f}",
+            f"₹{lot.get('rate_per_kg', 0):.2f}",
+            f"₹{lot.get('total_purchase_amount', 0):.2f}"
+        ])
+        total_qty += lot.get('quantity', 0)
+        total_amt += lot.get('total_purchase_amount', 0)
+    
+    # Add totals row
+    data.append(['', '', '', 'TOTAL', f"{total_qty:.2f}", '', f"₹{total_amt:.2f}"])
+    
+    table = Table(data, colWidths=[1*inch, 1*inch, 1.5*inch, 1*inch, 1*inch, 1*inch, 1.2*inch])
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1e40af')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#e5e7eb')),
+        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ('GRID', (0, 0), (-1, -1), 1, colors.grey)
+    ]))
+    
+    elements.append(table)
+    doc.build(elements)
+    
+    buffer.seek(0)
+    return buffer.read()
+
+def generate_production_report_pdf(orders: List[dict], filters: dict) -> bytes:
+    """Generate PDF report for production orders"""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    elements = []
+    styles = getSampleStyleSheet()
+    
+    # Title
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=18,
+        textColor=colors.HexColor('#1e40af'),
+        spaceAfter=20,
+        alignment=TA_CENTER
+    )
+    elements.append(Paragraph("Production Report", title_style))
+    elements.append(Spacer(1, 0.3*inch))
+    
+    # Filter info
+    filter_text = f"Period: {filters.get('date_from', 'All')} to {filters.get('date_to', 'All')}"
+    elements.append(Paragraph(filter_text, styles['Normal']))
+    elements.append(Spacer(1, 0.2*inch))
+    
+    # Data table
+    data = [['Order #', 'Date', 'Type', 'Input (kg)', 'Output (kg)', 'Yield %', 'Status']]
+    
+    total_input = 0
+    total_output = 0
+    
+    for order in orders:
+        input_qty = order.get('input_quantity', 0)
+        output_qty = order.get('output_quantity', 0)
+        yield_pct = (output_qty / input_qty * 100) if input_qty > 0 else 0
+        
+        data.append([
+            order.get('order_number', 'N/A'),
+            order.get('start_date', '')[:10] if order.get('start_date') else 'N/A',
+            order.get('process_type', 'N/A'),
+            f"{input_qty:.2f}",
+            f"{output_qty:.2f}",
+            f"{yield_pct:.1f}%",
+            order.get('status', 'N/A')
+        ])
+        total_input += input_qty
+        total_output += output_qty
+    
+    # Add totals row
+    avg_yield = (total_output / total_input * 100) if total_input > 0 else 0
+    data.append(['', '', 'TOTAL', f"{total_input:.2f}", f"{total_output:.2f}", f"{avg_yield:.1f}%", ''])
+    
+    table = Table(data, colWidths=[1.2*inch, 1*inch, 1*inch, 1*inch, 1*inch, 0.8*inch, 0.8*inch])
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1e40af')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 9),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#e5e7eb')),
+        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ('GRID', (0, 0), (-1, -1), 1, colors.grey)
+    ]))
+    
+    elements.append(table)
+    doc.build(elements)
+    
+    buffer.seek(0)
+    return buffer.read()
+
+@api_router.get("/reports/procurement/pdf")
+async def download_procurement_report_pdf(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    supplier: Optional[str] = None,
+    species: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Generate and download procurement report as PDF"""
+    # Build query
+    query = {}
+    if date_from:
+        query['purchase_date'] = {'$gte': date_from}
+    if date_to:
+        if 'purchase_date' in query:
+            query['purchase_date']['$lte'] = date_to
+        else:
+            query['purchase_date'] = {'$lte': date_to}
+    if supplier:
+        query['supplier_name'] = supplier
+    if species:
+        query['species'] = species
+    
+    # Fetch data
+    lots = await db.procurement_lots.find(query, {"_id": 0}).sort("purchase_date", -1).to_list(1000)
+    
+    # Generate PDF
+    filters = {
+        'date_from': date_from or 'All',
+        'date_to': date_to or 'All',
+        'supplier': supplier or 'All',
+        'species': species or 'All'
+    }
+    pdf_bytes = generate_procurement_report_pdf(lots, filters)
+    
+    # Return as downloadable file
+    from fastapi.responses import Response
+    return Response(
+        content=pdf_bytes,
+        media_type='application/pdf',
+        headers={
+            'Content-Disposition': f'attachment; filename=procurement_report_{datetime.now().strftime("%Y%m%d")}.pdf'
+        }
+    )
+
+@api_router.get("/reports/production/pdf")
+async def download_production_report_pdf(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    process_type: Optional[str] = None,
+    status: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Generate and download production report as PDF"""
+    # Build query
+    query = {}
+    if date_from:
+        query['start_date'] = {'$gte': date_from}
+    if date_to:
+        if 'start_date' in query:
+            query['start_date']['$lte'] = date_to
+        else:
+            query['start_date'] = {'$lte': date_to}
+    if process_type:
+        query['process_type'] = process_type
+    if status:
+        query['status'] = status
+    
+    # Fetch data
+    orders = await db.production_orders.find(query, {"_id": 0}).sort("start_date", -1).to_list(1000)
+    
+    # Generate PDF
+    filters = {
+        'date_from': date_from or 'All',
+        'date_to': date_to or 'All',
+        'process_type': process_type or 'All',
+        'status': status or 'All'
+    }
+    pdf_bytes = generate_production_report_pdf(orders, filters)
+    
+    # Return as downloadable file
+    from fastapi.responses import Response
+    return Response(
+        content=pdf_bytes,
+        media_type='application/pdf',
+        headers={
+            'Content-Disposition': f'attachment; filename=production_report_{datetime.now().strftime("%Y%m%d")}.pdf'
+        }
+    )
+
+@api_router.get("/reports/cold-storage/pdf")
+async def download_cold_storage_report_pdf(
+    chamber_id: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Generate and download cold storage inventory report as PDF"""
+    # Build query
+    query = {}
+    if chamber_id:
+        query['chamber_id'] = chamber_id
+    
+    # Fetch inventory data
+    inventory = await db.cold_storage_inventory.find(query, {"_id": 0}).to_list(1000)
+    
+    # Generate PDF
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    elements = []
+    styles = getSampleStyleSheet()
+    
+    # Title
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=18,
+        textColor=colors.HexColor('#1e40af'),
+        spaceAfter=20,
+        alignment=TA_CENTER
+    )
+    elements.append(Paragraph("Cold Storage Inventory Report", title_style))
+    elements.append(Spacer(1, 0.3*inch))
+    
+    # Data table
+    data = [['Item', 'Lot #', 'Chamber', 'Slot', 'Quantity (kg)', 'Entry Date', 'Status']]
+    
+    total_qty = 0
+    
+    for item in inventory:
+        data.append([
+            item.get('item_name', 'N/A'),
+            item.get('lot_number', 'N/A'),
+            item.get('chamber_name', 'N/A'),
+            item.get('slot_number', 'N/A'),
+            f"{item.get('quantity', 0):.2f}",
+            item.get('entry_date', '')[:10] if item.get('entry_date') else 'N/A',
+            item.get('status', 'N/A')
+        ])
+        total_qty += item.get('quantity', 0)
+    
+    # Add totals row
+    data.append(['', '', '', '', f"{total_qty:.2f}", '', ''])
+    
+    table = Table(data, colWidths=[1.3*inch, 1*inch, 1*inch, 0.8*inch, 1.1*inch, 1*inch, 0.8*inch])
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1e40af')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 9),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#e5e7eb')),
+        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ('GRID', (0, 0), (-1, -1), 1, colors.grey)
+    ]))
+    
+    elements.append(table)
+    doc.build(elements)
+    
+    buffer.seek(0)
+    pdf_bytes = buffer.read()
+    
+    # Return as downloadable file
+    from fastapi.responses import Response
+    return Response(
+        content=pdf_bytes,
+        media_type='application/pdf',
+        headers={
+            'Content-Disposition': f'attachment; filename=cold_storage_report_{datetime.now().strftime("%Y%m%d")}.pdf'
+        }
+    )
+
 # Universal Attachments & Notes
 @api_router.post("/attachments/upload")
 async def upload_attachment(
