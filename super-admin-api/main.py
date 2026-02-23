@@ -1293,28 +1293,22 @@ async def provision_user(client_id: str, user_data: UserProvision, current_admin
                 result = response.json()
                 
                 # Record in provisioned_users
-                insert_query = """
+                insert_query = f"""
                     INSERT INTO provisioned_users (
                         client_id, user_id_in_erp, full_name, email, role,
                         provisioned_by, push_status, last_pushed_at
                     ) VALUES (
-                        :client_id::uuid, :user_id::uuid, :full_name, :email, :role,
-                        :provisioned_by::uuid, 'success', NOW()
+                        '{client_id}'::uuid, '{user_id}'::uuid, 
+                        '{user_data.full_name}', '{user_data.email}', '{user_data.role}',
+                        '{current_admin["id"]}'::uuid, 'success', NOW()
                     )
                     ON CONFLICT (client_id, email) DO UPDATE SET
-                        role = :role,
+                        role = '{user_data.role}',
                         push_status = 'success',
                         last_pushed_at = NOW()
                     RETURNING id::text
                 """
-                await database.execute(query=insert_query, values={
-                    "client_id": client_id,
-                    "user_id": user_id,
-                    "full_name": user_data.full_name,
-                    "email": user_data.email,
-                    "role": user_data.role,
-                    "provisioned_by": current_admin["id"]
-                })
+                await database.execute(query=insert_query)
                 
                 return {
                     "user_id": user_id,
