@@ -5,7 +5,7 @@
 - **Full credentials**: See /app/TEST_CREDENTIALS.md
 
 ## App URL
-https://erp-docs-hub.preview.emergentagent.com
+https://wage-billing-demo.preview.emergentagent.com
 
 ---
 

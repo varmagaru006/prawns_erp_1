@@ -148,7 +148,7 @@ Invoice, Weighment Slip, Lab Report, Gate Pass, Photo, Certificate, Contract, Ot
 ## Test Credentials
 
 ### Super Admin Portal
-- **URL**: https://erp-docs-hub.preview.emergentagent.com/super-admin/
+- **URL**: https://wage-billing-demo.preview.emergentagent.com/super-admin/
 - **Email**: superadmin@prawnrp.com
 - **Password**: admin123
 

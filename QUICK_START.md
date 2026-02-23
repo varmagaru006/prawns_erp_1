@@ -75,7 +75,7 @@
 
 ## 🔗 Quick Links
 
-- **App**: https://erp-docs-hub.preview.emergentagent.com
+- **App**: https://wage-billing-demo.preview.emergentagent.com
 - **Admin Login**: admin@prawnexport.com / admin123
 - **Test Report**: `/app/test_reports/iteration_2.json`
 - **Test Suite**: `/app/backend/tests/test_wastage_features.py`
