@@ -95,9 +95,12 @@ class FeatureFlagService:
         cache_key = f"flags:{tenant_id}"
         
         # Check Redis cache
-        cached = redis_client.get(cache_key)
-        if cached:
-            return json.loads(cached)
+        try:
+            cached = redis_client.get(cache_key)
+            if cached:
+                return json.loads(cached)
+        except:
+            pass  # Redis unavailable, skip cache
         
         # Query MongoDB
         flags = await self.db.feature_flags.find(
@@ -108,18 +111,24 @@ class FeatureFlagService:
         flags_dict = {flag["feature_code"]: flag["is_enabled"] for flag in flags}
         
         # Cache in Redis
-        redis_client.setex(cache_key, self.cache_ttl, json.dumps(flags_dict))
+        try:
+            redis_client.setex(cache_key, self.cache_ttl, json.dumps(flags_dict))
+        except:
+            pass  # Redis unavailable, skip caching
         
         return flags_dict
     
     def invalidate_cache(self, tenant_id: str, feature_code: Optional[str] = None):
         """Invalidate Redis cache when features are toggled"""
-        if feature_code:
-            cache_key = f"feature:{tenant_id}:{feature_code}"
-            redis_client.delete(cache_key)
-        
-        # Always invalidate the full flags cache
-        redis_client.delete(f"flags:{tenant_id}")
+        try:
+            if feature_code:
+                cache_key = f"feature:{tenant_id}:{feature_code}"
+                redis_client.delete(cache_key)
+            
+            # Always invalidate the full flags cache
+            redis_client.delete(f"flags:{tenant_id}")
+        except:
+            pass  # Redis unavailable, skip cache invalidation
 
 
 # Middleware to inject tenant context
