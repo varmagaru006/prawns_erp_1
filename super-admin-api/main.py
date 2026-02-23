@@ -1066,7 +1066,14 @@ async def link_client(client_id: str, request: LinkRequest, current_admin = Depe
     })
     
     # Call the client ERP handshake endpoint
-    branding = dict(client["branding"]) if client["branding"] else {}
+    branding_data = client["branding"]
+    if isinstance(branding_data, str):
+        import json as json_lib
+        branding = json_lib.loads(branding_data) if branding_data else {}
+    elif isinstance(branding_data, dict):
+        branding = branding_data
+    else:
+        branding = {}
     
     try:
         async with httpx.AsyncClient() as http_client:
