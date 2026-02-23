@@ -1481,7 +1481,13 @@ async def launch_client(client_id: str, current_admin = Depends(get_current_supe
         
         # 3. Push branding
         try:
-            branding = dict(client["branding"]) if client["branding"] else {}
+            branding_data = client["branding"]
+            if isinstance(branding_data, str):
+                branding = json.loads(branding_data) if branding_data else {}
+            elif isinstance(branding_data, dict):
+                branding = branding_data
+            else:
+                branding = {}
             response = await http_client.post(
                 f"{client['webhook_url']}/branding",
                 json=branding,
