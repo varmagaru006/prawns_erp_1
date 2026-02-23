@@ -1992,6 +1992,67 @@ async def get_wage_bills(current_user: User = Depends(get_current_user)):
     return bills
 
 # Universal Attachments & Notes
+@api_router.post("/attachments/upload")
+async def upload_attachment(
+    file: UploadFile = File(...),
+    entity_type: str = Form(...),
+    entity_id: str = Form(...),
+    category: str = Form(...),
+    description: Optional[str] = Form(None),
+    current_user: User = Depends(get_current_user)
+):
+    """Upload a file attachment for any entity"""
+    # Validate file size (max 10MB)
+    contents = await file.read()
+    file_size_kb = len(contents) / 1024
+    if file_size_kb > 10240:  # 10MB limit
+        raise HTTPException(status_code=400, detail="File size exceeds 10MB limit")
+    
+    # Generate unique filename
+    file_ext = Path(file.filename).suffix
+    unique_filename = f"{uuid.uuid4()}{file_ext}"
+    file_path = UPLOADS_DIR / unique_filename
+    
+    # Save file
+    with open(file_path, "wb") as f:
+        f.write(contents)
+    
+    # Create attachment record
+    attachment = Attachment(
+        entity_type=entity_type,
+        entity_id=entity_id,
+        file_name=file.filename,
+        file_url=f"/uploads/{unique_filename}",
+        file_size_kb=round(file_size_kb, 2),
+        mime_type=file.content_type or "application/octet-stream",
+        category=category,
+        description=description,
+        uploaded_by=current_user.id
+    )
+    
+    attachment_dict = attachment.model_dump()
+    attachment_dict['created_at'] = attachment_dict['created_at'].isoformat()
+    
+    await db.attachments.insert_one(attachment_dict)
+    return {
+        "id": attachment.id,
+        "file_name": attachment.file_name,
+        "file_url": attachment.file_url,
+        "file_size_kb": attachment.file_size_kb,
+        "category": attachment.category
+    }
+
+@api_router.delete("/attachments/{attachment_id}")
+async def delete_attachment(attachment_id: str, current_user: User = Depends(get_current_user)):
+    """Soft delete an attachment"""
+    result = await db.attachments.update_one(
+        {"id": attachment_id},
+        {"$set": {"is_deleted": True}}
+    )
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    return {"status": "deleted"}
+
 @api_router.post("/attachments", response_model=Attachment)
 async def create_attachment(attachment_data: AttachmentCreate, current_user: User = Depends(get_current_user)):
     attachment = Attachment(
