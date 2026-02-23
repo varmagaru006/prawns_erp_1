@@ -92,6 +92,9 @@ class FeatureToggle(BaseModel):
     feature_code: str
     is_enabled: bool
 
+class LinkRequest(BaseModel):
+    webhook_url: Optional[str] = None
+
 class ProvisionUserRequest(BaseModel):
     email: EmailStr
     name: str
