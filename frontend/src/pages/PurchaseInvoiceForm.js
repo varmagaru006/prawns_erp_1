@@ -154,6 +154,7 @@ const PurchaseInvoiceForm = () => {
 
     const payload = {
       ...formData,
+      farmer_mobile: formData.farmer_mobile || null,
       line_items: lineItems.map(line => ({
         line_no: line.line_no,
         variety: line.variety,
