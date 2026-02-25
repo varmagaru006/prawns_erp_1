@@ -6,7 +6,7 @@ import { Input } from '../components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { toast } from 'sonner';
-import { Plus, Download, Eye, Check, Trash2, Send, FileText } from 'lucide-react';
+import { Plus, Download, Eye, Check, Trash2, Send, FileText, X, FileSpreadsheet } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 const PurchaseInvoices = () => {
@@ -27,6 +27,9 @@ const PurchaseInvoices = () => {
     total: 0,
     pages: 0
   });
+  const [previewInvoice, setPreviewInvoice] = useState(null);
+  const [showPreview, setShowPreview] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     fetchInvoices();
