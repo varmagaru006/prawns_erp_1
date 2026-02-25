@@ -83,6 +83,8 @@ const Layout = () => {
     { name: 'Sales & Dispatch', path: '/sales', icon: 'Ship', moduleKey: 'sales' },
     { name: 'Accounts', path: '/accounts', icon: 'Receipt', moduleKey: 'accounts' },
     { name: 'Purchase Invoices', path: '/purchase-invoices', icon: 'FileText', moduleKey: 'procurement' },
+    { name: 'Party Master', path: '/parties', icon: 'Users', moduleKey: 'procurement' },
+    { name: 'Party Ledger', path: '/party-ledger', icon: 'BookOpen', moduleKey: 'partyLedger' },
     { name: 'Wastage Dashboard', path: '/admin/wastage-dashboard', icon: 'TrendingDown', moduleKey: 'wastageDashboard' },
     { name: 'Yield Benchmarks', path: '/admin/yield-benchmarks', icon: 'Target', moduleKey: 'yieldBenchmarks' },
     { name: 'Market Rates', path: '/admin/market-rates', icon: 'DollarSign', moduleKey: 'marketRates' },
