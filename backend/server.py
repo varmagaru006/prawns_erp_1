@@ -3213,6 +3213,39 @@ async def download_purchase_invoice_pdf(
         }
     )
 
+@api_router.get("/tenant-config")
+async def get_tenant_config(current_user: User = Depends(get_current_user)):
+    """Get all tenant configuration"""
+    config_docs = await db.tenant_config.find({}, {"_id": 0}).to_list(100)
+    return config_docs
+
+@api_router.post("/tenant-config")
+async def update_tenant_config(
+    config_data: dict,
+    current_user: User = Depends(get_current_user)
+):
+    """Update tenant configuration (admin/owner only)"""
+    if current_user.role not in ['admin', 'owner']:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    key = config_data.get('key')
+    value = config_data.get('value')
+    
+    if not key:
+        raise HTTPException(status_code=400, detail="Key is required")
+    
+    # Update or insert
+    await db.tenant_config.update_one(
+        {"key": key},
+        {"$set": {"key": key, "value": value}},
+        upsert=True
+    )
+    
+    await create_audit_log(current_user.id, "UPDATE_TENANT_CONFIG", "admin",
+                          {"key": key})
+    
+    return {"status": "success", "message": "Configuration updated"}
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Comprehensive Reports - PDF & Excel Generation
 # ══════════════════════════════════════════════════════════════════════════════
