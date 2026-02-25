@@ -334,7 +334,7 @@ const PurchaseInvoices = () => {
                 </TableRow>
               ) : invoices.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={10} className="text-center text-gray-500">No invoices found</TableCell>
+                  <TableCell colSpan={12} className="text-center text-gray-500">No invoices found</TableCell>
                 </TableRow>
               ) : (
                 invoices.map((invoice) => (
@@ -342,6 +342,15 @@ const PurchaseInvoices = () => {
                     <TableCell className="font-mono">{invoice.invoice_no}</TableCell>
                     <TableCell>{invoice.invoice_date}</TableCell>
                     <TableCell>{invoice.farmer_name}</TableCell>
+                    <TableCell>
+                      {invoice.farmer_mobile ? (
+                        <a href={`tel:${invoice.farmer_mobile}`} className="text-blue-600 hover:underline">
+                          {invoice.farmer_mobile}
+                        </a>
+                      ) : (
+                        <span className="text-gray-400">-</span>
+                      )}
+                    </TableCell>
                     <TableCell>{invoice.farmer_location || '-'}</TableCell>
                     <TableCell className="text-right">{invoice.total_quantity_kg?.toFixed(3)}</TableCell>
                     <TableCell className="text-right font-medium">₹{invoice.grand_total?.toLocaleString('en-IN')}</TableCell>
@@ -350,6 +359,18 @@ const PurchaseInvoices = () => {
                     </TableCell>
                     <TableCell>{getPaymentChip(invoice.payment_status)}</TableCell>
                     <TableCell>{getStatusChip(invoice.status)}</TableCell>
+                    <TableCell>
+                      <button
+                        onClick={() => handleManualAuditToggle(invoice.id, !invoice.is_manually_recorded)}
+                        className={`px-2 py-1 rounded text-xs font-medium ${
+                          invoice.is_manually_recorded 
+                            ? 'bg-green-100 text-green-800' 
+                            : 'bg-gray-100 text-gray-600'
+                        }`}
+                      >
+                        {invoice.is_manually_recorded ? '✅ Recorded' : '⬜ Pending'}
+                      </button>
+                    </TableCell>
                     <TableCell>
                       <div className="flex gap-1">
                         {invoice.status === 'draft' && (
