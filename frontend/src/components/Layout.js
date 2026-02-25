@@ -24,7 +24,9 @@ import {
   Settings,
   TrendingDown,
   Target,
-  Paperclip
+  Paperclip,
+  History,
+  DollarSign
 } from 'lucide-react';
 
 const Layout = () => {
