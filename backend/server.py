@@ -2649,6 +2649,190 @@ async def get_purchase_invoices(
         "pages": pages
     }
 
+@api_router.get("/purchase-invoices/metrics")
+async def get_purchase_invoice_metrics(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    invoice_status: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Get metrics for purchase invoices dashboard"""
+    query = {}
+    
+    # Date filter
+    if from_date or to_date:
+        query['invoice_date'] = {}
+        if from_date:
+            query['invoice_date']['$gte'] = from_date
+        if to_date:
+            query['invoice_date']['$lte'] = to_date
+    
+    # Get all invoices matching filters (excluding drafts from metrics)
+    all_invoices = await db.purchase_invoices.find(
+        {**query, 'status': {'$in': ['approved', 'pushed']}},
+        {"_id": 0}
+    ).to_list(10000)
+    
+    total_count = len(all_invoices)
+    total_value = sum(inv.get('grand_total', 0) for inv in all_invoices)
+    
+    # Payment status breakdown
+    pending_invoices = [inv for inv in all_invoices if inv.get('payment_status') == 'pending']
+    partial_invoices = [inv for inv in all_invoices if inv.get('payment_status') == 'partial']
+    paid_invoices = [inv for inv in all_invoices if inv.get('payment_status') == 'paid']
+    
+    pending_total = sum(inv.get('balance_due', 0) for inv in pending_invoices)
+    partial_total = sum(inv.get('balance_due', 0) for inv in partial_invoices)
+    paid_total = sum(inv.get('grand_total', 0) for inv in paid_invoices)
+    
+    outstanding_total = pending_total + partial_total
+    
+    # Top farmers by outstanding balance (only pending + partial)
+    outstanding_invoices = pending_invoices + partial_invoices
+    farmer_balances = {}
+    for inv in outstanding_invoices:
+        farmer = inv.get('farmer_name', 'Unknown')
+        farmer_balances[farmer] = farmer_balances.get(farmer, 0) + inv.get('balance_due', 0)
+    
+    top_farmers = sorted(farmer_balances.items(), key=lambda x: x[1], reverse=True)[:8]
+    top_farmers = [{"farmer_name": f, "balance_due": b} for f, b in top_farmers]
+    
+    return {
+        "total_count": total_count,
+        "total_value": total_value,
+        "pending_count": len(pending_invoices),
+        "pending_total": pending_total,
+        "partial_count": len(partial_invoices),
+        "partial_total": partial_total,
+        "paid_count": len(paid_invoices),
+        "paid_total": paid_total,
+        "outstanding_total": outstanding_total,
+        "top_farmers": top_farmers
+    }
+
+@api_router.get("/purchase-invoices/{invoice_id}")
+async def get_purchase_invoice(
+    invoice_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Get single purchase invoice with line items"""
+    invoice = await db.purchase_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    
+    # Get line items
+    lines = await db.purchase_invoice_lines.find(
+        {"invoice_id": invoice_id},
+        {"_id": 0}
+    ).sort("line_no", 1).to_list(100)
+    
+    invoice['line_items'] = lines
+    return invoice
+
+@api_router.put("/purchase-invoices/{invoice_id}")
+async def update_purchase_invoice(
+    invoice_id: str,
+    invoice_data: PurchaseInvoiceCreate,
+    current_user: User = Depends(get_current_user)
+):
+    """Update purchase invoice (only if draft status)"""
+    existing = await db.purchase_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    
+    if existing.get('status') != 'draft':
+        raise HTTPException(status_code=400, detail="Can only edit draft invoices")
+    
+    # Recalculate totals
+    totals = calculate_invoice_totals(invoice_data.line_items, invoice_data.tds_rate_pct)
+    
+    # Update invoice
+    update_data = {
+        "invoice_date": invoice_data.invoice_date.isoformat(),
+        "farmer_name": invoice_data.farmer_name,
+        "farmer_location": invoice_data.farmer_location,
+        "agent_ref_name": invoice_data.agent_ref_name,
+        "weighment_slip_no": invoice_data.weighment_slip_no,
+        "custom_field_1_label": invoice_data.custom_field_1_label,
+        "custom_field_1_value": invoice_data.custom_field_1_value,
+        "custom_field_2_label": invoice_data.custom_field_2_label,
+        "custom_field_2_value": invoice_data.custom_field_2_value,
+        "tds_rate_pct": invoice_data.tds_rate_pct,
+        "advance_paid": invoice_data.advance_paid,
+        "notes": invoice_data.notes,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        **totals
+    }
+    
+    # Calculate balance due and payment status
+    balance_due = totals['grand_total'] - invoice_data.advance_paid
+    update_data['balance_due'] = balance_due
+    
+    if balance_due <= 0:
+        update_data['payment_status'] = 'paid'
+    elif invoice_data.advance_paid > 0:
+        update_data['payment_status'] = 'partial'
+    else:
+        update_data['payment_status'] = 'pending'
+    
+    await db.purchase_invoices.update_one({"id": invoice_id}, {"$set": update_data})
+    
+    # Delete old line items and insert new ones
+    await db.purchase_invoice_lines.delete_many({"invoice_id": invoice_id})
+    
+    for line_data in invoice_data.line_items:
+        line = PurchaseInvoiceLine(
+            invoice_id=invoice_id,
+            line_no=line_data.line_no,
+            variety=line_data.variety,
+            count_value=line_data.count_value,
+            custom_variety_notes=line_data.custom_variety_notes,
+            custom_count_notes=line_data.custom_count_notes,
+            quantity_kg=line_data.quantity_kg,
+            rate=line_data.rate,
+            amount=round(line_data.quantity_kg * line_data.rate, 2)
+        )
+        await db.purchase_invoice_lines.insert_one(line.model_dump())
+    
+    await create_audit_log(current_user.id, "UPDATE_PURCHASE_INVOICE", "procurement",
+                          {"invoice_id": invoice_id})
+    
+    return {"status": "success", "message": "Invoice updated"}
+
+@api_router.post("/purchase-invoices/{invoice_id}/approve")
+async def approve_purchase_invoice(
+    invoice_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Approve purchase invoice (locks it for editing)"""
+    # Check role permission
+    if current_user.role not in ['admin', 'owner', 'procurement_manager']:
+        raise HTTPException(status_code=403, detail="Not authorized to approve invoices")
+    
+    invoice = await db.purchase_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    
+    if invoice.get('status') != 'draft':
+        raise HTTPException(status_code=400, detail="Can only approve draft invoices")
+    
+    # Update status
+    await db.purchase_invoices.update_one(
+        {"id": invoice_id},
+        {"$set": {
+            "status": "approved",
+            "approved_by": current_user.id,
+            "approved_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    await create_audit_log(current_user.id, "APPROVE_PURCHASE_INVOICE", "procurement",
+                          {"invoice_id": invoice_id, "invoice_no": invoice.get('invoice_no')})
+    
+    return {"status": "success", "message": "Invoice approved and locked"}
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Comprehensive Reports - PDF & Excel Generation
 # ══════════════════════════════════════════════════════════════════════════════
