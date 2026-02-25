@@ -165,7 +165,7 @@ class PartyLedgerTester:
         """Test Party Ledger List View API"""
         try:
             # Get ledger accounts for current FY
-            response = self.session.get(f"{self.base_url}/party-ledger-accounts?fy=25-26")
+            response = self.session.get(f"{self.base_url}/party-ledger?fy=25-26")
             if response.status_code == 200:
                 ledgers = response.json()
                 if len(ledgers) > 0:
