@@ -1,16 +1,20 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { API } from '../context/AuthContext';
+import { useFeatureFlags } from '../context/FeatureFlagContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { toast } from 'sonner';
-import { Plus, Download, Eye, Check, Trash2, Send, FileText, X, FileSpreadsheet } from 'lucide-react';
+import { Plus, Download, Eye, Check, Trash2, Send, FileText, X, FileSpreadsheet, Lock } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 const PurchaseInvoices = () => {
   const navigate = useNavigate();
+  const { isEnabled } = useFeatureFlags();
+  const isDashboardEnabled = isEnabled('purchaseInvoiceDashboard');
+  
   const [invoices, setInvoices] = useState([]);
   const [metrics, setMetrics] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -33,8 +37,10 @@ const PurchaseInvoices = () => {
 
   useEffect(() => {
     fetchInvoices();
-    fetchMetrics();
-  }, [filters, pagination.page, pagination.per_page]);
+    if (isDashboardEnabled) {
+      fetchMetrics();
+    }
+  }, [filters, pagination.page, pagination.per_page, isDashboardEnabled]);
 
   const fetchInvoices = async () => {
     setLoading(true);
