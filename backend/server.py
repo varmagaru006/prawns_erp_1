@@ -4829,6 +4829,673 @@ async def dismiss_announcement(
     
     return {"message": "Announcement dismissed"}
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Amendment A5: Party Ledger API Endpoints
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── PARTY MASTER CRUD ─────────────────────────────────────────────────────────
+
+@api_router.post("/parties", response_model=Party)
+async def create_party(party: PartyCreate, current_user: User = Depends(get_current_user)):
+    """Create a new party"""
+    # Check for duplicate party name
+    existing = await db.parties.find_one({"party_name": party.party_name})
+    if existing:
+        raise HTTPException(status_code=400, detail="Party with this name already exists")
+    
+    party_data = party.model_dump()
+    party_data["id"] = str(uuid.uuid4())
+    party_data["created_by"] = current_user.id
+    party_data["created_at"] = datetime.now(timezone.utc)
+    party_data["updated_at"] = datetime.now(timezone.utc)
+    party_data["is_active"] = True
+    
+    await db.parties.insert_one(party_data)
+    return Party(**party_data)
+
+@api_router.get("/parties", response_model=List[Party])
+async def list_parties(
+    search: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """List all parties with optional search"""
+    query = {}
+    if search:
+        query["$or"] = [
+            {"party_name": {"$regex": search, "$options": "i"}},
+            {"party_alias": {"$regex": search, "$options": "i"}},
+            {"short_code": {"$regex": search, "$options": "i"}}
+        ]
+    if is_active is not None:
+        query["is_active"] = is_active
+    
+    parties = await db.parties.find(query, {"_id": 0}).sort("party_name", 1).to_list(1000)
+    
+    # Add current FY ledger balance for each party
+    current_fy = get_financial_year(date.today())
+    for party in parties:
+        ledger = await db.party_ledger_accounts.find_one(
+            {"party_id": party["id"], "financial_year": current_fy},
+            {"_id": 0, "closing_balance": 1}
+        )
+        party["current_fy_balance"] = ledger["closing_balance"] if ledger else 0.0
+    
+    return [Party(**p) for p in parties]
+
+@api_router.get("/parties/{party_id}", response_model=Party)
+async def get_party(party_id: str, current_user: User = Depends(get_current_user)):
+    """Get a single party by ID"""
+    party = await db.parties.find_one({"id": party_id}, {"_id": 0})
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+    return Party(**party)
+
+@api_router.put("/parties/{party_id}", response_model=Party)
+async def update_party(party_id: str, party: PartyCreate, current_user: User = Depends(get_current_user)):
+    """Update a party"""
+    existing = await db.parties.find_one({"id": party_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Party not found")
+    
+    # Check for duplicate name (excluding current party)
+    duplicate = await db.parties.find_one({"party_name": party.party_name, "id": {"$ne": party_id}})
+    if duplicate:
+        raise HTTPException(status_code=400, detail="Another party with this name already exists")
+    
+    update_data = party.model_dump()
+    update_data["updated_at"] = datetime.now(timezone.utc)
+    
+    await db.parties.update_one({"id": party_id}, {"$set": update_data})
+    updated = await db.parties.find_one({"id": party_id}, {"_id": 0})
+    return Party(**updated)
+
+@api_router.delete("/parties/{party_id}")
+async def delete_party(party_id: str, current_user: User = Depends(get_current_user)):
+    """Soft delete a party (set is_active = False)"""
+    existing = await db.parties.find_one({"id": party_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Party not found")
+    
+    # Check if party has ledger entries
+    has_entries = await db.party_ledger_entries.find_one({"party_id": party_id})
+    if has_entries:
+        # Soft delete only
+        await db.parties.update_one(
+            {"id": party_id}, 
+            {"$set": {"is_active": False, "updated_at": datetime.now(timezone.utc)}}
+        )
+        return {"message": "Party deactivated (has ledger history)"}
+    
+    # Hard delete if no entries
+    await db.parties.delete_one({"id": party_id})
+    return {"message": "Party deleted"}
+
+
+# ── PARTY LEDGER ACCOUNTS ─────────────────────────────────────────────────────
+
+@api_router.get("/party-ledger")
+async def list_party_ledgers(
+    fy: Optional[str] = None,
+    search: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """List all party ledger accounts for a financial year"""
+    if not fy:
+        fy = get_financial_year(date.today())
+    
+    # Get all ledgers for this FY
+    query = {"financial_year": fy}
+    ledgers = await db.party_ledger_accounts.find(query, {"_id": 0}).to_list(1000)
+    
+    # Enrich with party details
+    result = []
+    for ledger in ledgers:
+        party = await db.parties.find_one({"id": ledger["party_id"]}, {"_id": 0})
+        if party:
+            if search and search.lower() not in party.get("party_name", "").lower():
+                continue
+            result.append({
+                **ledger,
+                "party_name": party.get("party_name"),
+                "party_alias": party.get("party_alias"),
+                "short_code": party.get("short_code")
+            })
+    
+    return result
+
+@api_router.get("/party-ledger/{party_id}")
+async def get_party_ledger(
+    party_id: str,
+    fy: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Get full ledger detail for a party in a financial year"""
+    if not fy:
+        fy = get_financial_year(date.today())
+    
+    # Get party
+    party = await db.parties.find_one({"id": party_id}, {"_id": 0})
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+    
+    # Get or create ledger account
+    ledger = await db.party_ledger_accounts.find_one(
+        {"party_id": party_id, "financial_year": fy},
+        {"_id": 0}
+    )
+    if not ledger:
+        # Create new ledger account
+        ledger = {
+            "id": str(uuid.uuid4()),
+            "party_id": party_id,
+            "financial_year": fy,
+            "opening_balance": 0.0,
+            "closing_balance": 0.0,
+            "total_billed": 0.0,
+            "total_tds": 0.0,
+            "total_payments": 0.0,
+            "is_locked": False,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc)
+        }
+        await db.party_ledger_accounts.insert_one(ledger)
+    
+    # Get all entries
+    entries = await db.party_ledger_entries.find(
+        {"ledger_id": ledger["id"]},
+        {"_id": 0}
+    ).sort("entry_order", 1).to_list(10000)
+    
+    # Get invoice line items for bill entries
+    for entry in entries:
+        if entry.get("entry_type") == "bill" and entry.get("invoice_id"):
+            lines = await db.purchase_invoice_lines.find(
+                {"invoice_id": entry["invoice_id"]},
+                {"_id": 0}
+            ).sort("line_no", 1).to_list(100)
+            entry["line_items"] = lines
+    
+    # Get tenant config for header
+    config_docs = await db.tenant_config.find({}, {"_id": 0}).to_list(100)
+    tenant_config = {doc['key']: doc['value'] for doc in config_docs}
+    
+    return {
+        "party": party,
+        "ledger": ledger,
+        "entries": entries,
+        "tenant_config": tenant_config,
+        "financial_year": fy
+    }
+
+@api_router.put("/party-ledger/{party_id}/opening-balance")
+async def set_opening_balance(
+    party_id: str,
+    fy: str,
+    opening_balance: float,
+    current_user: User = Depends(get_current_user)
+):
+    """Set opening balance for a ledger (only if no entries exist)"""
+    ledger = await db.party_ledger_accounts.find_one(
+        {"party_id": party_id, "financial_year": fy}
+    )
+    if not ledger:
+        raise HTTPException(status_code=404, detail="Ledger not found")
+    
+    if ledger.get("is_locked"):
+        raise HTTPException(status_code=400, detail="Ledger is locked")
+    
+    # Check for existing entries (excluding opening entry)
+    entry_count = await db.party_ledger_entries.count_documents({
+        "ledger_id": ledger["id"],
+        "entry_type": {"$ne": "opening"}
+    })
+    if entry_count > 0:
+        raise HTTPException(status_code=400, detail="Cannot change opening balance after entries exist")
+    
+    # Update opening balance
+    await db.party_ledger_accounts.update_one(
+        {"id": ledger["id"]},
+        {"$set": {
+            "opening_balance": opening_balance,
+            "closing_balance": opening_balance,
+            "updated_at": datetime.now(timezone.utc)
+        }}
+    )
+    
+    # Create or update opening entry
+    fy_start, _ = get_fy_date_range(fy)
+    await db.party_ledger_entries.update_one(
+        {"ledger_id": ledger["id"], "entry_type": "opening"},
+        {"$set": {
+            "id": str(uuid.uuid4()),
+            "ledger_id": ledger["id"],
+            "party_id": party_id,
+            "entry_date": fy_start,
+            "entry_type": "opening",
+            "description": f"Opening Balance b/f",
+            "balance_after": opening_balance,
+            "entry_order": 0,
+            "created_by": current_user.id,
+            "created_at": datetime.now(timezone.utc)
+        }},
+        upsert=True
+    )
+    
+    return {"message": "Opening balance set", "opening_balance": opening_balance}
+
+
+# ── LEDGER ENTRY MANAGEMENT ───────────────────────────────────────────────────
+
+async def recompute_ledger_balances(ledger_id: str):
+    """
+    Recompute balance_after for all entries in a ledger.
+    Must be called after any INSERT/UPDATE/DELETE on entries.
+    Single sequential scan - O(n) not O(n²).
+    """
+    ledger = await db.party_ledger_accounts.find_one({"id": ledger_id}, {"_id": 0})
+    if not ledger:
+        return
+    
+    entries = await db.party_ledger_entries.find(
+        {"ledger_id": ledger_id},
+        {"_id": 0}
+    ).sort("entry_order", 1).to_list(10000)
+    
+    running = ledger.get("opening_balance", 0.0)
+    total_billed = 0.0
+    total_tds = 0.0
+    total_payments = 0.0
+    
+    for entry in entries:
+        entry_type = entry.get("entry_type")
+        
+        if entry_type == "opening":
+            # Opening balance entry just shows the opening, doesn't change running
+            pass
+        elif entry_type in ("bill", "manual_debit"):
+            tds_after = entry.get("tds_after_bill") or entry.get("bill_subtotal", 0)
+            running += tds_after
+            total_billed += entry.get("bill_subtotal", 0)
+            total_tds += entry.get("tds_amount", 0)
+        elif entry_type in ("payment", "manual_credit"):
+            running -= entry.get("payment_amount", 0)
+            total_payments += entry.get("payment_amount", 0)
+        
+        # Update entry's balance_after
+        await db.party_ledger_entries.update_one(
+            {"id": entry["id"]},
+            {"$set": {"balance_after": round(running, 2)}}
+        )
+    
+    # Update ledger totals
+    await db.party_ledger_accounts.update_one(
+        {"id": ledger_id},
+        {"$set": {
+            "closing_balance": round(running, 2),
+            "total_billed": round(total_billed, 2),
+            "total_tds": round(total_tds, 4),
+            "total_payments": round(total_payments, 2),
+            "updated_at": datetime.now(timezone.utc)
+        }}
+    )
+
+async def create_ledger_entry_for_invoice(invoice: dict, current_user_id: str):
+    """
+    Create a ledger entry when an invoice is pushed.
+    Called from the push-to-procurement endpoint.
+    """
+    party_id = invoice.get("party_id")
+    if not party_id:
+        return None  # No party linked, no ledger entry
+    
+    invoice_date = invoice.get("invoice_date")
+    if isinstance(invoice_date, str):
+        invoice_date = date.fromisoformat(invoice_date)
+    
+    fy = get_financial_year(invoice_date)
+    
+    # Get or create ledger account
+    ledger = await db.party_ledger_accounts.find_one(
+        {"party_id": party_id, "financial_year": fy}
+    )
+    if not ledger:
+        ledger = {
+            "id": str(uuid.uuid4()),
+            "party_id": party_id,
+            "financial_year": fy,
+            "opening_balance": 0.0,
+            "closing_balance": 0.0,
+            "total_billed": 0.0,
+            "total_tds": 0.0,
+            "total_payments": 0.0,
+            "is_locked": False,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc)
+        }
+        await db.party_ledger_accounts.insert_one(ledger)
+    elif ledger.get("is_locked"):
+        raise HTTPException(status_code=400, detail=f"Ledger for FY {fy} is locked")
+    
+    # Get next entry order
+    max_order = await db.party_ledger_entries.find_one(
+        {"ledger_id": ledger["id"]},
+        sort=[("entry_order", -1)]
+    )
+    next_order = (max_order.get("entry_order", 0) if max_order else 0) + 1
+    
+    # Calculate TDS values
+    subtotal = invoice.get("subtotal", 0)
+    tds_rate = invoice.get("tds_rate_pct", 0.1)
+    tds_amount = round(subtotal * tds_rate / 100, 4)
+    tds_after_bill = round(subtotal - tds_amount, 2)
+    
+    # Create entry
+    entry = {
+        "id": str(uuid.uuid4()),
+        "ledger_id": ledger["id"],
+        "party_id": party_id,
+        "entry_date": invoice_date,
+        "entry_type": "bill",
+        "invoice_id": invoice["id"],
+        "invoice_no": invoice.get("invoice_no"),
+        "bill_subtotal": subtotal,
+        "tds_rate_pct": tds_rate,
+        "tds_amount": tds_amount,
+        "tds_after_bill": tds_after_bill,
+        "balance_after": 0,  # Will be computed
+        "entry_order": next_order,
+        "created_by": current_user_id,
+        "created_at": datetime.now(timezone.utc)
+    }
+    await db.party_ledger_entries.insert_one(entry)
+    
+    # Recompute balances
+    await recompute_ledger_balances(ledger["id"])
+    
+    return entry
+
+@api_router.post("/party-ledger/payment")
+async def add_payment(payment: PaymentCreate, current_user: User = Depends(get_current_user)):
+    """Add a payment entry to party ledger"""
+    party = await db.parties.find_one({"id": payment.party_id})
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+    
+    fy = get_financial_year(payment.entry_date)
+    
+    # Get or create ledger
+    ledger = await db.party_ledger_accounts.find_one(
+        {"party_id": payment.party_id, "financial_year": fy}
+    )
+    if not ledger:
+        ledger = {
+            "id": str(uuid.uuid4()),
+            "party_id": payment.party_id,
+            "financial_year": fy,
+            "opening_balance": 0.0,
+            "closing_balance": 0.0,
+            "total_billed": 0.0,
+            "total_tds": 0.0,
+            "total_payments": 0.0,
+            "is_locked": False,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc)
+        }
+        await db.party_ledger_accounts.insert_one(ledger)
+    elif ledger.get("is_locked"):
+        raise HTTPException(status_code=400, detail=f"Ledger for FY {fy} is locked")
+    
+    # Get next entry order
+    max_order = await db.party_ledger_entries.find_one(
+        {"ledger_id": ledger["id"]},
+        sort=[("entry_order", -1)]
+    )
+    next_order = (max_order.get("entry_order", 0) if max_order else 0) + 1
+    
+    # Create payment entry
+    entry = {
+        "id": str(uuid.uuid4()),
+        "ledger_id": ledger["id"],
+        "party_id": payment.party_id,
+        "entry_date": payment.entry_date,
+        "entry_type": "payment",
+        "payment_amount": payment.payment_amount,
+        "payment_date": payment.payment_date or payment.entry_date,
+        "paid_to": payment.paid_to or party.get("short_code"),
+        "payment_mode": payment.payment_mode.value if payment.payment_mode else None,
+        "payment_reference": payment.payment_reference,
+        "invoice_id": payment.invoice_id,
+        "description": payment.notes,
+        "balance_after": 0,
+        "entry_order": next_order,
+        "created_by": current_user.id,
+        "created_at": datetime.now(timezone.utc)
+    }
+    await db.party_ledger_entries.insert_one(entry)
+    
+    # If linked to invoice, update invoice payment status
+    if payment.invoice_id:
+        invoice = await db.purchase_invoices.find_one({"id": payment.invoice_id})
+        if invoice:
+            new_advance = invoice.get("advance_paid", 0) + payment.payment_amount
+            grand_total = invoice.get("grand_total", 0)
+            new_balance = grand_total - new_advance
+            
+            if new_balance <= 0:
+                new_status = "paid"
+            elif new_advance > 0:
+                new_status = "partial"
+            else:
+                new_status = "pending"
+            
+            await db.purchase_invoices.update_one(
+                {"id": payment.invoice_id},
+                {"$set": {
+                    "advance_paid": new_advance,
+                    "balance_due": max(0, new_balance),
+                    "payment_status": new_status,
+                    "updated_at": datetime.now(timezone.utc)
+                }}
+            )
+    
+    # Recompute balances
+    await recompute_ledger_balances(ledger["id"])
+    
+    return {"message": "Payment recorded", "entry_id": entry["id"]}
+
+@api_router.post("/party-ledger/manual-entry")
+async def add_manual_entry(entry_data: ManualEntryCreate, current_user: User = Depends(get_current_user)):
+    """Add a manual debit or credit entry"""
+    if entry_data.entry_type not in ("manual_debit", "manual_credit"):
+        raise HTTPException(status_code=400, detail="Entry type must be manual_debit or manual_credit")
+    
+    party = await db.parties.find_one({"id": entry_data.party_id})
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+    
+    fy = get_financial_year(entry_data.entry_date)
+    
+    # Get or create ledger
+    ledger = await db.party_ledger_accounts.find_one(
+        {"party_id": entry_data.party_id, "financial_year": fy}
+    )
+    if not ledger:
+        ledger = {
+            "id": str(uuid.uuid4()),
+            "party_id": entry_data.party_id,
+            "financial_year": fy,
+            "opening_balance": 0.0,
+            "closing_balance": 0.0,
+            "total_billed": 0.0,
+            "total_tds": 0.0,
+            "total_payments": 0.0,
+            "is_locked": False,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc)
+        }
+        await db.party_ledger_accounts.insert_one(ledger)
+    elif ledger.get("is_locked"):
+        raise HTTPException(status_code=400, detail=f"Ledger for FY {fy} is locked")
+    
+    # Get next entry order
+    max_order = await db.party_ledger_entries.find_one(
+        {"ledger_id": ledger["id"]},
+        sort=[("entry_order", -1)]
+    )
+    next_order = (max_order.get("entry_order", 0) if max_order else 0) + 1
+    
+    # Create entry
+    entry = {
+        "id": str(uuid.uuid4()),
+        "ledger_id": ledger["id"],
+        "party_id": entry_data.party_id,
+        "entry_date": entry_data.entry_date,
+        "entry_type": entry_data.entry_type,
+        "description": entry_data.description,
+        "balance_after": 0,
+        "entry_order": next_order,
+        "created_by": current_user.id,
+        "created_at": datetime.now(timezone.utc)
+    }
+    
+    if entry_data.entry_type == "manual_debit":
+        entry["bill_subtotal"] = entry_data.amount
+        entry["tds_after_bill"] = entry_data.amount
+    else:
+        entry["payment_amount"] = entry_data.amount
+    
+    await db.party_ledger_entries.insert_one(entry)
+    
+    # Recompute balances
+    await recompute_ledger_balances(ledger["id"])
+    
+    return {"message": "Manual entry recorded", "entry_id": entry["id"]}
+
+@api_router.delete("/party-ledger/entry/{entry_id}")
+async def delete_ledger_entry(entry_id: str, current_user: User = Depends(get_current_user)):
+    """Delete a ledger entry (only manual entries can be deleted)"""
+    entry = await db.party_ledger_entries.find_one({"id": entry_id})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    
+    if entry.get("entry_type") not in ("manual_debit", "manual_credit", "payment"):
+        raise HTTPException(status_code=400, detail="Only manual entries and payments can be deleted")
+    
+    ledger = await db.party_ledger_accounts.find_one({"id": entry["ledger_id"]})
+    if ledger and ledger.get("is_locked"):
+        raise HTTPException(status_code=400, detail="Ledger is locked")
+    
+    await db.party_ledger_entries.delete_one({"id": entry_id})
+    
+    # Recompute balances
+    if ledger:
+        await recompute_ledger_balances(ledger["id"])
+    
+    return {"message": "Entry deleted"}
+
+
+# ── FY CARRY FORWARD ──────────────────────────────────────────────────────────
+
+@api_router.post("/party-ledger/carry-forward")
+async def carry_forward_fy(
+    from_fy: str,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Carry forward all party ledgers from one FY to the next.
+    Creates new ledger accounts with opening balance = previous closing balance.
+    Locks the previous FY ledgers.
+    """
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    # Parse FY
+    parts = from_fy.split("-")
+    next_fy = f"{int(parts[1]):02d}-{int(parts[1])+1:02d}"
+    
+    # Get all ledgers for from_fy
+    ledgers = await db.party_ledger_accounts.find(
+        {"financial_year": from_fy},
+        {"_id": 0}
+    ).to_list(1000)
+    
+    carried_count = 0
+    for ledger in ledgers:
+        # Check if next FY ledger already exists
+        existing = await db.party_ledger_accounts.find_one({
+            "party_id": ledger["party_id"],
+            "financial_year": next_fy
+        })
+        if existing:
+            continue
+        
+        closing_balance = ledger.get("closing_balance", 0)
+        
+        # Create next FY ledger
+        new_ledger = {
+            "id": str(uuid.uuid4()),
+            "party_id": ledger["party_id"],
+            "financial_year": next_fy,
+            "opening_balance": closing_balance,
+            "closing_balance": closing_balance,
+            "total_billed": 0.0,
+            "total_tds": 0.0,
+            "total_payments": 0.0,
+            "is_locked": False,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc)
+        }
+        await db.party_ledger_accounts.insert_one(new_ledger)
+        
+        # Create opening balance entry
+        fy_start, _ = get_fy_date_range(next_fy)
+        opening_entry = {
+            "id": str(uuid.uuid4()),
+            "ledger_id": new_ledger["id"],
+            "party_id": ledger["party_id"],
+            "entry_date": fy_start,
+            "entry_type": "opening",
+            "description": f"Opening Balance b/f from {from_fy}",
+            "balance_after": closing_balance,
+            "entry_order": 0,
+            "created_by": current_user.id,
+            "created_at": datetime.now(timezone.utc)
+        }
+        await db.party_ledger_entries.insert_one(opening_entry)
+        
+        # Lock previous FY ledger
+        await db.party_ledger_accounts.update_one(
+            {"id": ledger["id"]},
+            {"$set": {
+                "is_locked": True,
+                "locked_at": datetime.now(timezone.utc),
+                "locked_by": current_user.id
+            }}
+        )
+        
+        carried_count += 1
+    
+    return {
+        "message": f"Carried forward {carried_count} ledgers from {from_fy} to {next_fy}",
+        "from_fy": from_fy,
+        "to_fy": next_fy,
+        "count": carried_count
+    }
+
+@api_router.get("/party-ledger/available-fys")
+async def get_available_fys(current_user: User = Depends(get_current_user)):
+    """Get list of financial years that have ledger records"""
+    fys = await db.party_ledger_accounts.distinct("financial_year")
+    
+    # Add current FY if not present
+    current_fy = get_financial_year(date.today())
+    if current_fy not in fys:
+        fys.append(current_fy)
+    
+    return sorted(fys, reverse=True)
+
 app.include_router(api_router)
 
 # ═══════════════════════════════════════════════════════════════════════════════
