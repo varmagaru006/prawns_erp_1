@@ -42,8 +42,8 @@ class PartyLedgerTester:
         """Authenticate and get access token"""
         try:
             response = self.session.post(
-                f"{self.base_url}/login",
-                data=TEST_CREDENTIALS
+                f"{self.base_url}/auth/login",
+                json=TEST_CREDENTIALS
             )
             if response.status_code == 200:
                 data = response.json()
