@@ -5,7 +5,7 @@
 - **Full credentials**: See /app/TEST_CREDENTIALS.md
 
 ## App URL
-https://wage-billing-demo.preview.emergentagent.com
+https://aqua-purchase-module.preview.emergentagent.com
 
 ---
 
