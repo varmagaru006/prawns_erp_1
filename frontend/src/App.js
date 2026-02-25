@@ -24,6 +24,8 @@ import AuditTrail from './pages/AuditTrail';
 import PurchaseInvoices from './pages/PurchaseInvoices';
 import PurchaseInvoiceForm from './pages/PurchaseInvoiceForm';
 import CompanySettings from './pages/CompanySettings';
+import Parties from './pages/Parties';
+import PartyLedger from './pages/PartyLedger';
 import Layout from './components/Layout';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { FeatureFlagProvider } from './context/FeatureFlagContext';
