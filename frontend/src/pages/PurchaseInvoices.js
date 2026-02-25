@@ -553,9 +553,11 @@ const PurchaseInvoices = () => {
                     </TableCell>
                     <TableCell>
                       <div className="flex gap-1">
-                        <Button size="sm" variant="outline" onClick={() => openPreview(invoice)} title="Quick Preview">
-                          <Eye className="h-3 w-3" />
-                        </Button>
+                        {isDashboardEnabled && (
+                          <Button size="sm" variant="outline" onClick={() => openPreview(invoice)} title="Quick Preview" data-testid="preview-btn">
+                            <Eye className="h-3 w-3" />
+                          </Button>
+                        )}
                         {invoice.status === 'draft' && (
                           <>
                             <Button size="sm" variant="outline" onClick={() => navigate(`/purchase-invoices/edit/${invoice.id}`)}>
