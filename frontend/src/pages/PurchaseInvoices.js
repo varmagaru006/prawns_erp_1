@@ -34,6 +34,9 @@ const PurchaseInvoices = () => {
   const [showPreview, setShowPreview] = useState(false);
   const [exporting, setExporting] = useState(false);
 
+  // Compute isDashboardEnabled directly from isEnabled to ensure reactivity
+  const isDashboardEnabled = isEnabled('purchaseInvoiceDashboard');
+
   useEffect(() => {
     fetchInvoices();
     if (isDashboardEnabled) {
