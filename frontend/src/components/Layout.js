@@ -65,7 +65,8 @@ const Layout = () => {
     Target,
     Paperclip,
     DollarSign,
-    History
+    History,
+    FileText
   };
 
   const navigation = [
