@@ -734,6 +734,7 @@ class PurchaseInvoice(BaseModel):
 class PurchaseInvoiceCreate(BaseModel):
     invoice_date: date = Field(default_factory=lambda: date.today())
     farmer_name: str
+    farmer_mobile: Optional[str] = None  # A4 PATCH 10F
     farmer_location: Optional[str] = None
     agent_ref_name: Optional[str] = None
     weighment_slip_no: Optional[str] = None
