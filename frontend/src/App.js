@@ -79,6 +79,9 @@ function AppRoutes() {
         <Route path="admin/lot/:lotId/wastage" element={<LotWaterfall />} />
         <Route path="admin/attachments-demo" element={<AttachmentsDemo />} />
         <Route path="admin/audit-trail" element={<AuditTrail />} />
+        <Route path="purchase-invoices" element={<PurchaseInvoices />} />
+        <Route path="purchase-invoices/create" element={<PurchaseInvoiceForm />} />
+        <Route path="purchase-invoices/edit/:id" element={<PurchaseInvoiceForm />} />
         <Route path="notifications" element={<Notifications />} />
       </Route>
     </Routes>
