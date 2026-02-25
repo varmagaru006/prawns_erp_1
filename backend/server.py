@@ -5375,12 +5375,14 @@ async def add_manual_entry(entry_data: ManualEntryCreate, current_user: User = D
     )
     next_order = (max_order.get("entry_order", 0) if max_order else 0) + 1
     
-    # Create entry
+    # Create entry - Convert date objects to ISO strings for MongoDB
+    entry_date_str = entry_data.entry_date.isoformat() if isinstance(entry_data.entry_date, date) else str(entry_data.entry_date)
+    
     entry = {
         "id": str(uuid.uuid4()),
         "ledger_id": ledger["id"],
         "party_id": entry_data.party_id,
-        "entry_date": entry_data.entry_date,
+        "entry_date": entry_date_str,
         "entry_type": entry_data.entry_type,
         "description": entry_data.description,
         "balance_after": 0,
