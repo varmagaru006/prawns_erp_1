@@ -346,20 +346,39 @@ const PurchaseInvoices = () => {
           <p className="text-gray-600">Manage procurement invoices and push to lots</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={exportToCSV} disabled={exporting}>
-            <Download className="h-4 w-4 mr-2" />
-            CSV
-          </Button>
-          <Button variant="outline" onClick={exportToExcel} disabled={exporting}>
-            <FileSpreadsheet className="h-4 w-4 mr-2" />
-            Excel
-          </Button>
-          <Button onClick={() => navigate('/purchase-invoices/create')}>
+          {isDashboardEnabled && (
+            <>
+              <Button variant="outline" onClick={exportToCSV} disabled={exporting} data-testid="export-csv-btn">
+                <Download className="h-4 w-4 mr-2" />
+                CSV
+              </Button>
+              <Button variant="outline" onClick={exportToExcel} disabled={exporting} data-testid="export-excel-btn">
+                <FileSpreadsheet className="h-4 w-4 mr-2" />
+                Excel
+              </Button>
+            </>
+          )}
+          <Button onClick={() => navigate('/purchase-invoices/create')} data-testid="create-invoice-btn">
             <Plus className="h-4 w-4 mr-2" />
             Create Invoice
           </Button>
         </div>
       </div>
+
+      {/* Feature Disabled Banner */}
+      {!isDashboardEnabled && (
+        <Card className="mb-6 border-amber-200 bg-amber-50">
+          <CardContent className="py-4">
+            <div className="flex items-center gap-3">
+              <Lock className="h-5 w-5 text-amber-600" />
+              <div>
+                <p className="font-medium text-amber-800">Dashboard Features Disabled</p>
+                <p className="text-sm text-amber-700">Metrics dashboard, quick preview, and bulk export are disabled. Contact your administrator to enable the Purchase Invoice Dashboard feature.</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Filters */}
       <Card className="mb-6">
@@ -412,8 +431,8 @@ const PurchaseInvoices = () => {
         </CardContent>
       </Card>
 
-      {/* Metrics Dashboard */}
-      {metrics && (
+      {/* Metrics Dashboard - Only shown when feature is enabled */}
+      {isDashboardEnabled && metrics && (
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
           <Card>
             <CardHeader className="pb-2">
