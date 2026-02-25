@@ -216,36 +216,31 @@ const AuditTrail = () => {
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               <div>
                 <label className="block text-sm font-medium mb-2">Module</label>
-                <Select value={filters.module} onValueChange={(value) => setFilters({ ...filters, module: value, action: '' })}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="All Modules" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="">All Modules</SelectItem>
-                    {modules.map(module => (
-                      <SelectItem key={module} value={module}>{module}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <select
+                  value={filters.module}
+                  onChange={(e) => setFilters({ ...filters, module: e.target.value, action: '' })}
+                  className="flex h-9 w-full items-center justify-between rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm ring-offset-background focus:outline-none focus:ring-1 focus:ring-ring"
+                >
+                  <option value="">All Modules</option>
+                  {modules.map(module => (
+                    <option key={module} value={module}>{module}</option>
+                  ))}
+                </select>
               </div>
 
               <div>
                 <label className="block text-sm font-medium mb-2">Action</label>
-                <Select 
-                  value={filters.action} 
-                  onValueChange={(value) => setFilters({ ...filters, action: value })}
+                <select
+                  value={filters.action}
+                  onChange={(e) => setFilters({ ...filters, action: e.target.value })}
                   disabled={!filters.module}
+                  className="flex h-9 w-full items-center justify-between rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm ring-offset-background focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
                 >
-                  <SelectTrigger>
-                    <SelectValue placeholder="All Actions" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="">All Actions</SelectItem>
-                    {actions.map(action => (
-                      <SelectItem key={action} value={action}>{action}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  <option value="">All Actions</option>
+                  {actions.map(action => (
+                    <option key={action} value={action}>{action}</option>
+                  ))}
+                </select>
               </div>
 
               <div>
