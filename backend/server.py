@@ -647,6 +647,99 @@ class NoteCreate(BaseModel):
     note_text: str
     is_pinned: bool = False
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Purchase Invoice Models (Amendment A4)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class PurchaseInvoiceStatus(str, Enum):
+    draft = "draft"
+    approved = "approved"
+    pushed = "pushed"
+
+class PurchaseInvoiceLine(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    invoice_id: str
+    line_no: int
+    variety: str
+    count_value: str
+    custom_variety_notes: Optional[str] = None
+    custom_count_notes: Optional[str] = None
+    quantity_kg: float
+    rate: float
+    amount: float = 0.0  # Computed: quantity_kg × rate
+
+class PurchaseInvoiceLineCreate(BaseModel):
+    line_no: int
+    variety: str
+    count_value: str
+    custom_variety_notes: Optional[str] = None
+    custom_count_notes: Optional[str] = None
+    quantity_kg: float
+    rate: float
+
+class PurchaseInvoice(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    invoice_no: str
+    invoice_date: date = Field(default_factory=lambda: date.today())
+    lot_id: Optional[str] = None
+    
+    # Farmer/Supplier info
+    farmer_name: str
+    farmer_location: Optional[str] = None
+    agent_ref_name: Optional[str] = None
+    weighment_slip_no: Optional[str] = None
+    
+    # Custom fields
+    custom_field_1_label: Optional[str] = None
+    custom_field_1_value: Optional[str] = None
+    custom_field_2_label: Optional[str] = None
+    custom_field_2_value: Optional[str] = None
+    
+    # Computed totals
+    total_quantity_kg: float = 0.0
+    subtotal: float = 0.0
+    tds_rate_pct: float = 0.1  # 0.1% default
+    tds_amount: float = 0.0
+    rounded_off: float = 0.0
+    grand_total: float = 0.0
+    
+    # Payment tracking
+    advance_paid: float = 0.0
+    balance_due: float = 0.0
+    payment_status: PaymentStatus = PaymentStatus.pending
+    
+    # Workflow
+    status: PurchaseInvoiceStatus = PurchaseInvoiceStatus.draft
+    approved_by: Optional[str] = None
+    approved_at: Optional[datetime] = None
+    pushed_at: Optional[datetime] = None
+    pushed_by: Optional[str] = None
+    
+    notes: Optional[str] = None
+    created_by: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    
+    # Line items (populated separately)
+    line_items: List[PurchaseInvoiceLine] = []
+
+class PurchaseInvoiceCreate(BaseModel):
+    invoice_date: date = Field(default_factory=lambda: date.today())
+    farmer_name: str
+    farmer_location: Optional[str] = None
+    agent_ref_name: Optional[str] = None
+    weighment_slip_no: Optional[str] = None
+    custom_field_1_label: Optional[str] = None
+    custom_field_1_value: Optional[str] = None
+    custom_field_2_label: Optional[str] = None
+    custom_field_2_value: Optional[str] = None
+    tds_rate_pct: float = 0.1
+    advance_paid: float = 0.0
+    notes: Optional[str] = None
+    line_items: List[PurchaseInvoiceLineCreate] = []
+
 
 # Helper functions
 def verify_password(plain_password: str, hashed_password: str) -> bool:
