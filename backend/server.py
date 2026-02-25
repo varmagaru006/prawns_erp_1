@@ -249,6 +249,23 @@ class ProcurementLot(BaseModel):
     created_by: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: Optional[datetime] = None
+    
+    @field_validator('species', mode='before')
+    @classmethod
+    def normalize_species(cls, v):
+        """Normalize species to match enum values (handle case variations)"""
+        if v is None:
+            return v
+        if isinstance(v, Species):
+            return v
+        # Convert string to title case for matching
+        v_str = str(v).strip()
+        v_normalized = v_str.title() if v_str.islower() else v_str
+        # Try to match with enum values
+        for species in Species:
+            if species.value.lower() == v_str.lower():
+                return species
+        return v  # Let Pydantic handle the validation error
 
 class ProcurementLotCreate(BaseModel):
     agent_id: str
