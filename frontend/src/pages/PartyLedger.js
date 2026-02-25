@@ -340,11 +340,11 @@ const PartyLedger = () => {
             <Plus className="h-4 w-4 mr-2" />
             Manual Credit
           </Button>
-          <Button variant="outline" className="ml-auto">
+          <Button variant="outline" className="ml-auto" onClick={() => handleExportPDF(party.id, financial_year)}>
             <Download className="h-4 w-4 mr-2" />
             Download PDF
           </Button>
-          <Button variant="outline">
+          <Button variant="outline" onClick={() => handleExportExcel(party.id, financial_year)}>
             <FileSpreadsheet className="h-4 w-4 mr-2" />
             Download Excel
           </Button>
