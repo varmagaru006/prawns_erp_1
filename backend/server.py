@@ -2496,6 +2496,160 @@ async def download_wage_bill_pdf(bill_id: str, current_user: User = Depends(get_
     )
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Purchase Invoice Endpoints (Amendment A4)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@api_router.post("/purchase-invoices", response_model=PurchaseInvoice)
+async def create_purchase_invoice(
+    invoice_data: PurchaseInvoiceCreate,
+    current_user: User = Depends(get_current_user)
+):
+    """Create a new purchase invoice (draft status)"""
+    # Generate invoice number
+    invoice_no = await generate_invoice_number()
+    
+    # Calculate totals
+    totals = calculate_invoice_totals(invoice_data.line_items, invoice_data.tds_rate_pct)
+    
+    # Create invoice
+    invoice = PurchaseInvoice(
+        invoice_no=invoice_no,
+        invoice_date=invoice_data.invoice_date,
+        farmer_name=invoice_data.farmer_name,
+        farmer_location=invoice_data.farmer_location,
+        agent_ref_name=invoice_data.agent_ref_name,
+        weighment_slip_no=invoice_data.weighment_slip_no,
+        custom_field_1_label=invoice_data.custom_field_1_label,
+        custom_field_1_value=invoice_data.custom_field_1_value,
+        custom_field_2_label=invoice_data.custom_field_2_label,
+        custom_field_2_value=invoice_data.custom_field_2_value,
+        tds_rate_pct=invoice_data.tds_rate_pct,
+        advance_paid=invoice_data.advance_paid,
+        notes=invoice_data.notes,
+        created_by=current_user.id,
+        **totals
+    )
+    
+    # Calculate balance due
+    invoice.balance_due = invoice.grand_total - invoice.advance_paid
+    
+    # Update payment status
+    if invoice.balance_due <= 0:
+        invoice.payment_status = PaymentStatus.paid
+    elif invoice.advance_paid > 0:
+        invoice.payment_status = PaymentStatus.partial
+    else:
+        invoice.payment_status = PaymentStatus.pending
+    
+    # Save invoice
+    invoice_dict = invoice.model_dump()
+    invoice_dict['invoice_date'] = invoice_dict['invoice_date'].isoformat()
+    invoice_dict['created_at'] = invoice_dict['created_at'].isoformat()
+    invoice_dict['updated_at'] = invoice_dict['updated_at'].isoformat()
+    if invoice_dict.get('approved_at'):
+        invoice_dict['approved_at'] = invoice_dict['approved_at'].isoformat()
+    if invoice_dict.get('pushed_at'):
+        invoice_dict['pushed_at'] = invoice_dict['pushed_at'].isoformat()
+    
+    # Remove line_items from main doc (save separately)
+    line_items_data = invoice_dict.pop('line_items', [])
+    
+    await db.purchase_invoices.insert_one(invoice_dict)
+    
+    # Save line items
+    for line_data in invoice_data.line_items:
+        line = PurchaseInvoiceLine(
+            invoice_id=invoice.id,
+            line_no=line_data.line_no,
+            variety=line_data.variety,
+            count_value=line_data.count_value,
+            custom_variety_notes=line_data.custom_variety_notes,
+            custom_count_notes=line_data.custom_count_notes,
+            quantity_kg=line_data.quantity_kg,
+            rate=line_data.rate,
+            amount=round(line_data.quantity_kg * line_data.rate, 2)
+        )
+        line_dict = line.model_dump()
+        await db.purchase_invoice_lines.insert_one(line_dict)
+    
+    # Audit log
+    await create_audit_log(current_user.id, "CREATE_PURCHASE_INVOICE", "procurement", 
+                          {"invoice_id": invoice.id, "invoice_no": invoice_no})
+    
+    # Reload with line items for response
+    invoice.line_items = [PurchaseInvoiceLine(**line_data) for line_data in invoice_data.line_items]
+    return invoice
+
+@api_router.get("/purchase-invoices")
+async def get_purchase_invoices(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    invoice_status: Optional[str] = None,
+    search: Optional[str] = None,
+    page: int = 1,
+    per_page: int = 25,
+    sort: str = "invoice_date:desc",
+    current_user: User = Depends(get_current_user)
+):
+    """Get purchase invoices with filters and pagination"""
+    query = {}
+    
+    # Date filter
+    if from_date or to_date:
+        query['invoice_date'] = {}
+        if from_date:
+            query['invoice_date']['$gte'] = from_date
+        if to_date:
+            query['invoice_date']['$lte'] = to_date
+    
+    # Payment status filter (can be comma-separated)
+    if payment_status:
+        statuses = [s.strip() for s in payment_status.split(',')]
+        query['payment_status'] = {'$in': statuses}
+    
+    # Invoice status filter (can be comma-separated)
+    if invoice_status:
+        statuses = [s.strip() for s in invoice_status.split(',')]
+        query['status'] = {'$in': statuses}
+    
+    # Search filter
+    if search:
+        query['$or'] = [
+            {'farmer_name': {'$regex': search, '$options': 'i'}},
+            {'invoice_no': {'$regex': search, '$options': 'i'}},
+            {'agent_ref_name': {'$regex': search, '$options': 'i'}}
+        ]
+    
+    # Get total count
+    total = await db.purchase_invoices.count_documents(query)
+    
+    # Parse sort
+    sort_field, sort_dir = sort.split(':')
+    sort_direction = -1 if sort_dir == 'desc' else 1
+    
+    # Calculate pagination
+    skip = (page - 1) * per_page
+    
+    # Fetch invoices
+    invoices = await db.purchase_invoices.find(query, {"_id": 0}) \
+        .sort(sort_field, sort_direction) \
+        .skip(skip) \
+        .limit(per_page) \
+        .to_list(per_page)
+    
+    # Calculate total pages
+    pages = (total + per_page - 1) // per_page
+    
+    return {
+        "data": invoices,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "pages": pages
+    }
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Comprehensive Reports - PDF & Excel Generation
 # ══════════════════════════════════════════════════════════════════════════════
 
