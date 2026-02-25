@@ -250,6 +250,108 @@ const PurchaseInvoiceForm = () => {
               />
             </div>
 
+            {/* A5: Party Name Field */}
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium mb-2">
+                <Users className="inline h-4 w-4 mr-1" />
+                Party Name (for Ledger)
+              </label>
+              <div className="flex gap-2 items-start">
+                <div className="flex-1 relative">
+                  <Input
+                    value={partySearch}
+                    onChange={(e) => {
+                      setPartySearch(e.target.value);
+                      setShowPartyDropdown(true);
+                      setFormData({ ...formData, same_as_farmer: false });
+                    }}
+                    onFocus={() => setShowPartyDropdown(true)}
+                    placeholder="Search or type party name..."
+                    disabled={formData.same_as_farmer}
+                    className={formData.same_as_farmer ? 'bg-gray-100' : ''}
+                  />
+                  {showPartyDropdown && !formData.same_as_farmer && partySearch && (
+                    <div className="absolute z-10 w-full mt-1 bg-white border rounded-md shadow-lg max-h-48 overflow-y-auto">
+                      {parties
+                        .filter(p => 
+                          p.party_name.toLowerCase().includes(partySearch.toLowerCase()) ||
+                          (p.party_alias && p.party_alias.toLowerCase().includes(partySearch.toLowerCase()))
+                        )
+                        .slice(0, 10)
+                        .map(party => (
+                          <div
+                            key={party.id}
+                            className="px-3 py-2 hover:bg-blue-50 cursor-pointer"
+                            onClick={() => {
+                              setFormData({
+                                ...formData,
+                                party_id: party.id,
+                                party_name_text: party.party_name
+                              });
+                              setPartySearch(party.party_name);
+                              setShowPartyDropdown(false);
+                            }}
+                          >
+                            <span className="font-medium">{party.party_name}</span>
+                            {party.party_alias && (
+                              <span className="text-gray-500 text-sm ml-2">({party.party_alias})</span>
+                            )}
+                          </div>
+                        ))}
+                      {parties.filter(p => 
+                        p.party_name.toLowerCase().includes(partySearch.toLowerCase())
+                      ).length === 0 && (
+                        <div className="px-3 py-2 text-gray-500 text-sm">
+                          No matching parties. 
+                          <button
+                            type="button"
+                            className="text-blue-600 ml-1 hover:underline"
+                            onClick={() => {
+                              setNewPartyName(partySearch);
+                              setShowPartyCreate(true);
+                              setShowPartyDropdown(false);
+                            }}
+                          >
+                            Create new party
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <label className="flex items-center gap-2 text-sm whitespace-nowrap">
+                  <input
+                    type="checkbox"
+                    checked={formData.same_as_farmer}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setFormData({
+                        ...formData,
+                        same_as_farmer: checked,
+                        party_id: checked ? '' : formData.party_id,
+                        party_name_text: checked ? formData.farmer_name : formData.party_name_text
+                      });
+                      if (checked) {
+                        setPartySearch(formData.farmer_name);
+                      }
+                    }}
+                    className="rounded"
+                  />
+                  Same as Farmer
+                </label>
+              </div>
+              {formData.same_as_farmer && (
+                <p className="text-xs text-amber-600 mt-1">
+                  ⚠️ No ledger will be maintained for this invoice (party not linked)
+                </p>
+              )}
+              {formData.party_id && !formData.same_as_farmer && (
+                <p className="text-xs text-green-600 mt-1">
+                  ✓ Linked to party: {formData.party_name_text}
+                </p>
+              )}
+            </div>
+
             <div>
               <label className="block text-sm font-medium mb-2">Invoice Date</label>
               <Input
