@@ -27,7 +27,8 @@ import {
   Paperclip,
   History,
   DollarSign,
-  FileText
+  FileText,
+  Building2
 } from 'lucide-react';
 
 const Layout = () => {
