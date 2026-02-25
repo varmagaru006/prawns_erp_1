@@ -28,7 +28,8 @@ import {
   History,
   DollarSign,
   FileText,
-  Building2
+  Building2,
+  BookOpen
 } from 'lucide-react';
 
 const Layout = () => {
