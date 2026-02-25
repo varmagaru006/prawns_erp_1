@@ -11,14 +11,20 @@ export const FeatureFlagProvider = ({ children }) => {
     lotNumberPrefix: null
   });
 
-  const loadFeatures = useCallback(async () => {
-    try {
-      const token = localStorage.getItem('token');
-      if (!token) {
-        setLoading(false);
-        return;
-      }
+  const [tokenPresent, setTokenPresent] = useState(!!localStorage.getItem('token'));
 
+  const loadFeatures = useCallback(async () => {
+    const token = localStorage.getItem('token');
+    setTokenPresent(!!token);
+    
+    if (!token) {
+      setLoading(false);
+      setFeatures({});
+      return;
+    }
+
+    setLoading(true);
+    try {
       const response = await axios.get(`${process.env.REACT_APP_BACKEND_URL}/api/auth/me`, {
         headers: { Authorization: `Bearer ${token}` }
       });
