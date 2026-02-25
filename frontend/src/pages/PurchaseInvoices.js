@@ -12,8 +12,7 @@ import { useNavigate } from 'react-router-dom';
 
 const PurchaseInvoices = () => {
   const navigate = useNavigate();
-  const { isEnabled } = useFeatureFlags();
-  const isDashboardEnabled = isEnabled('purchaseInvoiceDashboard');
+  const { isEnabled, loading: featureLoading } = useFeatureFlags();
   
   const [invoices, setInvoices] = useState([]);
   const [metrics, setMetrics] = useState(null);
