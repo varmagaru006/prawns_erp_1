@@ -3145,6 +3145,14 @@ async def push_invoice_to_procurement(
         }}
     )
     
+    # A5: Create ledger entry if party is linked
+    if invoice.get("party_id"):
+        try:
+            await create_ledger_entry_for_invoice(invoice, current_user.id)
+        except Exception as e:
+            # Log but don't fail the push
+            print(f"Warning: Could not create ledger entry: {e}")
+    
     await create_audit_log(current_user.id, "PUSH_PURCHASE_INVOICE", "procurement",
                           {"invoice_id": invoice_id, "lot_id": lot['id'], "lot_number": lot_number})
     
