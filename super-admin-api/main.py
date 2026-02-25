@@ -409,9 +409,42 @@ async def update_client_branding(client_id: str, branding: BrandingUpdate, curre
 
 @app.get("/clients/{client_id}/features")
 async def get_client_features(client_id: str, current_admin = Depends(get_current_super_admin)):
-    """Get all feature flags for a client"""
-    features = await db.feature_flags.find({"client_id": client_id}, {"_id": 0}).to_list(1000)
-    return features
+    """Get all feature flags for a client, merged with feature registry"""
+    # Get features from registry
+    feature_registry = [
+        {"code": "procurement", "name": "Procurement Module", "description": "Manage prawn procurement", "module": "Procurement"},
+        {"code": "preprocessing", "name": "Pre-Processing", "description": "Processing operations", "module": "Processing"},
+        {"code": "coldStorage", "name": "Cold Storage", "description": "Cold storage management", "module": "Storage"},
+        {"code": "production", "name": "Production", "description": "Production tracking", "module": "Production"},
+        {"code": "qualityControl", "name": "Quality Control", "description": "Quality checks", "module": "Quality"},
+        {"code": "sales", "name": "Sales & Dispatch", "description": "Sales and dispatch", "module": "Sales"},
+        {"code": "accounts", "name": "Accounts & Billing", "description": "Financial management", "module": "Finance"},
+        {"code": "wastageDashboard", "name": "Wastage Dashboard", "description": "Track wastage", "module": "Analytics"},
+        {"code": "yieldBenchmarks", "name": "Yield Benchmarks", "description": "Yield tracking", "module": "Analytics"},
+        {"code": "marketRates", "name": "Market Rates", "description": "Market price tracking", "module": "Analytics"},
+        {"code": "purchaseInvoiceDashboard", "name": "Purchase Invoice Dashboard", "description": "Invoice metrics, quick preview, and bulk export", "module": "Finance"},
+        {"code": "admin", "name": "Admin Panel", "description": "Administrative functions", "module": "Admin"}
+    ]
+    
+    # Get existing feature flags from DB
+    db_features = await db.feature_flags.find({"client_id": client_id}, {"_id": 0}).to_list(1000)
+    db_feature_map = {f["feature_code"]: f for f in db_features}
+    
+    # Merge registry with DB state
+    merged_features = []
+    for reg_feature in feature_registry:
+        db_feature = db_feature_map.get(reg_feature["code"])
+        merged_features.append({
+            "feature_code": reg_feature["code"],
+            "feature_name": reg_feature["name"],
+            "description": reg_feature["description"],
+            "module": reg_feature["module"],
+            "is_enabled": db_feature["is_enabled"] if db_feature else False,
+            "updated_at": db_feature.get("updated_at") if db_feature else None,
+            "updated_by": db_feature.get("updated_by") if db_feature else None
+        })
+    
+    return merged_features
 
 @app.post("/clients/{client_id}/features/toggle")
 async def toggle_feature(client_id: str, toggle: FeatureToggle, current_admin = Depends(get_current_super_admin)):
