@@ -67,7 +67,8 @@ const Layout = () => {
     Paperclip,
     DollarSign,
     History,
-    FileText
+    FileText,
+    Building2
   };
 
   const navigation = [
