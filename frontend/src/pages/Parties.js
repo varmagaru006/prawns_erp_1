@@ -35,12 +35,17 @@ const Parties = () => {
       const params = new URLSearchParams();
       if (search) params.append('search', search);
       console.log('Fetching parties from:', `${API}/parties?${params}`);
-      const response = await axios.get(`${API}/parties?${params}`);
+      const response = await axios.get(`${API}/parties?${params}`, { timeout: 10000 });
       console.log('Parties response:', response.data);
       setParties(response.data || []);
     } catch (error) {
-      console.error('Parties fetch error:', error);
-      toast.error('Failed to load parties');
+      console.error('Parties fetch error:', error.message, error);
+      if (error.code === 'ECONNABORTED') {
+        toast.error('Request timed out');
+      } else {
+        toast.error('Failed to load parties');
+      }
+      setParties([]);
     } finally {
       setLoading(false);
     }
