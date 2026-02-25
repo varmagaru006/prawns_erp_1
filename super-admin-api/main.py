@@ -785,17 +785,18 @@ async def get_feature_registry(current_admin = Depends(get_current_super_admin))
     """Get list of available features"""
     # This would typically come from a registry or config
     features = [
-        {"code": "procurement", "name": "Procurement Module", "description": "Manage prawn procurement"},
-        {"code": "preprocessing", "name": "Pre-Processing", "description": "Processing operations"},
-        {"code": "coldStorage", "name": "Cold Storage", "description": "Cold storage management"},
-        {"code": "production", "name": "Production", "description": "Production tracking"},
-        {"code": "qualityControl", "name": "Quality Control", "description": "Quality checks"},
-        {"code": "sales", "name": "Sales & Dispatch", "description": "Sales and dispatch"},
-        {"code": "accounts", "name": "Accounts & Billing", "description": "Financial management"},
-        {"code": "wastageDashboard", "name": "Wastage Dashboard", "description": "Track wastage"},
-        {"code": "yieldBenchmarks", "name": "Yield Benchmarks", "description": "Yield tracking"},
-        {"code": "marketRates", "name": "Market Rates", "description": "Market price tracking"},
-        {"code": "admin", "name": "Admin Panel", "description": "Administrative functions"}
+        {"code": "procurement", "name": "Procurement Module", "description": "Manage prawn procurement", "module": "Procurement"},
+        {"code": "preprocessing", "name": "Pre-Processing", "description": "Processing operations", "module": "Processing"},
+        {"code": "coldStorage", "name": "Cold Storage", "description": "Cold storage management", "module": "Storage"},
+        {"code": "production", "name": "Production", "description": "Production tracking", "module": "Production"},
+        {"code": "qualityControl", "name": "Quality Control", "description": "Quality checks", "module": "Quality"},
+        {"code": "sales", "name": "Sales & Dispatch", "description": "Sales and dispatch", "module": "Sales"},
+        {"code": "accounts", "name": "Accounts & Billing", "description": "Financial management", "module": "Finance"},
+        {"code": "wastageDashboard", "name": "Wastage Dashboard", "description": "Track wastage", "module": "Analytics"},
+        {"code": "yieldBenchmarks", "name": "Yield Benchmarks", "description": "Yield tracking", "module": "Analytics"},
+        {"code": "marketRates", "name": "Market Rates", "description": "Market price tracking", "module": "Analytics"},
+        {"code": "purchaseInvoiceDashboard", "name": "Purchase Invoice Dashboard", "description": "Purchase invoice management with metrics, quick preview, and bulk export", "module": "Finance"},
+        {"code": "admin", "name": "Admin Panel", "description": "Administrative functions", "module": "Admin"}
     ]
     return features
 
