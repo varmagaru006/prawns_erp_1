@@ -86,6 +86,7 @@ const Layout = () => {
     { name: 'Market Rates', path: '/admin/market-rates', icon: 'DollarSign', moduleKey: 'marketRates' },
     { name: 'Attachments Demo', path: '/admin/attachments-demo', icon: 'Paperclip', moduleKey: 'admin' },
     { name: 'Audit Trail', path: '/admin/audit-trail', icon: 'History', moduleKey: 'admin' },
+    { name: 'Company Settings', path: '/admin/company-settings', icon: 'Building2', moduleKey: 'admin' },
     { name: 'Admin Panel', path: '/admin', icon: 'Settings', moduleKey: 'admin' },
     { name: 'Notifications', path: '/notifications', icon: 'Bell', moduleKey: 'notifications' },
   ];
