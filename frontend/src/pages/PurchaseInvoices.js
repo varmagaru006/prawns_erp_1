@@ -590,6 +590,167 @@ const PurchaseInvoices = () => {
           )}
         </CardContent>
       </Card>
+
+      {/* Quick Preview Slide-over Panel */}
+      {showPreview && previewInvoice && (
+        <div className="fixed inset-0 z-50 overflow-hidden" data-testid="quick-preview-panel">
+          <div className="absolute inset-0 bg-black/50" onClick={closePreview}></div>
+          <div className="absolute right-0 top-0 h-full w-full max-w-xl bg-white shadow-xl transform transition-transform">
+            <div className="h-full flex flex-col">
+              {/* Header */}
+              <div className="flex items-center justify-between px-6 py-4 border-b bg-blue-50">
+                <div>
+                  <h2 className="text-xl font-bold text-blue-900">Invoice Preview</h2>
+                  <p className="text-sm text-blue-700 font-mono">{previewInvoice.invoice_no}</p>
+                </div>
+                <Button variant="ghost" size="sm" onClick={closePreview}>
+                  <X className="h-5 w-5" />
+                </Button>
+              </div>
+
+              {/* Content */}
+              <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                {/* Status & Payment */}
+                <div className="flex gap-3">
+                  {getStatusChip(previewInvoice.status)}
+                  {getPaymentChip(previewInvoice.payment_status)}
+                  {previewInvoice.is_manually_recorded && (
+                    <span className="px-2 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
+                      ✅ Audit Recorded
+                    </span>
+                  )}
+                </div>
+
+                {/* Farmer Info */}
+                <div className="bg-gray-50 rounded-lg p-4">
+                  <h3 className="font-semibold text-gray-700 mb-3">Farmer Details</h3>
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <div>
+                      <span className="text-gray-500">Name:</span>
+                      <p className="font-medium">{previewInvoice.farmer_name}</p>
+                    </div>
+                    <div>
+                      <span className="text-gray-500">Mobile:</span>
+                      <p className="font-medium">
+                        {previewInvoice.farmer_mobile ? (
+                          <a href={`tel:${previewInvoice.farmer_mobile}`} className="text-blue-600 hover:underline">
+                            {previewInvoice.farmer_mobile}
+                          </a>
+                        ) : '-'}
+                      </p>
+                    </div>
+                    <div>
+                      <span className="text-gray-500">Location:</span>
+                      <p className="font-medium">{previewInvoice.farmer_location || '-'}</p>
+                    </div>
+                    <div>
+                      <span className="text-gray-500">Agent/Ref:</span>
+                      <p className="font-medium">{previewInvoice.agent_ref_name || '-'}</p>
+                    </div>
+                    <div>
+                      <span className="text-gray-500">Weighment Slip:</span>
+                      <p className="font-medium">{previewInvoice.weighment_slip_no || '-'}</p>
+                    </div>
+                    <div>
+                      <span className="text-gray-500">Date:</span>
+                      <p className="font-medium">{previewInvoice.invoice_date}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Line Items */}
+                <div>
+                  <h3 className="font-semibold text-gray-700 mb-3">Line Items</h3>
+                  <div className="border rounded-lg overflow-hidden">
+                    <table className="w-full text-sm">
+                      <thead className="bg-blue-50">
+                        <tr>
+                          <th className="px-3 py-2 text-left">#</th>
+                          <th className="px-3 py-2 text-left">Variety</th>
+                          <th className="px-3 py-2 text-left">Count</th>
+                          <th className="px-3 py-2 text-right">Qty (kg)</th>
+                          <th className="px-3 py-2 text-right">Rate</th>
+                          <th className="px-3 py-2 text-right">Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {previewInvoice.line_items?.map((line, idx) => (
+                          <tr key={idx} className="border-t">
+                            <td className="px-3 py-2">{line.line_no}</td>
+                            <td className="px-3 py-2">{line.variety}</td>
+                            <td className="px-3 py-2">{line.count_value || '-'}</td>
+                            <td className="px-3 py-2 text-right">{line.quantity_kg?.toFixed(3)}</td>
+                            <td className="px-3 py-2 text-right">₹{line.rate?.toFixed(2)}</td>
+                            <td className="px-3 py-2 text-right font-medium">₹{line.amount?.toFixed(2)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Totals */}
+                <div className="bg-blue-50 rounded-lg p-4">
+                  <h3 className="font-semibold text-gray-700 mb-3">Summary</h3>
+                  <div className="space-y-2 text-sm">
+                    <div className="flex justify-between">
+                      <span>Total Quantity:</span>
+                      <span className="font-medium">{previewInvoice.total_quantity_kg?.toFixed(3)} kg</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Subtotal:</span>
+                      <span className="font-medium">₹{previewInvoice.subtotal?.toLocaleString('en-IN')}</span>
+                    </div>
+                    <div className="flex justify-between text-blue-700">
+                      <span>TDS @ {previewInvoice.tds_rate_pct}%:</span>
+                      <span className="font-medium">-₹{previewInvoice.tds_amount?.toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between text-gray-500">
+                      <span>Rounded Off:</span>
+                      <span className="font-medium">₹{previewInvoice.rounded_off?.toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between border-t pt-2 text-lg font-bold">
+                      <span>Grand Total:</span>
+                      <span className="text-green-700">₹{previewInvoice.grand_total?.toLocaleString('en-IN')}</span>
+                    </div>
+                    <div className="flex justify-between pt-2 border-t">
+                      <span>Advance Paid:</span>
+                      <span className="font-medium">₹{previewInvoice.advance_paid?.toLocaleString('en-IN')}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Balance Due:</span>
+                      <span className={`font-bold ${previewInvoice.balance_due > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                        ₹{previewInvoice.balance_due?.toLocaleString('en-IN')}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Notes */}
+                {previewInvoice.notes && (
+                  <div className="bg-yellow-50 rounded-lg p-4">
+                    <h3 className="font-semibold text-gray-700 mb-2">Notes</h3>
+                    <p className="text-sm text-gray-600">{previewInvoice.notes}</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Footer Actions */}
+              <div className="px-6 py-4 border-t bg-gray-50 flex gap-2 justify-end">
+                {previewInvoice.status === 'draft' && (
+                  <Button variant="outline" onClick={() => navigate(`/purchase-invoices/edit/${previewInvoice.id}`)}>
+                    Edit Invoice
+                  </Button>
+                )}
+                <Button onClick={() => downloadPDF(previewInvoice.id, previewInvoice.invoice_no)}>
+                  <Download className="h-4 w-4 mr-2" />
+                  Download PDF
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
