@@ -5279,15 +5279,19 @@ async def add_payment(payment: PaymentCreate, current_user: User = Depends(get_c
     )
     next_order = (max_order.get("entry_order", 0) if max_order else 0) + 1
     
-    # Create payment entry
+    # Create payment entry - Convert date objects to ISO strings for MongoDB
+    entry_date_str = payment.entry_date.isoformat() if isinstance(payment.entry_date, date) else str(payment.entry_date)
+    payment_date_val = payment.payment_date or payment.entry_date
+    payment_date_str = payment_date_val.isoformat() if isinstance(payment_date_val, date) else str(payment_date_val)
+    
     entry = {
         "id": str(uuid.uuid4()),
         "ledger_id": ledger["id"],
         "party_id": payment.party_id,
-        "entry_date": payment.entry_date,
+        "entry_date": entry_date_str,
         "entry_type": "payment",
         "payment_amount": payment.payment_amount,
-        "payment_date": payment.payment_date or payment.entry_date,
+        "payment_date": payment_date_str,
         "paid_to": payment.paid_to or party.get("short_code"),
         "payment_mode": payment.payment_mode.value if payment.payment_mode else None,
         "payment_reference": payment.payment_reference,
