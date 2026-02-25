@@ -13,6 +13,7 @@ from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime, timezone, timedelta, date
 import jwt
+from jwt.exceptions import InvalidTokenError
 from passlib.context import CryptContext
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
