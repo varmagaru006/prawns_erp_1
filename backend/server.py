@@ -762,6 +762,163 @@ class PurchaseInvoiceCreate(BaseModel):
     advance_paid: float = 0.0
     notes: Optional[str] = None
     line_items: List[PurchaseInvoiceLineCreate] = []
+    # A5: Party fields
+    party_id: Optional[str] = None
+    party_name_text: Optional[str] = None
+    same_as_farmer: bool = False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Amendment A5: Party Ledger Models
+# ══════════════════════════════════════════════════════════════════════════════
+
+class LedgerEntryType(str, Enum):
+    bill = "bill"
+    payment = "payment"
+    opening = "opening"
+    manual_debit = "manual_debit"
+    manual_credit = "manual_credit"
+
+class PaymentMode(str, Enum):
+    cash = "cash"
+    bank_transfer = "bank_transfer"
+    cheque = "cheque"
+    upi = "upi"
+
+class Party(BaseModel):
+    """Party Master - stores supplier/farmer party information"""
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    party_name: str  # e.g. "SAI RAM AQUA TRADERS"
+    party_alias: Optional[str] = None  # e.g. "RAMA RAO GARU" - shown in brackets
+    short_code: Optional[str] = None  # e.g. "SRAT" - used in PAID TO column
+    mobile: Optional[str] = None
+    address: Optional[str] = None
+    gst_number: Optional[str] = None
+    pan_number: Optional[str] = None
+    is_active: bool = True
+    notes: Optional[str] = None
+    created_by: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class PartyCreate(BaseModel):
+    party_name: str
+    party_alias: Optional[str] = None
+    short_code: Optional[str] = None
+    mobile: Optional[str] = None
+    address: Optional[str] = None
+    gst_number: Optional[str] = None
+    pan_number: Optional[str] = None
+    notes: Optional[str] = None
+
+class PartyLedgerAccount(BaseModel):
+    """Party Ledger Account - one per party per financial year"""
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    party_id: str
+    financial_year: str  # Format: "25-26" (FY starts 01-Apr, ends 31-Mar)
+    
+    opening_balance: float = 0.0  # Carry-forward from previous FY
+    closing_balance: float = 0.0  # Computed: opening + bills - payments
+    
+    total_billed: float = 0.0   # SUM(invoice subtotals) this FY
+    total_tds: float = 0.0      # SUM(tds_amounts) this FY (4dp precision)
+    total_payments: float = 0.0 # SUM(payments) this FY
+    
+    is_locked: bool = False  # TRUE after FY ends
+    locked_at: Optional[datetime] = None
+    locked_by: Optional[str] = None
+    
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class PartyLedgerEntry(BaseModel):
+    """Ledger Entry - append-only chronological log of transactions"""
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    ledger_id: str
+    party_id: str
+    entry_date: date
+    entry_type: LedgerEntryType
+    
+    # Bill entry fields (entry_type = 'bill' | 'manual_debit')
+    invoice_id: Optional[str] = None
+    invoice_no: Optional[str] = None
+    bill_subtotal: Optional[float] = None
+    tds_rate_pct: Optional[float] = None
+    tds_amount: Optional[float] = None  # Stored to 4dp
+    tds_after_bill: Optional[float] = None
+    
+    # Payment entry fields (entry_type = 'payment' | 'manual_credit')
+    payment_amount: Optional[float] = None
+    payment_date: Optional[date] = None
+    paid_to: Optional[str] = None
+    payment_mode: Optional[PaymentMode] = None
+    payment_reference: Optional[str] = None
+    
+    # Manual entry fields
+    description: Optional[str] = None
+    
+    # Running balance AFTER this entry (denormalized for fast rendering)
+    balance_after: float = 0.0
+    
+    # Sequential order within ledger
+    entry_order: int = 1
+    
+    created_by: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class PaymentCreate(BaseModel):
+    """Create a payment entry"""
+    party_id: str
+    entry_date: date
+    payment_amount: float
+    payment_date: Optional[date] = None
+    paid_to: Optional[str] = None
+    payment_mode: Optional[PaymentMode] = None
+    payment_reference: Optional[str] = None
+    invoice_id: Optional[str] = None  # Optional: link to specific invoice
+    notes: Optional[str] = None
+
+class ManualEntryCreate(BaseModel):
+    """Create a manual debit/credit entry"""
+    party_id: str
+    entry_date: date
+    entry_type: str  # 'manual_debit' or 'manual_credit'
+    amount: float
+    description: str
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# A5 Helper Functions
+# ══════════════════════════════════════════════════════════════════════════════
+
+def get_financial_year(d: date) -> str:
+    """
+    Calculate financial year from date.
+    FY starts 01-Apr, ends 31-Mar.
+    e.g. 06-Apr-2025 → "25-26" | 01-Mar-2026 → "25-26" | 01-Apr-2026 → "26-27"
+    """
+    year = d.year
+    month = d.month
+    if month >= 4:  # Apr-Dec: current year to next year
+        start_year = year % 100
+        end_year = (year + 1) % 100
+    else:  # Jan-Mar: previous year to current year
+        start_year = (year - 1) % 100
+        end_year = year % 100
+    return f"{start_year:02d}-{end_year:02d}"
+
+def get_fy_date_range(fy: str) -> tuple:
+    """
+    Get start and end dates for a financial year.
+    e.g. "25-26" → (date(2025, 4, 1), date(2026, 3, 31))
+    """
+    parts = fy.split("-")
+    start_year = 2000 + int(parts[0])
+    end_year = 2000 + int(parts[1])
+    return (date(start_year, 4, 1), date(end_year, 3, 31))
 
 
 # Helper functions
