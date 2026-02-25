@@ -165,6 +165,136 @@ const PurchaseInvoices = () => {
     }
   };
 
+  const openPreview = async (invoice) => {
+    try {
+      const response = await axios.get(`${API}/purchase-invoices/${invoice.id}`);
+      setPreviewInvoice(response.data);
+      setShowPreview(true);
+    } catch (error) {
+      toast.error('Failed to load invoice details');
+    }
+  };
+
+  const closePreview = () => {
+    setShowPreview(false);
+    setPreviewInvoice(null);
+  };
+
+  const exportToCSV = async () => {
+    setExporting(true);
+    try {
+      // Build params same as list
+      const params = new URLSearchParams();
+      if (filters.from_date) params.append('from_date', filters.from_date);
+      if (filters.to_date) params.append('to_date', filters.to_date);
+      if (filters.payment_status) params.append('payment_status', filters.payment_status);
+      if (filters.invoice_status) params.append('invoice_status', filters.invoice_status);
+      if (filters.search) params.append('search', filters.search);
+      params.append('per_page', '10000'); // Get all
+
+      const response = await axios.get(`${API}/purchase-invoices?${params}`);
+      const data = response.data.data;
+
+      if (!data || data.length === 0) {
+        toast.error('No data to export');
+        return;
+      }
+
+      // Build CSV
+      const headers = ['Invoice No', 'Date', 'Farmer Name', 'Mobile', 'Location', 'Total Qty (kg)', 'Subtotal', 'TDS', 'Grand Total', 'Advance', 'Balance Due', 'Payment Status', 'Status', 'Manual Audit'];
+      const rows = data.map(inv => [
+        inv.invoice_no,
+        inv.invoice_date,
+        inv.farmer_name,
+        inv.farmer_mobile || '',
+        inv.farmer_location || '',
+        inv.total_quantity_kg?.toFixed(3) || '0',
+        inv.subtotal?.toFixed(2) || '0',
+        inv.tds_amount?.toFixed(2) || '0',
+        inv.grand_total?.toFixed(2) || '0',
+        inv.advance_paid?.toFixed(2) || '0',
+        inv.balance_due?.toFixed(2) || '0',
+        inv.payment_status || '',
+        inv.status || '',
+        inv.is_manually_recorded ? 'Yes' : 'No'
+      ]);
+
+      const csvContent = [headers.join(','), ...rows.map(r => r.map(v => `"${v}"`).join(','))].join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `purchase_invoices_${new Date().toISOString().split('T')[0]}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      toast.success(`Exported ${data.length} invoices to CSV`);
+    } catch (error) {
+      toast.error('Export failed');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const exportToExcel = async () => {
+    setExporting(true);
+    try {
+      const params = new URLSearchParams();
+      if (filters.from_date) params.append('from_date', filters.from_date);
+      if (filters.to_date) params.append('to_date', filters.to_date);
+      if (filters.payment_status) params.append('payment_status', filters.payment_status);
+      if (filters.invoice_status) params.append('invoice_status', filters.invoice_status);
+      if (filters.search) params.append('search', filters.search);
+      params.append('per_page', '10000');
+
+      const response = await axios.get(`${API}/purchase-invoices?${params}`);
+      const data = response.data.data;
+
+      if (!data || data.length === 0) {
+        toast.error('No data to export');
+        return;
+      }
+
+      // Create simple HTML table for Excel
+      const headers = ['Invoice No', 'Date', 'Farmer Name', 'Mobile', 'Location', 'Total Qty (kg)', 'Subtotal', 'TDS', 'Grand Total', 'Advance', 'Balance Due', 'Payment Status', 'Status', 'Manual Audit'];
+      let tableHTML = '<table border="1"><tr>' + headers.map(h => `<th style="background:#0d47a1;color:white;padding:8px">${h}</th>`).join('') + '</tr>';
+      
+      data.forEach(inv => {
+        tableHTML += '<tr>';
+        tableHTML += `<td>${inv.invoice_no || ''}</td>`;
+        tableHTML += `<td>${inv.invoice_date || ''}</td>`;
+        tableHTML += `<td>${inv.farmer_name || ''}</td>`;
+        tableHTML += `<td>${inv.farmer_mobile || ''}</td>`;
+        tableHTML += `<td>${inv.farmer_location || ''}</td>`;
+        tableHTML += `<td style="text-align:right">${inv.total_quantity_kg?.toFixed(3) || '0'}</td>`;
+        tableHTML += `<td style="text-align:right">${inv.subtotal?.toFixed(2) || '0'}</td>`;
+        tableHTML += `<td style="text-align:right">${inv.tds_amount?.toFixed(2) || '0'}</td>`;
+        tableHTML += `<td style="text-align:right;font-weight:bold">${inv.grand_total?.toFixed(2) || '0'}</td>`;
+        tableHTML += `<td style="text-align:right">${inv.advance_paid?.toFixed(2) || '0'}</td>`;
+        tableHTML += `<td style="text-align:right;color:${inv.balance_due > 0 ? 'red' : 'green'}">${inv.balance_due?.toFixed(2) || '0'}</td>`;
+        tableHTML += `<td>${inv.payment_status || ''}</td>`;
+        tableHTML += `<td>${inv.status || ''}</td>`;
+        tableHTML += `<td>${inv.is_manually_recorded ? 'Yes' : 'No'}</td>`;
+        tableHTML += '</tr>';
+      });
+      tableHTML += '</table>';
+
+      const blob = new Blob([tableHTML], { type: 'application/vnd.ms-excel' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `purchase_invoices_${new Date().toISOString().split('T')[0]}.xls`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      toast.success(`Exported ${data.length} invoices to Excel`);
+    } catch (error) {
+      toast.error('Export failed');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const getStatusChip = (status) => {
     const styles = {
       draft: 'bg-gray-100 text-gray-800',
