@@ -1311,6 +1311,140 @@ def generate_wage_bill_pdf(bill: WageBill) -> bytes:
     elements.append(Spacer(1, 0.1*inch))
     
     # Bill Info
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Purchase Invoice Business Logic (Amendment A4)
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def generate_invoice_number() -> str:
+    """Generate invoice number in format: sequential_no/FY_short (e.g., 2376/25-26)"""
+    # Calculate financial year
+    now = datetime.now(timezone.utc)
+    month = now.month
+    year = now.year
+    
+    if month >= 4:  # April onwards = new FY
+        fy_short = f"{str(year)[-2:]}-{str(year+1)[-2:]}"
+    else:  # Jan-Mar = previous FY
+        fy_short = f"{str(year-1)[-2:]}-{str(year)[-2:]}"
+    
+    # Get max sequential number
+    existing = await db.purchase_invoices.find({}, {"_id": 0, "invoice_no": 1}).to_list(10000)
+    max_seq = 0
+    for inv in existing:
+        if inv.get('invoice_no'):
+            try:
+                seq_part = inv['invoice_no'].split('/')[0]
+                seq_num = int(seq_part)
+                if seq_num > max_seq:
+                    max_seq = seq_num
+            except:
+                pass
+    
+    next_seq = max_seq + 1
+    return f"{next_seq}/{fy_short}"
+
+def calculate_invoice_totals(line_items: List[PurchaseInvoiceLineCreate], tds_rate_pct: float) -> dict:
+    """Calculate all invoice totals following the exact formula from reference images"""
+    # Calculate line amounts and subtotal
+    total_qty = 0.0
+    subtotal = 0.0
+    
+    for line in line_items:
+        line_amount = round(line.quantity_kg * line.rate, 2)
+        subtotal += line_amount
+        total_qty += line.quantity_kg
+    
+    subtotal = round(subtotal, 2)
+    
+    # TDS calculation: 0.1% = 0.001
+    tds_amount = round(subtotal * (tds_rate_pct / 100), 2)
+    
+    # Pre-round amount
+    pre_round = subtotal - tds_amount
+    
+    # Rounded off adjustment
+    grand_total = round(pre_round)
+    rounded_off = round(grand_total - pre_round, 2)
+    
+    return {
+        "total_quantity_kg": round(total_qty, 3),
+        "subtotal": subtotal,
+        "tds_amount": tds_amount,
+        "rounded_off": rounded_off,
+        "grand_total": grand_total
+    }
+
+def amount_to_words_indian(amount: float) -> str:
+    """Convert amount to Indian rupee words (Lakh/Crore system)"""
+    amount = int(amount)
+    
+    if amount == 0:
+        return "Zero Rupees Only"
+    
+    # Indian number system
+    ones = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine"]
+    tens = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"]
+    teens = ["Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen", "Eighteen", "Nineteen"]
+    
+    def convert_two_digit(n):
+        if n < 10:
+            return ones[n]
+        elif n < 20:
+            return teens[n-10]
+        else:
+            return tens[n//10] + (" " + ones[n%10] if n%10 != 0 else "")
+    
+    def convert_three_digit(n):
+        if n >= 100:
+            result = ones[n//100] + " Hundred"
+            if n % 100 != 0:
+                result += " " + convert_two_digit(n % 100)
+            return result
+        else:
+            return convert_two_digit(n)
+    
+    crore = amount // 10000000
+    amount %= 10000000
+    lakh = amount // 100000
+    amount %= 100000
+    thousand = amount // 1000
+    amount %= 1000
+    hundred = amount
+    
+    result = []
+    
+    if crore > 0:
+        result.append(convert_two_digit(crore) + " Crore")
+    if lakh > 0:
+        result.append(convert_two_digit(lakh) + " Lakh")
+    if thousand > 0:
+        result.append(convert_two_digit(thousand) + " Thousand")
+    if hundred > 0:
+        result.append(convert_three_digit(hundred))
+    
+    return " ".join(result) + " Rupees Only"
+
+def generate_wage_bill_pdf(bill: WageBill) -> bytes:
+    """Generate PDF for wage bill with worker line items"""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    elements = []
+    styles = getSampleStyleSheet()
+    
+    # Title
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=20,
+        textColor=colors.HexColor('#1e40af'),
+        spaceAfter=20,
+        alignment=TA_CENTER
+    )
+    elements.append(Paragraph("WAGE BILL", title_style))
+    elements.append(Spacer(1, 0.1*inch))
+    
+    # Bill Info
     info_data = [
         ['Bill Number:', bill.bill_number, 'Bill Type:', bill.bill_type.upper()],
         ['Department:', bill.department, 'Status:', bill.payment_status.value.upper()],
