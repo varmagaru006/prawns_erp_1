@@ -739,6 +739,10 @@ class PurchaseInvoice(BaseModel):
     manually_recorded_at: Optional[datetime] = None
     manually_recorded_by: Optional[str] = None
     
+    # A5: Party fields
+    party_id: Optional[str] = None  # FK to parties collection
+    party_name_text: Optional[str] = None  # Denormalized snapshot of party name
+    
     notes: Optional[str] = None
     created_by: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
