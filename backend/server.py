@@ -1192,7 +1192,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
             
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token has expired")
-    except jwt.JWTError:
+    except InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid authentication credentials")
     
     # Regular token flow
@@ -1864,7 +1864,7 @@ async def validate_impersonation(token: str):
         
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Impersonation token has expired")
-    except jwt.JWTError:
+    except InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid impersonation token")
 
 # Agents endpoints
