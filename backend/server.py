@@ -5519,6 +5519,407 @@ async def carry_forward_fy(
         "count": carried_count
     }
 
+
+# ── PDF & EXCEL EXPORT ────────────────────────────────────────────────────────
+
+@api_router.get("/party-ledger/{party_id}/export-pdf")
+async def export_ledger_pdf(
+    party_id: str,
+    fy: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Export party ledger as PDF (Landscape A4)"""
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+    
+    if not fy:
+        fy = get_financial_year(date.today())
+    
+    # Get ledger data
+    party = await db.parties.find_one({"id": party_id}, {"_id": 0})
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+    
+    ledger = await db.party_ledger_accounts.find_one(
+        {"party_id": party_id, "financial_year": fy},
+        {"_id": 0}
+    )
+    if not ledger:
+        raise HTTPException(status_code=404, detail="Ledger not found")
+    
+    entries = await db.party_ledger_entries.find(
+        {"ledger_id": ledger["id"]},
+        {"_id": 0}
+    ).sort("entry_order", 1).to_list(10000)
+    
+    # Get invoice line items for bill entries
+    for entry in entries:
+        if entry.get("entry_type") == "bill" and entry.get("invoice_id"):
+            lines = await db.purchase_invoice_lines.find(
+                {"invoice_id": entry["invoice_id"]},
+                {"_id": 0}
+            ).sort("line_no", 1).to_list(100)
+            entry["line_items"] = lines
+    
+    # Get tenant config
+    config_docs = await db.tenant_config.find({}, {"_id": 0}).to_list(100)
+    tenant_config = {doc['key']: doc['value'] for doc in config_docs}
+    
+    # Create PDF
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), topMargin=0.5*inch, bottomMargin=0.5*inch)
+    elements = []
+    styles = getSampleStyleSheet()
+    
+    # Title
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=16,
+        textColor=colors.HexColor('#1e3a8a'),
+        spaceAfter=6,
+        alignment=TA_CENTER
+    )
+    elements.append(Paragraph(tenant_config.get('company_name', 'KRISH AQUA TRADERS'), title_style))
+    elements.append(Paragraph(f"{tenant_config.get('company_address_1', '')}", styles['Normal']))
+    elements.append(Spacer(1, 0.1*inch))
+    
+    # Party info header
+    party_name = party['party_name']
+    if party.get('party_alias'):
+        party_name += f" ({party['party_alias']})"
+    
+    header_data = [
+        [f"PARTY: {party_name}", f"FY: {fy}", f"Opening Balance: ₹{ledger['opening_balance']:,.2f}"]
+    ]
+    header_table = Table(header_data, colWidths=[4*inch, 1.5*inch, 2*inch])
+    header_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#e0f2fe')),
+        ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
+        ('ALIGN', (0, 0), (0, 0), 'LEFT'),
+        ('ALIGN', (1, 0), (-1, 0), 'RIGHT'),
+        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+    ]))
+    elements.append(header_table)
+    elements.append(Spacer(1, 0.15*inch))
+    
+    # Ledger table
+    table_data = [
+        ['DATE', 'BILL NO', 'COUNT', 'QTY', 'RATE', 'AMOUNT', 'TOTAL', 'TDS@0.1%', 'AFTER TDS', 'PAYMENT', 'PAY DATE', 'BALANCE', 'PAID TO']
+    ]
+    
+    def format_date(d):
+        if not d: return ''
+        if isinstance(d, str):
+            d = date.fromisoformat(d.split('T')[0])
+        return d.strftime('%d-%b-%y')
+    
+    def format_curr(amt):
+        return f"₹{amt:,.2f}" if amt else ''
+    
+    for entry in entries:
+        if entry.get('entry_type') == 'opening':
+            table_data.append(['OPENING BALANCE', '', '', '', '', '', '', '', '', '', '', format_curr(entry['balance_after']), ''])
+        elif entry.get('entry_type') == 'bill':
+            line_items = entry.get('line_items', [])
+            if line_items:
+                for idx, line in enumerate(line_items):
+                    is_last = idx == len(line_items) - 1
+                    table_data.append([
+                        format_date(entry['entry_date']) if idx == 0 else '',
+                        entry.get('invoice_no', '') if idx == 0 else '',
+                        line.get('count_value', ''),
+                        f"{line.get('quantity_kg', 0):.3f}",
+                        f"{line.get('rate', 0):.2f}",
+                        format_curr(line.get('amount', 0)),
+                        format_curr(entry['bill_subtotal']) if is_last else '',
+                        format_curr(entry['tds_amount']) if is_last else '',
+                        format_curr(entry['tds_after_bill']) if is_last else '',
+                        '',
+                        '',
+                        format_curr(entry['balance_after']) if is_last else '',
+                        ''
+                    ])
+            else:
+                table_data.append([
+                    format_date(entry['entry_date']),
+                    entry.get('invoice_no', ''),
+                    '', '', '', '',
+                    format_curr(entry['bill_subtotal']),
+                    format_curr(entry['tds_amount']),
+                    format_curr(entry['tds_after_bill']),
+                    '', '',
+                    format_curr(entry['balance_after']),
+                    ''
+                ])
+        elif entry.get('entry_type') == 'payment':
+            table_data.append([
+                format_date(entry['entry_date']),
+                '', '', '', '', '', '', '', '',
+                format_curr(entry['payment_amount']),
+                format_date(entry.get('payment_date')),
+                format_curr(entry['balance_after']),
+                entry.get('paid_to', '')
+            ])
+        elif entry.get('entry_type') in ('manual_debit', 'manual_credit'):
+            amt_col = format_curr(entry.get('tds_after_bill') or entry.get('bill_subtotal', 0)) if entry.get('entry_type') == 'manual_debit' else ''
+            pay_col = format_curr(entry.get('payment_amount', 0)) if entry.get('entry_type') == 'manual_credit' else ''
+            table_data.append([
+                format_date(entry['entry_date']),
+                entry.get('description', ''),
+                '', '', '', '', '', '', amt_col, pay_col, '',
+                format_curr(entry['balance_after']),
+                ''
+            ])
+    
+    # Totals row
+    table_data.append([
+        'TOTAL', '', '', '', '', '', 
+        format_curr(ledger['total_billed']),
+        format_curr(ledger['total_tds']),
+        '',
+        format_curr(ledger['total_payments']),
+        '',
+        format_curr(ledger['closing_balance']),
+        ''
+    ])
+    
+    # Create table with tight column widths for landscape A4
+    col_widths = [0.65*inch, 0.6*inch, 0.45*inch, 0.45*inch, 0.42*inch, 0.65*inch, 0.65*inch, 0.55*inch, 0.65*inch, 0.65*inch, 0.65*inch, 0.75*inch, 0.5*inch]
+    
+    ledger_table = Table(table_data, colWidths=col_widths, repeatRows=1)
+    ledger_table.setStyle(TableStyle([
+        # Header row
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1e3a8a')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 7),
+        ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+        
+        # Data rows
+        ('FONTNAME', (0, 1), (-1, -2), 'Helvetica'),
+        ('FONTSIZE', (0, 1), (-1, -2), 6),
+        ('ALIGN', (3, 1), (5, -1), 'RIGHT'),  # QTY, RATE, AMOUNT
+        ('ALIGN', (6, 1), (-3, -1), 'RIGHT'),  # TOTAL, TDS, AFTER, PAYMENT, BALANCE
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        
+        # Totals row
+        ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#ccfbf1')),
+        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, -1), (-1, -1), 7),
+        
+        # Grid
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+        ('LINEABOVE', (0, 0), (-1, 0), 1, colors.black),
+        ('LINEBELOW', (0, -1), (-1, -1), 1, colors.black),
+        
+        # Padding
+        ('TOPPADDING', (0, 0), (-1, -1), 2),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+        ('LEFTPADDING', (0, 0), (-1, -1), 3),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 3),
+    ]))
+    
+    elements.append(ledger_table)
+    doc.build(elements)
+    
+    buffer.seek(0)
+    filename = f"Ledger_{party['party_name'].replace(' ', '_')}_{fy}.pdf"
+    
+    return FileResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+@api_router.get("/party-ledger/{party_id}/export-excel")
+async def export_ledger_excel(
+    party_id: str,
+    fy: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Export party ledger as Excel file"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+    from openpyxl.utils import get_column_letter
+    
+    if not fy:
+        fy = get_financial_year(date.today())
+    
+    # Get ledger data
+    party = await db.parties.find_one({"id": party_id}, {"_id": 0})
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+    
+    ledger = await db.party_ledger_accounts.find_one(
+        {"party_id": party_id, "financial_year": fy},
+        {"_id": 0}
+    )
+    if not ledger:
+        raise HTTPException(status_code=404, detail="Ledger not found")
+    
+    entries = await db.party_ledger_entries.find(
+        {"ledger_id": ledger["id"]},
+        {"_id": 0}
+    ).sort("entry_order", 1).to_list(10000)
+    
+    # Get invoice line items
+    for entry in entries:
+        if entry.get("entry_type") == "bill" and entry.get("invoice_id"):
+            lines = await db.purchase_invoice_lines.find(
+                {"invoice_id": entry["invoice_id"]},
+                {"_id": 0}
+            ).sort("line_no", 1).to_list(100)
+            entry["line_items"] = lines
+    
+    # Get tenant config
+    config_docs = await db.tenant_config.find({}, {"_id": 0}).to_list(100)
+    tenant_config = {doc['key']: doc['value'] for doc in config_docs}
+    
+    # Create workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = f"Ledger_{fy}"
+    
+    # Styles
+    header_fill = PatternFill(start_color="1e3a8a", end_color="1e3a8a", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF", size=10)
+    title_font = Font(bold=True, size=14, color="1e3a8a")
+    totals_fill = PatternFill(start_color="ccfbf1", end_color="ccfbf1", fill_type="solid")
+    border = Border(
+        left=Side(style='thin'), right=Side(style='thin'),
+        top=Side(style='thin'), bottom=Side(style='thin')
+    )
+    
+    # Title
+    ws.merge_cells('A1:M1')
+    title_cell = ws['A1']
+    title_cell.value = tenant_config.get('company_name', 'KRISH AQUA TRADERS')
+    title_cell.font = title_font
+    title_cell.alignment = Alignment(horizontal='center')
+    
+    # Party info
+    ws.merge_cells('A2:M2')
+    party_name = party['party_name']
+    if party.get('party_alias'):
+        party_name += f" ({party['party_alias']})"
+    ws['A2'].value = f"PARTY: {party_name} | FY: {fy} | Opening Balance: ₹{ledger['opening_balance']:,.2f}"
+    ws['A2'].alignment = Alignment(horizontal='center')
+    
+    # Headers
+    headers = ['DATE', 'BILL NO', 'COUNT', 'QTY (KG)', 'RATE', 'AMOUNT', 'TOTAL BILL', 'TDS@0.1%', 'TDS AFTER', 'PAYMENT', 'PAY DATE', 'BALANCE', 'PAID TO']
+    for col_num, header in enumerate(headers, 1):
+        cell = ws.cell(row=4, column=col_num)
+        cell.value = header
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+        cell.border = border
+    
+    # Data rows
+    row_num = 5
+    
+    def format_date_excel(d):
+        if not d: return ''
+        if isinstance(d, str):
+            d = date.fromisoformat(d.split('T')[0])
+        return d.strftime('%d-%b-%y')
+    
+    for entry in entries:
+        if entry.get('entry_type') == 'opening':
+            ws.cell(row=row_num, column=1, value='OPENING BALANCE')
+            ws.cell(row=row_num, column=12, value=entry['balance_after'])
+            row_num += 1
+        elif entry.get('entry_type') == 'bill':
+            line_items = entry.get('line_items', [])
+            if line_items:
+                for idx, line in enumerate(line_items):
+                    is_last = idx == len(line_items) - 1
+                    if idx == 0:
+                        ws.cell(row=row_num, column=1, value=format_date_excel(entry['entry_date']))
+                        ws.cell(row=row_num, column=2, value=entry.get('invoice_no', ''))
+                    ws.cell(row=row_num, column=3, value=line.get('count_value', ''))
+                    ws.cell(row=row_num, column=4, value=line.get('quantity_kg', 0))
+                    ws.cell(row=row_num, column=5, value=line.get('rate', 0))
+                    ws.cell(row=row_num, column=6, value=line.get('amount', 0))
+                    if is_last:
+                        ws.cell(row=row_num, column=7, value=entry['bill_subtotal'])
+                        ws.cell(row=row_num, column=8, value=entry['tds_amount'])
+                        ws.cell(row=row_num, column=9, value=entry['tds_after_bill'])
+                        ws.cell(row=row_num, column=12, value=entry['balance_after'])
+                    row_num += 1
+            else:
+                ws.cell(row=row_num, column=1, value=format_date_excel(entry['entry_date']))
+                ws.cell(row=row_num, column=2, value=entry.get('invoice_no', ''))
+                ws.cell(row=row_num, column=7, value=entry['bill_subtotal'])
+                ws.cell(row=row_num, column=8, value=entry['tds_amount'])
+                ws.cell(row=row_num, column=9, value=entry['tds_after_bill'])
+                ws.cell(row=row_num, column=12, value=entry['balance_after'])
+                row_num += 1
+        elif entry.get('entry_type') == 'payment':
+            ws.cell(row=row_num, column=1, value=format_date_excel(entry['entry_date']))
+            ws.cell(row=row_num, column=10, value=entry['payment_amount'])
+            ws.cell(row=row_num, column=11, value=format_date_excel(entry.get('payment_date')))
+            ws.cell(row=row_num, column=12, value=entry['balance_after'])
+            ws.cell(row=row_num, column=13, value=entry.get('paid_to', ''))
+            row_num += 1
+        elif entry.get('entry_type') in ('manual_debit', 'manual_credit'):
+            ws.cell(row=row_num, column=1, value=format_date_excel(entry['entry_date']))
+            ws.cell(row=row_num, column=2, value=entry.get('description', ''))
+            if entry.get('entry_type') == 'manual_debit':
+                ws.cell(row=row_num, column=9, value=entry.get('tds_after_bill') or entry.get('bill_subtotal', 0))
+            else:
+                ws.cell(row=row_num, column=10, value=entry.get('payment_amount', 0))
+            ws.cell(row=row_num, column=12, value=entry['balance_after'])
+            row_num += 1
+    
+    # Totals row
+    ws.cell(row=row_num, column=1, value='TOTAL').font = Font(bold=True)
+    ws.cell(row=row_num, column=7, value=ledger['total_billed']).font = Font(bold=True)
+    ws.cell(row=row_num, column=8, value=ledger['total_tds']).font = Font(bold=True)
+    ws.cell(row=row_num, column=10, value=ledger['total_payments']).font = Font(bold=True)
+    ws.cell(row=row_num, column=12, value=ledger['closing_balance']).font = Font(bold=True)
+    
+    for col_num in range(1, 14):
+        ws.cell(row=row_num, column=col_num).fill = totals_fill
+        ws.cell(row=row_num, column=col_num).border = border
+    
+    # Format all data cells
+    for row in ws.iter_rows(min_row=5, max_row=row_num, min_col=1, max_col=13):
+        for cell in row:
+            cell.border = border
+            if cell.column in [4, 5, 6, 7, 8, 9, 10, 12]:  # Numeric columns
+                cell.alignment = Alignment(horizontal='right')
+                if cell.value and isinstance(cell.value, (int, float)):
+                    cell.number_format = '₹#,##0.00'
+    
+    # Auto-fit columns
+    for col in range(1, 14):
+        ws.column_dimensions[get_column_letter(col)].width = 12
+    
+    # Save to buffer
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    
+    filename = f"Ledger_{party['party_name'].replace(' ', '_')}_{fy}.xlsx"
+    
+    # Return as streaming response
+    from starlette.responses import StreamingResponse
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
 app.include_router(api_router)
 
 # ═══════════════════════════════════════════════════════════════════════════════
