@@ -5,7 +5,7 @@
 - **Full credentials**: See /app/TEST_CREDENTIALS.md
 
 ## App URL
-https://aqua-purchase-module.preview.emergentagent.com
+https://krish-party-ledger.preview.emergentagent.com
 
 ---
 

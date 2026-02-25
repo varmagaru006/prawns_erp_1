@@ -60,7 +60,7 @@
 
 ## Quick Start Guide
 
-1. **Go to:** https://aqua-purchase-module.preview.emergentagent.com
+1. **Go to:** https://krish-party-ledger.preview.emergentagent.com
 2. **Choose a role** from the list above
 3. **Login** with the corresponding email and password
 4. **Explore** the modules based on your role access
@@ -101,5 +101,5 @@
 
 For access issues or password reset, contact your system administrator.
 
-**System URL:** https://aqua-purchase-module.preview.emergentagent.com
+**System URL:** https://krish-party-ledger.preview.emergentagent.com
 **Status:** ✅ Active and Running
