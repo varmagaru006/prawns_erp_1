@@ -2712,6 +2712,9 @@ async def create_purchase_invoice(
         advance_paid=invoice_data.advance_paid,
         notes=invoice_data.notes,
         created_by=current_user.id,
+        # A5: Party fields
+        party_id=invoice_data.party_id,
+        party_name_text=invoice_data.party_name_text if not invoice_data.same_as_farmer else invoice_data.farmer_name,
         **totals
     )
     
