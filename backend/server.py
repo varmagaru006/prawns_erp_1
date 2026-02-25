@@ -5097,7 +5097,7 @@ async def set_opening_balance(
             "id": str(uuid.uuid4()),
             "ledger_id": ledger["id"],
             "party_id": party_id,
-            "entry_date": fy_start,
+            "entry_date": fy_start.isoformat(),  # Convert date to string
             "entry_type": "opening",
             "description": f"Opening Balance b/f",
             "balance_after": opening_balance,
