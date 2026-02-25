@@ -339,10 +339,20 @@ const PurchaseInvoices = () => {
           <h1 className="text-3xl font-bold text-gray-800">Purchase Invoices</h1>
           <p className="text-gray-600">Manage procurement invoices and push to lots</p>
         </div>
-        <Button onClick={() => navigate('/purchase-invoices/create')}>
-          <Plus className="h-4 w-4 mr-2" />
-          Create Invoice
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={exportToCSV} disabled={exporting}>
+            <Download className="h-4 w-4 mr-2" />
+            CSV
+          </Button>
+          <Button variant="outline" onClick={exportToExcel} disabled={exporting}>
+            <FileSpreadsheet className="h-4 w-4 mr-2" />
+            Excel
+          </Button>
+          <Button onClick={() => navigate('/purchase-invoices/create')}>
+            <Plus className="h-4 w-4 mr-2" />
+            Create Invoice
+          </Button>
+        </div>
       </div>
 
       {/* Filters */}
