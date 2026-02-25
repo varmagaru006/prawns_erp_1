@@ -618,8 +618,8 @@ const PurchaseInvoices = () => {
         </CardContent>
       </Card>
 
-      {/* Quick Preview Slide-over Panel */}
-      {showPreview && previewInvoice && (
+      {/* Quick Preview Slide-over Panel - Only shown when feature is enabled */}
+      {isDashboardEnabled && showPreview && previewInvoice && (
         <div className="fixed inset-0 z-50 overflow-hidden" data-testid="quick-preview-panel">
           <div className="absolute inset-0 bg-black/50" onClick={closePreview}></div>
           <div className="absolute right-0 top-0 h-full w-full max-w-xl bg-white shadow-xl transform transition-transform">
