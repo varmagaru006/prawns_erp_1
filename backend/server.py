@@ -687,6 +687,7 @@ class PurchaseInvoice(BaseModel):
     
     # Farmer/Supplier info
     farmer_name: str
+    farmer_mobile: Optional[str] = None  # A4 PATCH 10A
     farmer_location: Optional[str] = None
     agent_ref_name: Optional[str] = None
     weighment_slip_no: Optional[str] = None
@@ -716,6 +717,11 @@ class PurchaseInvoice(BaseModel):
     approved_at: Optional[datetime] = None
     pushed_at: Optional[datetime] = None
     pushed_by: Optional[str] = None
+    
+    # Manual audit tracking (A4 PATCH 10A)
+    is_manually_recorded: bool = False
+    manually_recorded_at: Optional[datetime] = None
+    manually_recorded_by: Optional[str] = None
     
     notes: Optional[str] = None
     created_by: str
