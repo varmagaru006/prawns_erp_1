@@ -41,15 +41,25 @@ export const FeatureFlagProvider = ({ children }) => {
     // Load features on mount
     loadFeatures();
     
-    // Listen for storage changes (e.g., when token is set after login)
+    // Listen for storage changes (e.g., when token is set after login in another tab)
     const handleStorageChange = (e) => {
       if (e.key === 'token' && e.newValue) {
         loadFeatures();
       }
     };
     
+    // Listen for custom tokenChanged event (same tab login)
+    const handleTokenChanged = () => {
+      loadFeatures();
+    };
+    
     window.addEventListener('storage', handleStorageChange);
-    return () => window.removeEventListener('storage', handleStorageChange);
+    window.addEventListener('tokenChanged', handleTokenChanged);
+    
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('tokenChanged', handleTokenChanged);
+    };
   }, [loadFeatures]);
 
   const isEnabled = (featureCode) => {
