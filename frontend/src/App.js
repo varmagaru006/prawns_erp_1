@@ -21,6 +21,8 @@ import AttachmentsDemo from './pages/AttachmentsDemo';
 import CreateWageBill from './pages/CreateWageBill';
 import WageBillDetail from './pages/WageBillDetail';
 import AuditTrail from './pages/AuditTrail';
+import PurchaseInvoices from './pages/PurchaseInvoices';
+import PurchaseInvoiceForm from './pages/PurchaseInvoiceForm';
 import Layout from './components/Layout';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { FeatureFlagProvider } from './context/FeatureFlagContext';
