@@ -11,7 +11,30 @@ Build a full-stack, production-ready Prawn/Aquaculture Export ERP web applicatio
 
 ### Session Date: Feb 25, 2026
 
-#### Amendment A4 - Purchase Invoice Module (Patch Features) ✅ COMPLETED & TESTED
+#### Feature: Purchase Invoice Dashboard Toggle (Super Admin Control) ✅ COMPLETED
+
+**Feature Overview:**
+Added ability for Super Admin to enable/disable the Purchase Invoice Dashboard features per client. When disabled, clients see a basic invoice list without metrics, quick preview, or bulk export capabilities.
+
+**Implementation:**
+1. ✅ **Super Admin Feature Registry** - Added `purchaseInvoiceDashboard` to feature registry with module "Finance"
+2. ✅ **Feature Flag API** - Merged registry with DB state for complete feature list
+3. ✅ **Client ERP Feature Check** - PurchaseInvoices.js conditionally shows:
+   - Metrics Dashboard (5 stat cards)
+   - CSV/Excel export buttons
+   - Quick Preview eye icon
+   - Warning banner when disabled
+4. ✅ **FeatureFlagContext Enhancement** - Added token change detection (polling + custom events) to refresh features after login
+
+**Files Modified:**
+- `/app/super-admin-api/main.py` - Feature registry and get_client_features endpoint
+- `/app/frontend/src/pages/PurchaseInvoices.js` - Conditional rendering based on feature flag
+- `/app/frontend/src/context/FeatureFlagContext.js` - Token change detection
+- `/app/frontend/src/context/AuthContext.js` - tokenChanged event dispatch
+
+---
+
+#### Amendment A4 - Purchase Invoice Module (Patch Features) ✅ COMPLETED
 
 **Feature Overview:**
 Complete Purchase Invoice module with enhanced patch features for farmer mobile tracking, quick preview, bulk export, and manual audit recording.
@@ -20,58 +43,17 @@ Complete Purchase Invoice module with enhanced patch features for farmer mobile 
 1. ✅ **Purchase Invoice CRUD** - Full create, read, update, delete operations
 2. ✅ **Approval Workflow** - draft -> approved -> pushed status flow
 3. ✅ **Push to Procurement** - Creates procurement lot from approved invoice
-4. ✅ **Manual Audit Toggle** (`PATCH /api/purchase-invoices/{id}/manual-audit`) - Toggle is_manually_recorded flag with timestamp and user tracking
-5. ✅ **Metrics Dashboard** (`GET /api/purchase-invoices/metrics`) - Real database queries returning:
-   - Total invoice count and value
-   - Breakdown by payment status (pending, partial, paid)
-   - Top farmers by outstanding balance
-6. ✅ **PDF Generation** (`GET /api/purchase-invoices/{id}/pdf`) - Downloadable PDF with Indian formatting
-7. ✅ **farmer_mobile field** - Added to PurchaseInvoice and PurchaseInvoiceCreate models
-8. ✅ **Species Enum Fix** - Added field_validator to ProcurementLot model to normalize species case variations
+4. ✅ **Manual Audit Toggle** (`PATCH /api/purchase-invoices/{id}/manual-audit`)
+5. ✅ **Metrics Dashboard** (`GET /api/purchase-invoices/metrics`) - Real database queries
+6. ✅ **PDF Generation** (`GET /api/purchase-invoices/{id}/pdf`)
+7. ✅ **farmer_mobile field** - Added to models
+8. ✅ **Species Enum Fix** - field_validator for case normalization
 
 **Frontend Implementation:**
-1. ✅ **Purchase Invoices List Page** (`/purchase-invoices`):
-   - Metrics dashboard with 5 stat cards (Total, Value, Pending, Partial, Paid)
-   - Quick filter buttons (Today, This Week, This Month)
-   - Advanced filters (date range, payment status, invoice status, search)
-   - Invoice table with all columns including Mobile and Audit Book
-   - Manual audit toggle buttons (Pending/Recorded)
-   - Action buttons: Preview, Edit, Approve, Delete, Push, Download PDF
-   
-2. ✅ **Quick Preview Panel** - Slide-over panel showing:
-   - Invoice header with status badges
-   - Farmer details section
-   - Line items table
-   - Summary section (subtotal, TDS, rounded off, grand total)
-   - Balance due with red/green color coding
-   - Action buttons (Edit, Download PDF)
-   
-3. ✅ **Bulk Export**:
-   - CSV export button - Downloads all filtered invoices as CSV
-   - Excel export button - Downloads as XLS with styled HTML table
-   
-4. ✅ **Create/Edit Invoice Form** (`/purchase-invoices/create` and `/purchase-invoices/edit/:id`):
-   - Farmer Mobile field added (type=tel)
-   - All existing fields preserved
-   - Line items with dynamic add/remove
-   - Auto-calculation of totals with TDS
-
-**Test Results (Feb 25, 2026):**
-- Backend: 88% pass rate (15/17 tests)
-- Frontend: 100% - All features working
-- All 8 A4 Patch features verified working
-
-### Previous Sessions
-
-#### Session Date: Feb 23, 2026
-- Enhanced Worker Wages Management ✅
-- Universal Attachments System ✅
-
-#### Session Date: Feb 22-23, 2026
-- Amendment A3: Client Linking & Provisioning ✅
-- Feature Toggle UI ✅
-- Announcement System ✅
-- Impersonation Flow ✅
+1. ✅ **Purchase Invoices List Page** with metrics, filters, and actions
+2. ✅ **Quick Preview Panel** - Slide-over with invoice details
+3. ✅ **Bulk Export** - CSV and Excel export
+4. ✅ **Create/Edit Invoice Form** with farmer_mobile field
 
 ## Test Credentials
 
@@ -85,54 +67,41 @@ Complete Purchase Invoice module with enhanced patch features for farmer mobile 
 - **Email**: john@aquapremium.com
 - **Password**: Admin123!
 
+## Feature Flags
+
+### purchaseInvoiceDashboard
+- **Description**: Invoice metrics, quick preview, and bulk export
+- **Module**: Finance
+- **Controls**: Metrics dashboard, CSV/Excel export, Quick Preview panel
+- **When Disabled**: Shows warning banner, hides advanced features
+
 ## Prioritized Backlog
 
 ### P0 (Critical - Completed)
 - ✅ Amendment A4 Purchase Invoice Module with Patch features
+- ✅ Purchase Invoice Dashboard feature toggle from Super Admin
 
 ### P1 (High Priority - Upcoming)
 - Integrate `purchase_invoice_no` into Production and Cold Storage UI
-- Amendment A2 Phases 8-10: Activity logs, usage snapshots, billing integration
+- Amendment A2 Phases 8-10 (Activity logs, usage snapshots, billing)
 
 ### P2 (Medium Priority)
-- Refactor monolithic `server.py` file into modular structure (routers, models, services)
-- Add health checks to supervisor configurations
-
-### P3 (Low Priority/Future)
-- PDF/Excel reports for other modules
-- Advanced audit trail analytics
-- Multi-language support
+- Refactor monolithic `server.py` into modular FastAPI structure
 
 ## Key Files Reference
 
+### Feature Toggle System
+- `/app/super-admin-api/main.py` - Feature registry (line ~780)
+- `/app/frontend/src/context/FeatureFlagContext.js` - Feature loading with token detection
+- `/app/frontend/src/pages/PurchaseInvoices.js` - Conditional rendering
+
 ### Purchase Invoice Module
-- `/app/backend/server.py` - Lines 650-750 (models), Lines 2509-3046 (API endpoints)
-- `/app/frontend/src/pages/PurchaseInvoices.js` - List page with preview, export, toggle
+- `/app/backend/server.py` - API endpoints
+- `/app/frontend/src/pages/PurchaseInvoices.js` - List page
 - `/app/frontend/src/pages/PurchaseInvoiceForm.js` - Create/Edit form
 
-### Client ERP Backend
-- `/app/backend/server.py` - All API endpoints
+## Database
 
-### Client ERP Frontend
-- `/app/frontend/src/pages/` - All page components
-- `/app/frontend/src/components/` - Reusable components
-
-## Database Schema
-
-### MongoDB (Client ERP)
-- `purchase_invoices`: { id, invoice_no, invoice_date, farmer_name, farmer_mobile, farmer_location, etc. }
-- `purchase_invoice_lines`: { id, invoice_id, line_no, variety, count_value, quantity_kg, rate, amount }
-- `procurement_lots`: { id, lot_number, species, etc. } - with species field_validator
-- `tenant_config`: Key-value branding config
-
-## Known Issues
-- Old invoices don't have farmer_mobile field (null) - expected for legacy data
-- Environment services need manual restart after session changes
-
-## Build Commands
-```bash
-# Super Admin Frontend
-cd /app/super-admin-frontend && yarn build
-cp -r dist /app/frontend/public/super-admin
-sudo supervisorctl restart frontend
-```
+### Feature Flags Collection (test_database)
+- `feature_flags`: { tenant_id, feature_code, is_enabled, synced_at }
+- Example: `{ tenant_id: "cli_001", feature_code: "purchaseInvoiceDashboard", is_enabled: true }`
