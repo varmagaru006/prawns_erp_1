@@ -133,6 +133,18 @@ const PurchaseInvoices = () => {
     }
   };
 
+  const handleManualAuditToggle = async (invoiceId, isRecorded) => {
+    try {
+      await axios.patch(`${API}/purchase-invoices/${invoiceId}/manual-audit`, {
+        is_manually_recorded: isRecorded
+      });
+      toast.success(isRecorded ? 'Marked as recorded' : 'Unmarked');
+      fetchInvoices();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to update audit status');
+    }
+  };
+
   const downloadPDF = async (invoiceId, invoiceNo) => {
     try {
       const response = await axios.get(`${API}/purchase-invoices/${invoiceId}/pdf`, {
