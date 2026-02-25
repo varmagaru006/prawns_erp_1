@@ -68,10 +68,12 @@ const PartyLedger = () => {
       const params = new URLSearchParams();
       if (selectedFY) params.append('fy', selectedFY);
       if (search) params.append('search', search);
-      const response = await axios.get(`${API}/party-ledger?${params}`);
-      setLedgers(response.data);
+      const response = await axios.get(`${API}/party-ledger?${params}`, { timeout: 10000 });
+      setLedgers(response.data || []);
     } catch (error) {
+      console.error('Failed to load ledgers:', error);
       toast.error('Failed to load ledgers');
+      setLedgers([]);
     } finally {
       setLoading(false);
     }
