@@ -2523,6 +2523,7 @@ async def create_purchase_invoice(
         invoice_no=invoice_no,
         invoice_date=invoice_data.invoice_date,
         farmer_name=invoice_data.farmer_name,
+        farmer_mobile=invoice_data.farmer_mobile,
         farmer_location=invoice_data.farmer_location,
         agent_ref_name=invoice_data.agent_ref_name,
         weighment_slip_no=invoice_data.weighment_slip_no,
