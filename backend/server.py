@@ -805,6 +805,8 @@ class Party(BaseModel):
     created_by: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # Virtual field - computed from ledger, not stored
+    current_fy_balance: Optional[float] = None
 
 class PartyCreate(BaseModel):
     party_name: str
