@@ -478,6 +478,13 @@ const Procurement = () => {
                       return (
                       <TableRow key={lot.id} data-testid={`lot-row-${lot.id}`}>
                         <TableCell className="font-medium">{lot.lot_number}</TableCell>
+                        <TableCell>
+                          {lot.purchase_invoice_no ? (
+                            <span className="text-blue-600 font-mono text-sm">{lot.purchase_invoice_no}</span>
+                          ) : (
+                            <span className="text-gray-400 text-sm">-</span>
+                          )}
+                        </TableCell>
                         <TableCell>{lot.agent_name}</TableCell>
                         <TableCell>{lot.species}</TableCell>
                         <TableCell>{lot.count_per_kg || 'N/A'}</TableCell>
