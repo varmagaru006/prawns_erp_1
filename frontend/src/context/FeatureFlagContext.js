@@ -82,7 +82,7 @@ export const FeatureFlagProvider = ({ children }) => {
       window.removeEventListener('storage', handleStorageChange);
       window.removeEventListener('tokenChanged', handleTokenChanged);
     };
-  }, [loadFeatures, features]);
+  }, [loadFeatures, tokenPresent]);
 
   const isEnabled = (featureCode) => {
     return features[featureCode] === true;
