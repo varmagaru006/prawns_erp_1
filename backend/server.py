@@ -260,7 +260,6 @@ class ProcurementLot(BaseModel):
             return v
         # Convert string to title case for matching
         v_str = str(v).strip()
-        v_normalized = v_str.title() if v_str.islower() else v_str
         # Try to match with enum values
         for species in Species:
             if species.value.lower() == v_str.lower():
