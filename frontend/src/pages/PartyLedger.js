@@ -162,6 +162,46 @@ const PartyLedger = () => {
     }
   };
 
+  const handleExportPDF = async (party_id, fy) => {
+    try {
+      const params = new URLSearchParams();
+      if (fy) params.append('fy', fy);
+      const response = await axios.get(`${API}/party-ledger/${party_id}/export-pdf?${params}`, {
+        responseType: 'blob'
+      });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `Ledger_${fy}.pdf`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      toast.success('PDF downloaded successfully');
+    } catch (error) {
+      toast.error('Failed to download PDF');
+    }
+  };
+
+  const handleExportExcel = async (party_id, fy) => {
+    try {
+      const params = new URLSearchParams();
+      if (fy) params.append('fy', fy);
+      const response = await axios.get(`${API}/party-ledger/${party_id}/export-excel?${params}`, {
+        responseType: 'blob'
+      });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `Ledger_${fy}.xlsx`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      toast.success('Excel file downloaded successfully');
+    } catch (error) {
+      toast.error('Failed to download Excel');
+    }
+  };
+
   const formatCurrency = (amount) => {
     return new Intl.NumberFormat('en-IN', {
       style: 'currency',
