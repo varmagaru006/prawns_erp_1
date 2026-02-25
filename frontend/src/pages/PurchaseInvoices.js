@@ -316,12 +316,14 @@ const PurchaseInvoices = () => {
                 <TableHead>Invoice No</TableHead>
                 <TableHead>Date</TableHead>
                 <TableHead>Farmer Name</TableHead>
+                <TableHead>Mobile</TableHead>
                 <TableHead>Location</TableHead>
                 <TableHead className="text-right">Total Qty (kg)</TableHead>
                 <TableHead className="text-right">Grand Total</TableHead>
                 <TableHead className="text-right">Balance Due</TableHead>
                 <TableHead>Payment</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead>Audit Book</TableHead>
                 <TableHead>Actions</TableHead>
               </TableRow>
             </TableHeader>
