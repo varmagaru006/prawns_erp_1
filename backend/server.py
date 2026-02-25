@@ -2833,6 +2833,374 @@ async def approve_purchase_invoice(
     
     return {"status": "success", "message": "Invoice approved and locked"}
 
+@api_router.post("/purchase-invoices/{invoice_id}/push-to-procurement")
+async def push_invoice_to_procurement(
+    invoice_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Push approved invoice to procurement (creates procurement lot)"""
+    # Check role permission
+    if current_user.role not in ['admin', 'owner', 'procurement_manager']:
+        raise HTTPException(status_code=403, detail="Not authorized to push invoices")
+    
+    invoice = await db.purchase_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    
+    if invoice.get('status') != 'approved':
+        raise HTTPException(status_code=400, detail="Can only push approved invoices")
+    
+    if invoice.get('lot_id'):
+        raise HTTPException(status_code=400, detail="Invoice already pushed")
+    
+    # Get line items to determine species
+    lines = await db.purchase_invoice_lines.find(
+        {"invoice_id": invoice_id},
+        {"_id": 0}
+    ).sort("line_no", 1).to_list(100)
+    
+    # Parse species from first line variety (default to vannamei)
+    first_variety = lines[0]['variety'].lower() if lines else "vannamei"
+    species = "vannamei"
+    if "black" in first_variety or "tiger" in first_variety:
+        species = "black_tiger"
+    
+    # Calculate weighted average rate
+    total_amount = invoice.get('subtotal', 0)
+    total_qty = invoice.get('total_quantity_kg', 0)
+    avg_rate = round(total_amount / total_qty, 2) if total_qty > 0 else 0
+    
+    # Lookup or create agent
+    agent_id = None
+    agent_name = invoice.get('agent_ref_name', 'Unknown')
+    if agent_name and agent_name != 'Unknown':
+        existing_agent = await db.agents.find_one({"name": agent_name}, {"_id": 0})
+        if existing_agent:
+            agent_id = existing_agent['id']
+        else:
+            # Create pending agent
+            new_agent = {
+                "id": str(uuid.uuid4()),
+                "name": agent_name,
+                "phone": "",
+                "commission_pct": 0.0,
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+            await db.agents.insert_one(new_agent)
+            agent_id = new_agent['id']
+    
+    # Generate lot number
+    today = datetime.now(timezone.utc).date()
+    lot_prefix = f"PRW-{today.strftime('%Y-%m-%d')}"
+    existing_lots_today = await db.procurement_lots.count_documents({
+        "lot_number": {"$regex": f"^{lot_prefix}"}
+    })
+    lot_number = f"{lot_prefix}-{existing_lots_today + 1:03d}"
+    
+    # Create procurement lot
+    lot = {
+        "id": str(uuid.uuid4()),
+        "lot_number": lot_number,
+        "agent_id": agent_id or "",
+        "agent_name": agent_name,
+        "vehicle_number": "",
+        "driver_name": "",
+        "arrival_time": invoice['invoice_date'],
+        "species": species,
+        "count_per_kg": lines[0]['count_value'] if lines else "",
+        "boxes_count": 0,
+        "gross_weight_kg": total_qty,
+        "ice_weight_kg": 0,
+        "net_weight_kg": total_qty,
+        "no_of_tons": round(total_qty / 1000, 3),
+        "no_of_trays": 0,
+        "rate_per_kg": avg_rate,
+        "total_amount": invoice.get('grand_total', 0),
+        "advance_paid": invoice.get('advance_paid', 0),
+        "balance_due": invoice.get('balance_due', 0),
+        "ice_ratio_pct": 0,
+        "freshness_grade": "A",
+        "is_rejected": False,
+        "payment_status": invoice.get('payment_status', 'pending'),
+        "payments": [],
+        "photos": [],
+        "is_update_pending_approval": False,
+        "approval_status": "approved",
+        "notes": f"Created from Purchase Invoice {invoice['invoice_no']}",
+        "created_by": current_user.id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "purchase_invoice_id": invoice_id,
+        "purchase_invoice_no": invoice['invoice_no']
+    }
+    
+    await db.procurement_lots.insert_one(lot)
+    
+    # Update invoice
+    await db.purchase_invoices.update_one(
+        {"id": invoice_id},
+        {"$set": {
+            "status": "pushed",
+            "lot_id": lot['id'],
+            "pushed_at": datetime.now(timezone.utc).isoformat(),
+            "pushed_by": current_user.id,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    await create_audit_log(current_user.id, "PUSH_PURCHASE_INVOICE", "procurement",
+                          {"invoice_id": invoice_id, "lot_id": lot['id'], "lot_number": lot_number})
+    
+    return {
+        "status": "success",
+        "message": "Invoice pushed to procurement",
+        "lot_id": lot['id'],
+        "lot_number": lot_number
+    }
+
+@api_router.delete("/purchase-invoices/{invoice_id}")
+async def delete_purchase_invoice(
+    invoice_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Delete draft purchase invoice"""
+    # Check role permission
+    if current_user.role not in ['admin', 'procurement_manager']:
+        raise HTTPException(status_code=403, detail="Not authorized to delete invoices")
+    
+    invoice = await db.purchase_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    
+    if invoice.get('status') != 'draft':
+        raise HTTPException(status_code=400, detail="Can only delete draft invoices")
+    
+    # Delete line items
+    await db.purchase_invoice_lines.delete_many({"invoice_id": invoice_id})
+    
+    # Delete invoice
+    await db.purchase_invoices.delete_one({"id": invoice_id})
+    
+    await create_audit_log(current_user.id, "DELETE_PURCHASE_INVOICE", "procurement",
+                          {"invoice_id": invoice_id, "invoice_no": invoice.get('invoice_no')})
+    
+    return {"status": "success", "message": "Invoice deleted"}
+
+def generate_purchase_invoice_pdf(invoice: dict, lines: List[dict], tenant_config: dict) -> bytes:
+    """Generate PDF matching exact format from reference images"""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors as rl_colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+    
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=0.3*inch, bottomMargin=0.3*inch,
+                          leftMargin=0.3*inch, rightMargin=0.3*inch)
+    elements = []
+    styles = getSampleStyleSheet()
+    
+    # Page width for full-width tables
+    page_width = A4[0] - 0.6*inch
+    
+    # Custom styles
+    header_style = ParagraphStyle(
+        'HeaderStyle',
+        parent=styles['Normal'],
+        fontSize=14,
+        textColor=rl_colors.HexColor('#0d47a1'),
+        alignment=TA_CENTER,
+        fontName='Helvetica-Bold',
+        spaceAfter=3
+    )
+    
+    company_style = ParagraphStyle(
+        'CompanyStyle',
+        parent=styles['Normal'],
+        fontSize=20,
+        textColor=rl_colors.HexColor('#0d47a1'),
+        alignment=TA_CENTER,
+        fontName='Helvetica-Bold',
+        spaceAfter=3
+    )
+    
+    address_style = ParagraphStyle(
+        'AddressStyle',
+        parent=styles['Normal'],
+        fontSize=10,
+        textColor=rl_colors.HexColor('#0d47a1'),
+        alignment=TA_CENTER,
+        spaceAfter=2
+    )
+    
+    # Create outer table for cyan background
+    inner_content = []
+    
+    # Header section
+    inner_content.append(Paragraph("PURCHASE INVOICE", header_style))
+    inner_content.append(Spacer(1, 0.05*inch))
+    inner_content.append(Paragraph(tenant_config.get('company_name', 'COMPANY NAME'), company_style))
+    inner_content.append(Spacer(1, 0.05*inch))
+    inner_content.append(Paragraph(tenant_config.get('company_address_1', ''), address_style))
+    inner_content.append(Paragraph(tenant_config.get('company_address_2', ''), address_style))
+    inner_content.append(Paragraph(
+        f"Contact Number: {tenant_config.get('company_phone', '')}, Email Id: {tenant_config.get('company_email', '')}",
+        address_style
+    ))
+    inner_content.append(Spacer(1, 0.1*inch))
+    
+    # Meta information table
+    meta_data = [
+        ['Farmer Name: ' + invoice.get('farmer_name', ''), 'DATE: ' + str(invoice.get('invoice_date', ''))],
+        ['Location: ' + (invoice.get('farmer_location') or ''), 'Purchase Invoice No: ' + invoice.get('invoice_no', '')],
+        ['Farmer/Agent Ref Name: ' + (invoice.get('agent_ref_name') or ''), 'Weighment Slip No: ' + (invoice.get('weighment_slip_no') or '')]
+    ]
+    
+    meta_table = Table(meta_data, colWidths=[page_width/2, page_width/2])
+    meta_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), rl_colors.HexColor('#e0f7fa')),
+        ('TEXTCOLOR', (0, 0), (-1, -1), rl_colors.HexColor('#0d47a1')),
+        ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+        ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('GRID', (0, 0), (-1, -1), 1, rl_colors.HexColor('#0d47a1')),
+        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+    ]))
+    inner_content.append(meta_table)
+    inner_content.append(Spacer(1, 0.05*inch))
+    
+    # Line items table (pad to 15 rows minimum)
+    line_data = [['S.NO', 'Variety', 'Count', 'Quantity\nKgs/Gms', 'Rate', 'Amount']]
+    
+    for idx, line in enumerate(lines, 1):
+        line_data.append([
+            str(idx),
+            line.get('variety', ''),
+            line.get('count_value', ''),
+            f"{line.get('quantity_kg', 0):.3f}",
+            f"{line.get('rate', 0):.2f}",
+            f"{line.get('amount', 0):.2f}"
+        ])
+    
+    # Pad to 15 rows
+    while len(line_data) < 16:  # 15 data rows + 1 header
+        line_data.append(['', '', '', '', '', '0.00'])
+    
+    # Add subtotal row
+    line_data.append(['', '', '', '', '', f"{invoice.get('subtotal', 0):.2f}"])
+    
+    # Add TDS row
+    tds_label = f"TDS@{invoice.get('tds_rate_pct', 0.1)}%"
+    line_data.append(['', '', '', '', tds_label, f"{invoice.get('tds_amount', 0):.2f}"])
+    
+    # Add Rounded Off row
+    line_data.append(['', '', '', '', 'Rounded Off', f"{invoice.get('rounded_off', 0):.2f}"])
+    
+    # Add Grand Total row
+    line_data.append(['Grand Total', '', '', f"{invoice.get('total_quantity_kg', 0):.3f}", '', f"{invoice.get('grand_total', 0):.2f}"])
+    
+    line_table = Table(line_data, colWidths=[0.5*inch, 1.5*inch, 1*inch, 1*inch, 0.8*inch, 1*inch])
+    line_table.setStyle(TableStyle([
+        # Header row
+        ('BACKGROUND', (0, 0), (-1, 0), rl_colors.HexColor('#e0f7fa')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), rl_colors.HexColor('#0d47a1')),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 10),
+        ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+        # Data rows
+        ('BACKGROUND', (0, 1), (-1, -4), rl_colors.HexColor('#e0f7fa')),
+        ('TEXTCOLOR', (0, 1), (-1, -1), rl_colors.HexColor('#0d47a1')),
+        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 1), (-1, -1), 9),
+        ('ALIGN', (0, 1), (-1, -1), 'CENTER'),
+        ('ALIGN', (-1, 1), (-1, -1), 'RIGHT'),
+        # TDS row (blue label, red amount)
+        ('TEXTCOLOR', (4, -3), (4, -3), rl_colors.HexColor('#1565c0')),
+        ('TEXTCOLOR', (5, -3), (5, -3), rl_colors.HexColor('#d32f2f')),
+        ('FONTNAME', (4, -3), (5, -3), 'Helvetica-Bold'),
+        # Rounded Off row (blue label, red amount)
+        ('TEXTCOLOR', (4, -2), (4, -2), rl_colors.HexColor('#1565c0')),
+        ('TEXTCOLOR', (5, -2), (5, -2), rl_colors.HexColor('#d32f2f')),
+        ('FONTNAME', (4, -2), (5, -2), 'Helvetica-Bold'),
+        # Grand Total row
+        ('BACKGROUND', (0, -1), (-1, -1), rl_colors.HexColor('#e0f7fa')),
+        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, -1), (-1, -1), 11),
+        # Grid
+        ('GRID', (0, 0), (-1, -1), 1, rl_colors.HexColor('#0d47a1')),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+    ]))
+    inner_content.append(line_table)
+    inner_content.append(Spacer(1, 0.1*inch))
+    
+    # Bottom section
+    amount_words = amount_to_words_indian(invoice.get('grand_total', 0))
+    bottom_data = [
+        [f"Total Amount In Words: {amount_words}", f"For {tenant_config.get('company_name', 'COMPANY NAME')}"],
+        ['', ''],
+        ['', 'Authorised Signatory']
+    ]
+    
+    bottom_table = Table(bottom_data, colWidths=[page_width*0.6, page_width*0.4], rowHeights=[0.3*inch, 0.5*inch, 0.2*inch])
+    bottom_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), rl_colors.HexColor('#e0f7fa')),
+        ('TEXTCOLOR', (0, 0), (-1, -1), rl_colors.HexColor('#0d47a1')),
+        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 0), (0, 0), 9),
+        ('FONTSIZE', (1, 0), (1, 0), 10),
+        ('FONTSIZE', (1, 2), (1, 2), 9),
+        ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+        ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('GRID', (0, 0), (-1, -1), 1, rl_colors.HexColor('#0d47a1')),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+    ]))
+    inner_content.append(bottom_table)
+    
+    # Build PDF
+    for elem in inner_content:
+        elements.append(elem)
+    
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer.read()
+
+@api_router.get("/purchase-invoices/{invoice_id}/pdf")
+async def download_purchase_invoice_pdf(
+    invoice_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Download purchase invoice as PDF"""
+    invoice = await db.purchase_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    
+    # Get line items
+    lines = await db.purchase_invoice_lines.find(
+        {"invoice_id": invoice_id},
+        {"_id": 0}
+    ).sort("line_no", 1).to_list(100)
+    
+    # Get tenant config
+    config_docs = await db.tenant_config.find({}, {"_id": 0}).to_list(100)
+    tenant_config = {doc['key']: doc['value'] for doc in config_docs}
+    
+    # Generate PDF
+    pdf_bytes = generate_purchase_invoice_pdf(invoice, lines, tenant_config)
+    
+    # Return as downloadable file
+    from fastapi.responses import Response
+    return Response(
+        content=pdf_bytes,
+        media_type='application/pdf',
+        headers={
+            'Content-Disposition': f'attachment; filename=purchase_invoice_{invoice["invoice_no"].replace("/", "_")}.pdf'
+        }
+    )
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Comprehensive Reports - PDF & Excel Generation
 # ══════════════════════════════════════════════════════════════════════════════
