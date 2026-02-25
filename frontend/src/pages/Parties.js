@@ -34,9 +34,12 @@ const Parties = () => {
     try {
       const params = new URLSearchParams();
       if (search) params.append('search', search);
+      console.log('Fetching parties from:', `${API}/parties?${params}`);
       const response = await axios.get(`${API}/parties?${params}`);
-      setParties(response.data);
+      console.log('Parties response:', response.data);
+      setParties(response.data || []);
     } catch (error) {
+      console.error('Parties fetch error:', error);
       toast.error('Failed to load parties');
     } finally {
       setLoading(false);
