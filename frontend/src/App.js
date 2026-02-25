@@ -83,6 +83,7 @@ function AppRoutes() {
         <Route path="purchase-invoices" element={<PurchaseInvoices />} />
         <Route path="purchase-invoices/create" element={<PurchaseInvoiceForm />} />
         <Route path="purchase-invoices/edit/:id" element={<PurchaseInvoiceForm />} />
+        <Route path="admin/company-settings" element={<CompanySettings />} />
         <Route path="notifications" element={<Notifications />} />
       </Route>
     </Routes>
