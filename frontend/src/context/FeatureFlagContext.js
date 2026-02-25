@@ -50,8 +50,15 @@ export const FeatureFlagProvider = ({ children }) => {
     // Poll for token changes every 500ms (handles same-tab login)
     const pollToken = setInterval(() => {
       const token = localStorage.getItem('token');
-      if (token && Object.keys(features).length === 0) {
+      const hadToken = tokenPresent;
+      
+      if (token && !hadToken) {
+        // Token was added (user just logged in)
         loadFeatures();
+      } else if (!token && hadToken) {
+        // Token was removed (user logged out)
+        setFeatures({});
+        setTokenPresent(false);
       }
     }, 500);
     
