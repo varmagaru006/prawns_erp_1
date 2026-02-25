@@ -452,6 +452,7 @@ const Procurement = () => {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Lot Number</TableHead>
+                      <TableHead>Invoice No</TableHead>
                       <TableHead>Agent</TableHead>
                       <TableHead>Species</TableHead>
                       <TableHead>Count/KG</TableHead>
