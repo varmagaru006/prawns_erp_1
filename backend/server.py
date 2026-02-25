@@ -5224,7 +5224,7 @@ async def create_ledger_entry_for_invoice(invoice: dict, current_user_id: str):
         "id": str(uuid.uuid4()),
         "ledger_id": ledger["id"],
         "party_id": party_id,
-        "entry_date": invoice_date,
+        "entry_date": invoice_date_str,  # Use the string version
         "entry_type": "bill",
         "invoice_id": invoice["id"],
         "invoice_no": invoice.get("invoice_no"),
