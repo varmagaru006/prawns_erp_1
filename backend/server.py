@@ -2577,7 +2577,19 @@ async def create_purchase_invoice(
                           {"invoice_id": invoice.id, "invoice_no": invoice_no})
     
     # Reload with line items for response
-    invoice.line_items = [PurchaseInvoiceLine(**line_data) for line_data in invoice_data.line_items]
+    invoice.line_items = [
+        PurchaseInvoiceLine(
+            invoice_id=invoice.id,
+            line_no=line_data.line_no,
+            variety=line_data.variety,
+            count_value=line_data.count_value,
+            custom_variety_notes=line_data.custom_variety_notes,
+            custom_count_notes=line_data.custom_count_notes,
+            quantity_kg=line_data.quantity_kg,
+            rate=line_data.rate,
+            amount=round(line_data.quantity_kg * line_data.rate, 2)
+        ) for line_data in invoice_data.line_items
+    ]
     return invoice
 
 @api_router.get("/purchase-invoices")
