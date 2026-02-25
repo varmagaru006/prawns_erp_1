@@ -59,6 +59,7 @@ const PurchaseInvoiceForm = () => {
       setFormData({
         invoice_date: inv.invoice_date,
         farmer_name: inv.farmer_name,
+        farmer_mobile: inv.farmer_mobile || '',
         farmer_location: inv.farmer_location || '',
         agent_ref_name: inv.agent_ref_name || '',
         weighment_slip_no: inv.weighment_slip_no || '',
