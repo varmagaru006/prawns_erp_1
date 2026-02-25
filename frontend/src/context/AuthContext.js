@@ -111,6 +111,9 @@ export const AuthProvider = ({ children }) => {
     setUser(userData);
     setIsImpersonating(false);
     
+    // Dispatch custom event to refresh features
+    window.dispatchEvent(new CustomEvent('tokenChanged'));
+    
     return userData;
   };
 
