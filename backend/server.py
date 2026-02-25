@@ -5179,6 +5179,9 @@ async def create_ledger_entry_for_invoice(invoice: dict, current_user_id: str):
     if isinstance(invoice_date, str):
         invoice_date = date.fromisoformat(invoice_date)
     
+    # Convert to string for MongoDB storage
+    invoice_date_str = invoice_date.isoformat() if isinstance(invoice_date, date) else str(invoice_date)
+    
     fy = get_financial_year(invoice_date)
     
     # Get or create ledger account
