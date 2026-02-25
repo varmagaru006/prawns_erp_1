@@ -3006,6 +3006,45 @@ async def delete_purchase_invoice(
     
     return {"status": "success", "message": "Invoice deleted"}
 
+@api_router.patch("/purchase-invoices/{invoice_id}/manual-audit")
+async def toggle_manual_audit(
+    invoice_id: str,
+    data: dict,
+    current_user: User = Depends(get_current_user)
+):
+    """Toggle manual audit recording status (A4 PATCH 10G)"""
+    # Check role permission
+    if current_user.role not in ['admin', 'owner', 'procurement_manager']:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    invoice = await db.purchase_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    
+    is_recorded = data.get('is_manually_recorded', False)
+    
+    update_data = {
+        "is_manually_recorded": is_recorded,
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    if is_recorded:
+        update_data["manually_recorded_at"] = datetime.now(timezone.utc).isoformat()
+        update_data["manually_recorded_by"] = current_user.id
+    else:
+        update_data["manually_recorded_at"] = None
+        update_data["manually_recorded_by"] = None
+    
+    await db.purchase_invoices.update_one(
+        {"id": invoice_id},
+        {"$set": update_data}
+    )
+    
+    await create_audit_log(current_user.id, "TOGGLE_MANUAL_AUDIT", "procurement",
+                          {"invoice_id": invoice_id, "is_recorded": is_recorded})
+    
+    return {"status": "success", "message": f"Manual audit status updated"}
+
 def generate_purchase_invoice_pdf(invoice: dict, lines: List[dict], tenant_config: dict) -> bytes:
     """Generate PDF matching exact format from reference images"""
     from reportlab.lib.pagesizes import A4
