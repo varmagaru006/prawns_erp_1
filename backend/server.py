@@ -5509,18 +5509,6 @@ async def carry_forward_fy(
         "count": carried_count
     }
 
-@api_router.get("/party-ledger/available-fys")
-async def get_available_fys(current_user: User = Depends(get_current_user)):
-    """Get list of financial years that have ledger records"""
-    fys = await db.party_ledger_accounts.distinct("financial_year")
-    
-    # Add current FY if not present
-    current_fy = get_financial_year(date.today())
-    if current_fy not in fys:
-        fys.append(current_fy)
-    
-    return sorted(fys, reverse=True)
-
 app.include_router(api_router)
 
 # ═══════════════════════════════════════════════════════════════════════════════
