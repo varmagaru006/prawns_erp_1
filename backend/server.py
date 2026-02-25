@@ -2873,9 +2873,9 @@ async def push_invoice_to_procurement(
     
     # Parse species from first line variety (default to vannamei)
     first_variety = lines[0]['variety'].lower() if lines else "vannamei"
-    species = "vannamei"
+    species = "Vannamei"
     if "black" in first_variety or "tiger" in first_variety:
-        species = "black_tiger"
+        species = "Black Tiger"
     
     # Calculate weighted average rate
     total_amount = invoice.get('subtotal', 0)
