@@ -63,7 +63,8 @@ const Layout = () => {
     TrendingDown,
     Target,
     Paperclip,
-    DollarSign: Receipt  // Reuse Receipt icon for Market Rates
+    DollarSign,
+    History
   };
 
   const navigation = [
