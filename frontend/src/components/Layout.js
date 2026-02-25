@@ -26,7 +26,8 @@ import {
   Target,
   Paperclip,
   History,
-  DollarSign
+  DollarSign,
+  FileText
 } from 'lucide-react';
 
 const Layout = () => {
