@@ -41,6 +41,14 @@ export const FeatureFlagProvider = ({ children }) => {
     // Load features on mount
     loadFeatures();
     
+    // Poll for token changes every 500ms (handles same-tab login)
+    const pollToken = setInterval(() => {
+      const token = localStorage.getItem('token');
+      if (token && Object.keys(features).length === 0) {
+        loadFeatures();
+      }
+    }, 500);
+    
     // Listen for storage changes (e.g., when token is set after login in another tab)
     const handleStorageChange = (e) => {
       if (e.key === 'token' && e.newValue) {
@@ -57,10 +65,11 @@ export const FeatureFlagProvider = ({ children }) => {
     window.addEventListener('tokenChanged', handleTokenChanged);
     
     return () => {
+      clearInterval(pollToken);
       window.removeEventListener('storage', handleStorageChange);
       window.removeEventListener('tokenChanged', handleTokenChanged);
     };
-  }, [loadFeatures]);
+  }, [loadFeatures, features]);
 
   const isEnabled = (featureCode) => {
     return features[featureCode] === true;
