@@ -5732,7 +5732,8 @@ async def export_ledger_pdf(
     buffer.seek(0)
     filename = f"Ledger_{party['party_name'].replace(' ', '_')}_{fy}.pdf"
     
-    return FileResponse(
+    from starlette.responses import StreamingResponse
+    return StreamingResponse(
         buffer,
         media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
