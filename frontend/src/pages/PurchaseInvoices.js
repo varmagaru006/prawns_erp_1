@@ -35,7 +35,8 @@ const PurchaseInvoices = () => {
   const [exporting, setExporting] = useState(false);
 
   // Compute isDashboardEnabled directly from isEnabled to ensure reactivity
-  const isDashboardEnabled = isEnabled('purchaseInvoiceDashboard');
+  // If features are still loading, default to showing features enabled
+  const isDashboardEnabled = featureLoading ? true : isEnabled('purchaseInvoiceDashboard');
 
   useEffect(() => {
     fetchInvoices();
