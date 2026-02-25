@@ -69,7 +69,8 @@ const Layout = () => {
     DollarSign,
     History,
     FileText,
-    Building2
+    Building2,
+    BookOpen
   };
 
   const navigation = [
