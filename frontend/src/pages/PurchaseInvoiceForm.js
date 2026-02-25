@@ -214,6 +214,16 @@ const PurchaseInvoiceForm = () => {
             </div>
 
             <div>
+              <label className="block text-sm font-medium mb-2">Farmer Mobile</label>
+              <Input
+                type="tel"
+                value={formData.farmer_mobile}
+                onChange={(e) => setFormData({ ...formData, farmer_mobile: e.target.value })}
+                placeholder="Enter mobile number"
+              />
+            </div>
+
+            <div>
               <label className="block text-sm font-medium mb-2">Invoice Date</label>
               <Input
                 type="date"
