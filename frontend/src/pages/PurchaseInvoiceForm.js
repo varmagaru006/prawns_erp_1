@@ -16,6 +16,7 @@ const PurchaseInvoiceForm = () => {
   const [formData, setFormData] = useState({
     invoice_date: new Date().toISOString().split('T')[0],
     farmer_name: '',
+    farmer_mobile: '',
     farmer_location: '',
     agent_ref_name: '',
     weighment_slip_no: '',
