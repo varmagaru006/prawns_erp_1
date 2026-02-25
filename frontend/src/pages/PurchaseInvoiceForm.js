@@ -63,6 +63,15 @@ const PurchaseInvoiceForm = () => {
     calculateTotals();
   }, [lineItems, formData.tds_rate_pct, formData.advance_paid]);
 
+  const fetchParties = async () => {
+    try {
+      const response = await axios.get(`${API}/parties?is_active=true`);
+      setParties(response.data);
+    } catch (error) {
+      console.error('Failed to load parties');
+    }
+  };
+
   const fetchInvoice = async () => {
     try {
       const response = await axios.get(`${API}/purchase-invoices/${id}`);
@@ -80,8 +89,14 @@ const PurchaseInvoiceForm = () => {
         custom_field_2_value: inv.custom_field_2_value || '',
         tds_rate_pct: inv.tds_rate_pct,
         advance_paid: inv.advance_paid,
-        notes: inv.notes || ''
+        notes: inv.notes || '',
+        party_id: inv.party_id || '',
+        party_name_text: inv.party_name_text || '',
+        same_as_farmer: false
       });
+      if (inv.party_name_text) {
+        setPartySearch(inv.party_name_text);
+      }
       if (inv.line_items && inv.line_items.length > 0) {
         setLineItems(inv.line_items);
       }
