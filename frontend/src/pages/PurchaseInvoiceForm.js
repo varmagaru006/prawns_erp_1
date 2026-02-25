@@ -5,7 +5,7 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { toast } from 'sonner';
-import { Plus, Trash2, Save, Eye } from 'lucide-react';
+import { Plus, Trash2, Save, Eye, Users } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 const PurchaseInvoiceForm = () => {
@@ -26,8 +26,18 @@ const PurchaseInvoiceForm = () => {
     custom_field_2_value: '',
     tds_rate_pct: 0.1,
     advance_paid: 0,
-    notes: ''
+    notes: '',
+    // A5: Party fields
+    party_id: '',
+    party_name_text: '',
+    same_as_farmer: false
   });
+
+  const [parties, setParties] = useState([]);
+  const [partySearch, setPartySearch] = useState('');
+  const [showPartyDropdown, setShowPartyDropdown] = useState(false);
+  const [showPartyCreate, setShowPartyCreate] = useState(false);
+  const [newPartyName, setNewPartyName] = useState('');
 
   const [lineItems, setLineItems] = useState([
     { line_no: 1, variety: 'Vannamei', count_value: '', quantity_kg: 0, rate: 0, custom_variety_notes: '', custom_count_notes: '' }
@@ -43,6 +53,7 @@ const PurchaseInvoiceForm = () => {
   });
 
   useEffect(() => {
+    fetchParties();
     if (isEdit) {
       fetchInvoice();
     }
