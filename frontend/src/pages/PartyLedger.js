@@ -248,7 +248,13 @@ export default function PartyLedgerModule() {
 
   const ALL_FY = ["24-25", "25-26", "26-27"];
 
-  // Sortable table for parties list
+  // Filter parties by search
+  const filteredParties = parties.filter(p => 
+    p.party_name.toLowerCase().includes(searchQ.toLowerCase()) ||
+    (p.party_alias || "").toLowerCase().includes(searchQ.toLowerCase())
+  );
+
+  // Sortable table for parties list (after filteredParties is defined)
   const { sortedData: sortedParties, requestSort: requestPartySort, getSortIcon: getPartySortIcon } = useSortableTable(
     filteredParties,
     { key: 'party_name', direction: 'asc' }
