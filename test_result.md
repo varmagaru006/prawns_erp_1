@@ -254,9 +254,38 @@ test_plan:
       - working: true
         agent: "testing"
         comment: "✅ Comprehensive testing completed successfully. All core features working: List view with balance columns, FY selector, ledger detail with multi-line bills, Add Payment, Manual Debit, Manual Credit, Set Opening Balance, Preview, Excel, and PDF buttons. Fixed critical bug: added missing 'partyLedger' module configuration to moduleConfig.js. Module now accessible and fully functional."
+      - working: "NA"
+        agent: "testing"
+        comment: "⚠️ Cannot perform requested end-to-end testing (Invoice Push Flow & Export Verification) - Preview URL unavailable (404 error). Application is not accessible at https://krish-aqua-prawnexpress.preview.emergentagent.com. Code review shows: 1) Invoice push to procurement flow (lines 3040-3170 in server.py) calls create_ledger_entry_for_invoice() (lines 5350-5425) which auto-creates ledger entries. 2) Export endpoints exist: CSV/Excel at /api/party-ledger/parties/{party_id}/export (lines 5930-6102), PDF via window.print(). 3) Potential bug: Frontend exportCSV() calls API with format=csv but button says 'Excel' - may need format=excel parameter for XLSX. Cannot verify functionality without live app access."
+
+  - task: "Purchase Invoice to Ledger Integration (FIX-2)"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/server.py (lines 3154-3160, 5348-5425), /app/frontend/src/pages/PurchaseInvoices.js (lines 135-146)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "testing"
+        comment: "Code review completed. Backend integration exists: push-to-procurement endpoint (line 3040) creates procurement lot and calls create_ledger_entry_for_invoice() helper (line 3157). Helper function creates bill entry in party_ledger_entries with line items from purchase_invoice_lines table, calculates TDS, and recomputes balances. Frontend has party search dropdown in invoice form and Push button for approved invoices. Cannot perform live E2E test - application preview unavailable."
+
+  - task: "Party Ledger Excel/PDF Export"
+    implemented: true
+    working: "NA"  
+    file: "/app/backend/server.py (lines 5930-6102), /app/frontend/src/pages/PartyLedger.js (lines 373-375, 529, 531-534)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "testing"
+        comment: "⚠️ Code review reveals POTENTIAL BUG: Frontend Excel button (line 529) calls exportCSV() function which uses format=csv parameter. Backend endpoint (line 5934) defaults to CSV unless format parameter is not 'csv'. Line 6068-6102 shows Excel export with openpyxl requires format != 'csv'. Frontend may need to pass format='excel' or 'xlsx' to get actual Excel file instead of CSV. PDF export (line 531-534) uses window.print() which is standard. Cannot verify actual behavior - app preview unavailable for testing."
 
 agent_communication:
   - agent: "main"
     message: "Completed Phase 1 (P0) - all wastage UI features. Created Market Rates page, Lot Waterfall view, added wastage dialog to Procurement, and yield badges to Pre-processing & Production pages. All features implemented and visually verified via screenshots. Now requesting comprehensive E2E testing."
   - agent: "testing"
     message: "✅ Party Ledger Module tested and verified working. CRITICAL FIX APPLIED: Added missing 'partyLedger' configuration to /app/frontend/src/config/moduleConfig.js - module was invisible in menu without this. All requested features tested and working: list view, FY selector, ledger detail operations (payments, debits, credits, opening balance), preview, and export buttons. Invoice integration not tested (requires full invoice creation flow). Module ready for production use."
+  - agent: "testing"
+    message: "🚨 TESTING BLOCKED: Cannot perform requested end-to-end tests for Invoice Push Flow & Export Verification. Application preview is unavailable (HTTP 404 at https://krish-aqua-prawnexpress.preview.emergentagent.com). Completed comprehensive code review instead. FINDINGS: 1) Invoice→Ledger integration code exists and appears correct. 2) POTENTIAL BUG FOUND: Excel export may return CSV file instead of XLSX due to incorrect format parameter in frontend. 3) All backend endpoints and frontend components are properly implemented. Recommend: Fix preview URL or provide alternative testing environment to verify end-to-end functionality."
