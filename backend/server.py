@@ -4889,6 +4889,10 @@ async def create_party(party: PartyCreate, current_user: User = Depends(get_curr
     
     # Create opening balance entry
     fy_start, _ = get_fy_date_range(current_fy)
+    # Convert date to datetime for MongoDB
+    if isinstance(fy_start, date) and not isinstance(fy_start, datetime):
+        fy_start = datetime.combine(fy_start, datetime.min.time()).replace(tzinfo=timezone.utc)
+    
     opening_entry = {
         "id": str(uuid.uuid4()),
         "ledger_id": ledger_id,
