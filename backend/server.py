@@ -4961,13 +4961,76 @@ async def get_available_fys(current_user: User = Depends(get_current_user)):
     
     return sorted(fys, reverse=True)
 
+@api_router.get("/party-ledger/parties")
+async def list_party_ledgers_with_details(
+    fy: Optional[str] = None,
+    search: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    FIX-1: Get all parties with their ledger account info for current FY
+    Returns: all rows from parties table JOIN party_ledger_accounts (for current FY)
+    """
+    if not fy:
+        fy = get_financial_year(date.today())
+    
+    # Get all active parties
+    query = {"is_active": True}
+    if search:
+        query["$or"] = [
+            {"party_name": {"$regex": search, "$options": "i"}},
+            {"party_alias": {"$regex": search, "$options": "i"}},
+            {"short_code": {"$regex": search, "$options": "i"}}
+        ]
+    
+    parties = await db.parties.find(query, {"_id": 0}).sort("party_name", 1).to_list(1000)
+    
+    # Enrich each party with ledger info
+    result = []
+    for party in parties:
+        # Get ledger account for this party and FY
+        ledger = await db.party_ledger_accounts.find_one(
+            {"party_id": party["id"], "financial_year": fy},
+            {"_id": 0}
+        )
+        
+        # If no ledger exists, create a default one
+        if not ledger:
+            ledger = {
+                "financial_year": fy,
+                "opening_balance": 0.0,
+                "closing_balance": 0.0,
+                "total_billed": 0.0,
+                "total_tds": 0.0,
+                "total_payments": 0.0
+            }
+        
+        result.append({
+            "id": party["id"],
+            "party_name": party["party_name"],
+            "party_alias": party.get("party_alias"),
+            "short_code": party.get("short_code"),
+            "mobile": party.get("mobile"),
+            "address": party.get("address"),
+            "ledger": {
+                "financial_year": ledger.get("financial_year", fy),
+                "opening_balance": ledger.get("opening_balance", 0.0),
+                "closing_balance": ledger.get("closing_balance", 0.0),
+                "total_billed": ledger.get("total_billed", 0.0),
+                "total_tds": ledger.get("total_tds", 0.0),
+                "total_payments": ledger.get("total_payments", 0.0)
+            }
+        })
+    
+    return result
+
 @api_router.get("/party-ledger")
 async def list_party_ledgers(
     fy: Optional[str] = None,
     search: Optional[str] = None,
     current_user: User = Depends(get_current_user)
 ):
-    """List all party ledger accounts for a financial year"""
+    """List all party ledger accounts for a financial year (legacy endpoint)"""
     if not fy:
         fy = get_financial_year(date.today())
     
