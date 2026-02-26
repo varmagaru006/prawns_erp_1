@@ -5921,6 +5921,8 @@ async def carry_forward_fy(
 ):
     """
     Carry forward all party ledgers from one FY to the next.
+    """
+    pass  # TODO: Implement carry forward logic
 
 
 # ── FIX-5: CSV/EXCEL EXPORT ──────────────────────────────────────────────────
