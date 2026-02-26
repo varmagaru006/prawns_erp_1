@@ -5918,6 +5918,183 @@ async def carry_forward_fy(
 ):
     """
     Carry forward all party ledgers from one FY to the next.
+
+
+# ── FIX-5: CSV/EXCEL EXPORT ──────────────────────────────────────────────────
+
+@api_router.get("/party-ledger/parties/{party_id}/export")
+async def export_party_ledger(
+    party_id: str,
+    fy: Optional[str] = None,
+    format: str = "csv",
+    current_user: User = Depends(get_current_user)
+):
+    """
+    FIX-5: Export ledger as CSV or Excel
+    Query params: fy (financial year), format ('csv' or 'excel')
+    """
+    if not fy:
+        fy = get_financial_year(date.today())
+    
+    # Get ledger data using the detail endpoint logic
+    party = await db.parties.find_one({"id": party_id}, {"_id": 0})
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+    
+    ledger = await db.party_ledger_accounts.find_one(
+        {"party_id": party_id, "financial_year": fy},
+        {"_id": 0}
+    )
+    if not ledger:
+        raise HTTPException(status_code=404, detail="Ledger not found")
+    
+    entries = await db.party_ledger_entries.find(
+        {"ledger_id": ledger["id"]},
+        {"_id": 0}
+    ).sort("entry_order", 1).to_list(10000)
+    
+    # Get invoice line items
+    for entry in entries:
+        if entry.get("entry_type") == "bill" and entry.get("invoice_id"):
+            lines = await db.purchase_invoice_lines.find(
+                {"invoice_id": entry["invoice_id"]},
+                {"_id": 0}
+            ).sort("line_no", 1).to_list(100)
+            entry["line_items"] = lines
+    
+    # Helper functions
+    def format_date(d):
+        if not d: return ""
+        if isinstance(d, str):
+            d = date.fromisoformat(d.split('T')[0])
+        return d.strftime('%d-%b-%y')
+    
+    def format_curr(amt):
+        return f"₹{amt:,.2f}" if amt else ""
+    
+    # Build CSV data
+    rows = []
+    rows.append(["DATE", "BILL NO", "COUNT", "QTY", "RATE", "AMOUNT", "TOTAL BILL", "TDS@0.1%", "TDS AFTER BILL", "PAYMENT", "PAYMENT DATE", "BALANCE", "PAID TO"])
+    rows.append(["OPENING BALANCE", "", "", "", "", "", "", "", "", "", "", format_curr(ledger["opening_balance"]), ""])
+    
+    for entry in entries:
+        if entry.get('entry_type') == 'opening':
+            continue  # Skip opening entry as we already added it
+        elif entry.get('entry_type') == 'bill':
+            line_items = entry.get('line_items', [])
+            if line_items:
+                for idx, line in enumerate(line_items):
+                    is_last = idx == len(line_items) - 1
+                    rows.append([
+                        format_date(entry['entry_date']) if idx == 0 else '',
+                        entry.get('invoice_no', '') if idx == 0 else '',
+                        line.get('count_value', ''),
+                        f"{line.get('quantity_kg', 0):.3f}",
+                        f"{line.get('rate', 0):.2f}",
+                        format_curr(line.get('amount', 0)),
+                        format_curr(entry['bill_subtotal']) if is_last else '',
+                        format_curr(entry['tds_amount']) if is_last else '',
+                        format_curr(entry['tds_after_bill']) if is_last else '',
+                        '', '',
+                        format_curr(entry['balance_after']) if is_last else '',
+                        ''
+                    ])
+            else:
+                rows.append([
+                    format_date(entry['entry_date']),
+                    entry.get('invoice_no', ''),
+                    '', '', '', '',
+                    format_curr(entry['bill_subtotal']),
+                    format_curr(entry['tds_amount']),
+                    format_curr(entry['tds_after_bill']),
+                    '', '',
+                    format_curr(entry['balance_after']),
+                    ''
+                ])
+        elif entry.get('entry_type') == 'payment':
+            rows.append([
+                format_date(entry['entry_date']),
+                '', '', '', '', '', '', '', '',
+                format_curr(entry['payment_amount']),
+                format_date(entry.get('payment_date')),
+                format_curr(entry['balance_after']),
+                entry.get('paid_to', '')
+            ])
+        elif entry.get('entry_type') in ('manual_debit', 'manual_credit'):
+            amt_col = format_curr(entry.get('tds_after_bill') or entry.get('bill_subtotal', 0)) if entry.get('entry_type') == 'manual_debit' else ''
+            pay_col = format_curr(entry.get('payment_amount', 0)) if entry.get('entry_type') == 'manual_credit' else ''
+            rows.append([
+                format_date(entry['entry_date']),
+                entry.get('description', ''),
+                '', '', '', '', '', '', amt_col, pay_col, '',
+                format_curr(entry['balance_after']),
+                ''
+            ])
+    
+    # Totals row
+    rows.append([
+        'TOTAL', '', '', '', '', '',
+        format_curr(ledger['total_billed']),
+        format_curr(ledger['total_tds']),
+        '',
+        format_curr(ledger['total_payments']),
+        '',
+        format_curr(ledger['closing_balance']),
+        ''
+    ])
+    
+    if format == "csv":
+        # Generate CSV
+        import io
+        import csv
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerows(rows)
+        csv_content = output.getvalue()
+        
+        filename = f"{party['party_name'].replace(' ', '_')}_{fy}.csv"
+        
+        from starlette.responses import Response
+        return Response(
+            content=csv_content,
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    else:  # Excel format
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, Alignment, PatternFill
+        
+        wb = Workbook()
+        ws = wb.active
+        ws.title = f"Ledger_{fy}"
+        
+        # Add rows
+        for row_idx, row_data in enumerate(rows, 1):
+            for col_idx, cell_value in enumerate(row_data, 1):
+                cell = ws.cell(row=row_idx, column=col_idx)
+                cell.value = cell_value
+                
+                # Header row styling
+                if row_idx == 1:
+                    cell.font = Font(bold=True, color="FFFFFF")
+                    cell.fill = PatternFill(start_color="1e3a8a", end_color="1e3a8a", fill_type="solid")
+                    cell.alignment = Alignment(horizontal='center')
+        
+        # Save to buffer
+        import io
+        buffer = io.BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+        
+        filename = f"{party['party_name'].replace(' ', '_')}_{fy}.xlsx"
+        
+        from starlette.responses import StreamingResponse
+        return StreamingResponse(
+            buffer,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
     Creates new ledger accounts with opening balance = previous closing balance.
     Locks the previous FY ledgers.
     """
