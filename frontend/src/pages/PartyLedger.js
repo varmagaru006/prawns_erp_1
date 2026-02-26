@@ -453,13 +453,36 @@ export default function PartyLedgerModule() {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
               <tr style={{ background: "#f0f9ff", borderBottom: "2px solid #bae6fd" }}>
-                {["Party Name","Alias","Short Code","Mobile","Opening Bal","Total Billed","Payments","Closing Balance","Actions"].map(h => (
-                  <th key={h} style={{ padding: "12px 14px", textAlign: "left", fontWeight: 700, fontSize: 11, color: "#0369a1", letterSpacing: 0.4 }}>{h.toUpperCase()}</th>
+                {[
+                  {label: "Party Name", key: "party_name"},
+                  {label: "Alias", key: "party_alias"},
+                  {label: "Short Code", key: "short_code"},
+                  {label: "Mobile", key: "mobile"},
+                  {label: "Opening Bal", key: "ledger.opening_balance"},
+                  {label: "Total Billed", key: "ledger.total_billed"},
+                  {label: "Payments", key: "ledger.total_payments"},
+                  {label: "Closing Balance", key: "ledger.closing_balance"},
+                  {label: "Actions", key: null}
+                ].map(h => (
+                  <th key={h.label} 
+                    onClick={() => h.key && requestPartySort(h.key)}
+                    style={{ 
+                      padding: "12px 14px", 
+                      textAlign: "left", 
+                      fontWeight: 700, 
+                      fontSize: 11, 
+                      color: "#0369a1", 
+                      letterSpacing: 0.4,
+                      cursor: h.key ? 'pointer' : 'default',
+                      userSelect: 'none'
+                    }}>
+                    {h.label.toUpperCase()} {h.key && <span style={{fontSize: 9, color: '#94a3b8'}}>{getPartySortIcon(h.key)}</span>}
+                  </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {filteredParties.map(p => {
+              {sortedParties.map(p => {
                 const l = p.ledger || {};
                 return (
                   <tr key={p.id} className="row-hover" style={{ borderBottom: "1px solid #f1f5f9", cursor: "pointer" }}
