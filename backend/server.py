@@ -6100,9 +6100,7 @@ async def export_party_ledger(
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
 
-    Creates new ledger accounts with opening balance = previous closing balance.
-    Locks the previous FY ledgers.
-    """
+# ── PDF EXPORT (EXISTING) ─────────────────────────────────────────────────────
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     
