@@ -375,6 +375,11 @@ export default function PartyLedgerModule() {
     window.open(`${API}/api/party-ledger/parties/${selectedParty.id}/export?fy=${selectedFY}&format=csv`, '_blank');
   }
 
+  // Export Excel
+  function exportExcel() {
+    window.open(`${API}/api/party-ledger/parties/${selectedParty.id}/export?fy=${selectedFY}&format=excel`, '_blank');
+  }
+
   const filteredParties = parties.filter(p => 
     p.party_name.toLowerCase().includes(searchQ.toLowerCase()) ||
     (p.party_alias || "").toLowerCase().includes(searchQ.toLowerCase())
@@ -524,7 +529,7 @@ export default function PartyLedgerModule() {
             style={{ background: "#f1f5f9", color: "#475569", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
             👁 Preview
           </button>
-          <button onClick={exportCSV}
+          <button onClick={exportExcel}
             style={{ background: "#f1f5f9", color: "#475569", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
             ↓ Excel
           </button>
