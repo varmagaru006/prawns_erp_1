@@ -6101,28 +6101,8 @@ async def export_party_ledger(
         )
 
 # ── PDF EXPORT (EXISTING) ─────────────────────────────────────────────────────
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    
-    # Parse FY
-    parts = from_fy.split("-")
-    next_fy = f"{int(parts[1]):02d}-{int(parts[1])+1:02d}"
-    
-    # Get all ledgers for from_fy
-    ledgers = await db.party_ledger_accounts.find(
-        {"financial_year": from_fy},
-        {"_id": 0}
-    ).to_list(1000)
-    
-    carried_count = 0
-    for ledger in ledgers:
-        # Check if next FY ledger already exists
-        existing = await db.party_ledger_accounts.find_one({
-            "party_id": ledger["party_id"],
-            "financial_year": next_fy
-        })
-        if existing:
-            continue
+
+@api_router.get("/party-ledger/{party_id}/export-pdf")
         
         closing_balance = ledger.get("closing_balance", 0)
         
