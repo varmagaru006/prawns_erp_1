@@ -4859,13 +4859,50 @@ async def create_party(party: PartyCreate, current_user: User = Depends(get_curr
         raise HTTPException(status_code=400, detail="Party with this name already exists")
     
     party_data = party.model_dump()
-    party_data["id"] = str(uuid.uuid4())
+    party_id = str(uuid.uuid4())
+    party_data["id"] = party_id
     party_data["created_by"] = current_user.id
     party_data["created_at"] = datetime.now(timezone.utc)
     party_data["updated_at"] = datetime.now(timezone.utc)
     party_data["is_active"] = True
     
     await db.parties.insert_one(party_data)
+    
+    # Auto-create ledger account with opening balance 0 for current FY
+    current_fy = get_financial_year(date.today())
+    ledger_id = str(uuid.uuid4())
+    ledger_account = {
+        "id": ledger_id,
+        "party_id": party_id,
+        "financial_year": current_fy,
+        "opening_balance": 0.0,
+        "closing_balance": 0.0,
+        "total_billed": 0.0,
+        "total_tds": 0.0,
+        "total_payments": 0.0,
+        "is_locked": False,
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+        "created_by": current_user.id
+    }
+    await db.party_ledger_accounts.insert_one(ledger_account)
+    
+    # Create opening balance entry
+    fy_start, _ = get_fy_date_range(current_fy)
+    opening_entry = {
+        "id": str(uuid.uuid4()),
+        "ledger_id": ledger_id,
+        "party_id": party_id,
+        "entry_date": fy_start,
+        "entry_type": "opening",
+        "entry_order": 0,
+        "description": f"Opening Balance FY {current_fy}",
+        "balance_after": 0.0,
+        "created_at": datetime.now(timezone.utc),
+        "created_by": current_user.id
+    }
+    await db.party_ledger_entries.insert_one(opening_entry)
+    
     return Party(**party_data)
 
 @api_router.get("/parties", response_model=List[Party])
