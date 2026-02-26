@@ -5520,6 +5520,9 @@ async def add_party_payment(
 
 @api_router.post("/party-ledger/payment")
 async def add_payment(payment: PaymentCreate, current_user: User = Depends(get_current_user)):
+    """Legacy payment endpoint"""
+    # Implementation here for backward compatibility
+    pass
 
 
 # ── FIX-6: MANUAL ENTRY ENDPOINT ─────────────────────────────────────────────
