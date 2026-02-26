@@ -65,7 +65,7 @@ const PurchaseInvoiceForm = () => {
 
   const fetchParties = async () => {
     try {
-      const response = await axios.get(`${API}/api/parties`);
+      const response = await axios.get(`${API}/parties`);
       setParties(response.data);
     } catch (error) {
       console.error('Failed to load parties');
