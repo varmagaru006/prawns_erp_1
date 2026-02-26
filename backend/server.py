@@ -6102,61 +6102,6 @@ async def export_party_ledger(
 
 # ── PDF EXPORT (EXISTING) ─────────────────────────────────────────────────────
 
-@api_router.get("/party-ledger/{party_id}/export-pdf")
-        
-        closing_balance = ledger.get("closing_balance", 0)
-        
-        # Create next FY ledger
-        new_ledger = {
-            "id": str(uuid.uuid4()),
-            "party_id": ledger["party_id"],
-            "financial_year": next_fy,
-            "opening_balance": closing_balance,
-            "closing_balance": closing_balance,
-            "total_billed": 0.0,
-            "total_tds": 0.0,
-            "total_payments": 0.0,
-            "is_locked": False,
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        }
-        await db.party_ledger_accounts.insert_one(new_ledger)
-        
-        # Create opening balance entry
-        fy_start, _ = get_fy_date_range(next_fy)
-        opening_entry = {
-            "id": str(uuid.uuid4()),
-            "ledger_id": new_ledger["id"],
-            "party_id": ledger["party_id"],
-            "entry_date": fy_start,
-            "entry_type": "opening",
-            "description": f"Opening Balance b/f from {from_fy}",
-            "balance_after": closing_balance,
-            "entry_order": 0,
-            "created_by": current_user.id,
-            "created_at": datetime.now(timezone.utc)
-        }
-        await db.party_ledger_entries.insert_one(opening_entry)
-        
-        # Lock previous FY ledger
-        await db.party_ledger_accounts.update_one(
-            {"id": ledger["id"]},
-            {"$set": {
-                "is_locked": True,
-                "locked_at": datetime.now(timezone.utc),
-                "locked_by": current_user.id
-            }}
-        )
-        
-        carried_count += 1
-    
-    return {
-        "message": f"Carried forward {carried_count} ledgers from {from_fy} to {next_fy}",
-        "from_fy": from_fy,
-        "to_fy": next_fy,
-        "count": carried_count
-    }
-
 
 # ── PDF & EXCEL EXPORT ────────────────────────────────────────────────────────
 
