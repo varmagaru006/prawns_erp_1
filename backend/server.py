@@ -5054,13 +5054,129 @@ async def list_party_ledgers(
     
     return result
 
+@api_router.get("/party-ledger/parties/{party_id}/ledger")
+async def get_party_ledger_detail(
+    party_id: str,
+    fy: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    FIX-1: Get detailed ledger for a specific party with entries formatted as per spec
+    Returns entries with bill_no (=invoice_no), lines array, and running balance
+    """
+    if not fy:
+        fy = get_financial_year(date.today())
+    
+    # Get party
+    party = await db.parties.find_one({"id": party_id}, {"_id": 0})
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+    
+    # Get or create ledger account
+    ledger = await db.party_ledger_accounts.find_one(
+        {"party_id": party_id, "financial_year": fy},
+        {"_id": 0}
+    )
+    
+    if not ledger:
+        # No ledger exists for this FY
+        return {
+            "party": {
+                "id": party["id"],
+                "party_name": party["party_name"],
+                "party_alias": party.get("party_alias"),
+                "short_code": party.get("short_code")
+            },
+            "ledger_account": None,
+            "entries": []
+        }
+    
+    # Get all entries
+    entries = await db.party_ledger_entries.find(
+        {"ledger_id": ledger["id"]},
+        {"_id": 0}
+    ).sort("entry_order", 1).to_list(10000)
+    
+    # Format entries as per spec
+    formatted_entries = []
+    for entry in entries:
+        formatted_entry = {
+            "id": entry["id"],
+            "entry_date": entry["entry_date"].isoformat() if isinstance(entry["entry_date"], datetime) else entry["entry_date"],
+            "entry_type": entry["entry_type"],
+            "bill_no": entry.get("invoice_no", ""),  # Map invoice_no to bill_no
+            "entry_order": entry["entry_order"],
+            "balance_after": entry["balance_after"]
+        }
+        
+        # For bill entries, get line items
+        if entry.get("entry_type") == "bill" and entry.get("invoice_id"):
+            lines = await db.purchase_invoice_lines.find(
+                {"invoice_id": entry["invoice_id"]},
+                {"_id": 0}
+            ).sort("line_no", 1).to_list(100)
+            
+            formatted_entry["lines"] = [
+                {
+                    "count_value": line.get("count_value", ""),
+                    "quantity_kg": line.get("quantity_kg", 0),
+                    "rate": line.get("rate", 0),
+                    "amount": line.get("amount", 0)
+                }
+                for line in lines
+            ]
+            formatted_entry["total_bill"] = entry.get("bill_subtotal", 0)
+            formatted_entry["tds_rate_pct"] = entry.get("tds_rate_pct", 0.1)
+            formatted_entry["tds_amount"] = entry.get("tds_amount", 0)
+            formatted_entry["tds_after_bill"] = entry.get("tds_after_bill", 0)
+        else:
+            formatted_entry["lines"] = []
+        
+        # For payment entries
+        if entry.get("entry_type") == "payment":
+            formatted_entry["payment_amount"] = entry.get("payment_amount", 0)
+            formatted_entry["payment_date"] = entry.get("payment_date", entry["entry_date"])
+            formatted_entry["paid_to"] = entry.get("paid_to", "")
+            formatted_entry["payment_mode"] = entry.get("payment_mode", "")
+        
+        # For manual entries
+        if entry.get("entry_type") in ("manual_debit", "manual_credit"):
+            formatted_entry["description"] = entry.get("description", "")
+            if entry.get("entry_type") == "manual_debit":
+                formatted_entry["total_bill"] = entry.get("tds_after_bill", 0) or entry.get("bill_subtotal", 0)
+                formatted_entry["tds_after_bill"] = entry.get("tds_after_bill", 0) or entry.get("bill_subtotal", 0)
+            else:
+                formatted_entry["payment_amount"] = entry.get("payment_amount", 0)
+        
+        formatted_entries.append(formatted_entry)
+    
+    return {
+        "party": {
+            "id": party["id"],
+            "party_name": party["party_name"],
+            "party_alias": party.get("party_alias"),
+            "short_code": party.get("short_code")
+        },
+        "ledger_account": {
+            "id": ledger["id"],
+            "financial_year": ledger["financial_year"],
+            "opening_balance": ledger["opening_balance"],
+            "closing_balance": ledger["closing_balance"],
+            "total_billed": ledger["total_billed"],
+            "total_tds": ledger["total_tds"],
+            "total_payments": ledger["total_payments"],
+            "is_locked": ledger.get("is_locked", False)
+        },
+        "entries": formatted_entries
+    }
+
 @api_router.get("/party-ledger/{party_id}")
 async def get_party_ledger(
     party_id: str,
     fy: Optional[str] = None,
     current_user: User = Depends(get_current_user)
 ):
-    """Get full ledger detail for a party in a financial year"""
+    """Get full ledger detail for a party in a financial year (legacy endpoint)"""
     if not fy:
         fy = get_financial_year(date.today())
     
