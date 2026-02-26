@@ -5520,6 +5520,211 @@ async def add_party_payment(
 
 @api_router.post("/party-ledger/payment")
 async def add_payment(payment: PaymentCreate, current_user: User = Depends(get_current_user)):
+
+
+# ── FIX-6: MANUAL ENTRY ENDPOINT ─────────────────────────────────────────────
+
+@api_router.post("/party-ledger/parties/{party_id}/manual-entry")
+async def add_manual_entry(
+    party_id: str,
+    entry_data: dict,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    FIX-6: Add manual debit/credit entry
+    Body: { financial_year, entry_date, entry_type('manual_debit'|'manual_credit'), amount, description }
+    """
+    # Get ledger account
+    fy = entry_data.get("financial_year") or get_financial_year(date.today())
+    ledger = await db.party_ledger_accounts.find_one(
+        {"party_id": party_id, "financial_year": fy},
+        {"_id": 0}
+    )
+    
+    if not ledger:
+        raise HTTPException(status_code=404, detail=f"No ledger account found for party in FY {fy}")
+    
+    # Get last entry's balance
+    last_entry = await db.party_ledger_entries.find_one(
+        {"ledger_id": ledger["id"]},
+        {"_id": 0},
+        sort=[("entry_order", -1)]
+    )
+    
+    prev_balance = last_entry["balance_after"] if last_entry else ledger["opening_balance"]
+    amount = float(entry_data["amount"])
+    entry_type = entry_data["entry_type"]
+    
+    # Create manual entry
+    entry_id = str(uuid.uuid4())
+    entry_order = (last_entry["entry_order"] + 1) if last_entry else 1
+    
+    if entry_type == "manual_debit":
+        # Debit adds to balance (increases outstanding)
+        new_balance = round(prev_balance + amount, 2)
+        manual_entry = {
+            "id": entry_id,
+            "ledger_id": ledger["id"],
+            "party_id": party_id,
+            "entry_date": entry_data["entry_date"],
+            "entry_type": "manual_debit",
+            "entry_order": entry_order,
+            "description": entry_data.get("description", "Manual Debit"),
+            "bill_subtotal": amount,
+            "tds_amount": 0,
+            "tds_after_bill": amount,
+            "balance_after": new_balance,
+            "created_at": datetime.now(timezone.utc),
+            "created_by": current_user.id
+        }
+        
+        # Update ledger totals
+        await db.party_ledger_entries.insert_one(manual_entry)
+        await db.party_ledger_accounts.update_one(
+            {"id": ledger["id"]},
+            {
+                "$set": {
+                    "closing_balance": new_balance,
+                    "updated_at": datetime.now(timezone.utc)
+                },
+                "$inc": {"total_billed": amount}
+            }
+        )
+    else:  # manual_credit
+        # Credit reduces balance (reduces outstanding)
+        new_balance = round(prev_balance - amount, 2)
+        manual_entry = {
+            "id": entry_id,
+            "ledger_id": ledger["id"],
+            "party_id": party_id,
+            "entry_date": entry_data["entry_date"],
+            "entry_type": "manual_credit",
+            "entry_order": entry_order,
+            "description": entry_data.get("description", "Manual Credit"),
+            "payment_amount": amount,
+            "balance_after": new_balance,
+            "created_at": datetime.now(timezone.utc),
+            "created_by": current_user.id
+        }
+        
+        # Update ledger totals
+        await db.party_ledger_entries.insert_one(manual_entry)
+        await db.party_ledger_accounts.update_one(
+            {"id": ledger["id"]},
+            {
+                "$set": {
+                    "closing_balance": new_balance,
+                    "updated_at": datetime.now(timezone.utc)
+                },
+                "$inc": {"total_payments": amount}
+            }
+        )
+    
+    # Recompute all balances after this entry
+    await recompute_ledger_balances(ledger["id"])
+    
+    return {"entry_id": entry_id, "balance_after": new_balance}
+
+# ── FIX-7: SET OPENING BALANCE ───────────────────────────────────────────────
+
+@api_router.post("/party-ledger/parties/{party_id}/opening-balance")
+async def set_party_opening_balance(
+    party_id: str,
+    ob_data: dict,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    FIX-7: Set opening balance for a party in a specific FY
+    Body: { financial_year, opening_balance }
+    Can only be set when there are no bill/payment entries yet for that FY
+    """
+    fy = ob_data.get("financial_year") or get_financial_year(date.today())
+    opening_balance = float(ob_data["opening_balance"])
+    
+    # Check if ledger exists
+    ledger = await db.party_ledger_accounts.find_one(
+        {"party_id": party_id, "financial_year": fy},
+        {"_id": 0}
+    )
+    
+    if ledger:
+        # Check if there are any entries (except opening)
+        entries = await db.party_ledger_entries.find(
+            {"ledger_id": ledger["id"], "entry_type": {"$ne": "opening"}},
+            {"_id": 0}
+        ).limit(1).to_list(1)
+        
+        if entries:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot set opening balance when entries already exist. Delete all entries first."
+            )
+        
+        # Update existing ledger
+        await db.party_ledger_accounts.update_one(
+            {"id": ledger["id"]},
+            {
+                "$set": {
+                    "opening_balance": opening_balance,
+                    "closing_balance": opening_balance,
+                    "updated_at": datetime.now(timezone.utc)
+                }
+            }
+        )
+        ledger_id = ledger["id"]
+    else:
+        # Create new ledger account
+        ledger_id = str(uuid.uuid4())
+        ledger = {
+            "id": ledger_id,
+            "party_id": party_id,
+            "financial_year": fy,
+            "opening_balance": opening_balance,
+            "closing_balance": opening_balance,
+            "total_billed": 0.0,
+            "total_tds": 0.0,
+            "total_payments": 0.0,
+            "is_locked": False,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+            "created_by": current_user.id
+        }
+        await db.party_ledger_accounts.insert_one(ledger)
+    
+    # Create opening entry if it doesn't exist
+    opening_entry = await db.party_ledger_entries.find_one(
+        {"ledger_id": ledger_id, "entry_type": "opening"},
+        {"_id": 0}
+    )
+    
+    if not opening_entry:
+        # Get FY start date
+        fy_parts = fy.split("-")
+        start_year = int("20" + fy_parts[0])
+        fy_start_date = f"{start_year}-04-01"
+        
+        opening_entry = {
+            "id": str(uuid.uuid4()),
+            "ledger_id": ledger_id,
+            "party_id": party_id,
+            "entry_date": fy_start_date,
+            "entry_type": "opening",
+            "entry_order": 0,
+            "description": f"Opening Balance FY {fy}",
+            "balance_after": opening_balance,
+            "created_at": datetime.now(timezone.utc),
+            "created_by": current_user.id
+        }
+        await db.party_ledger_entries.insert_one(opening_entry)
+    else:
+        # Update existing opening entry
+        await db.party_ledger_entries.update_one(
+            {"id": opening_entry["id"]},
+            {"$set": {"balance_after": opening_balance}}
+        )
+    
+    return {"ledger_id": ledger_id, "opening_balance": opening_balance}
+
     """Add a payment entry to party ledger"""
     party = await db.parties.find_one({"id": payment.party_id})
     if not party:
