@@ -258,6 +258,18 @@ test_plan:
         agent: "testing"
         comment: "⚠️ Cannot perform requested end-to-end testing (Invoice Push Flow & Export Verification) - Preview URL unavailable (404 error). Application is not accessible at https://krish-aqua-prawnexpress.preview.emergentagent.com. Code review shows: 1) Invoice push to procurement flow (lines 3040-3170 in server.py) calls create_ledger_entry_for_invoice() (lines 5350-5425) which auto-creates ledger entries. 2) Export endpoints exist: CSV/Excel at /api/party-ledger/parties/{party_id}/export (lines 5930-6102), PDF via window.print(). 3) Potential bug: Frontend exportCSV() calls API with format=csv but button says 'Excel' - may need format=excel parameter for XLSX. Cannot verify functionality without live app access."
 
+  - task: "Add Party from Invoice Form"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/pages/PurchaseInvoiceForm.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "✅ CRITICAL BUG FIXED. Found API endpoint error: lines 68 & 92 were calling '/api/api/parties' (404) instead of '/api/parties'. Fixed both endpoints. Verified UI flow: ✓ 'Create new party' button appears in dropdown when typing non-existent party name, ✓ Modal opens with 'Create New Party' title, ✓ Party name pre-filled correctly, ✓ Short code auto-generated and displayed (first 4 chars uppercase), ✓ All form fields work. Frontend restarted. Feature UI fully functional."
+
   - task: "Purchase Invoice to Ledger Integration (FIX-2)"
     implemented: true
     working: "NA"
