@@ -89,7 +89,7 @@ const PurchaseInvoiceForm = () => {
         is_active: true
       };
 
-      const response = await axios.post(`${API}/api/parties`, partyData);
+      const response = await axios.post(`${API}/parties`, partyData);
       const newParty = response.data;
       
       // Update parties list
