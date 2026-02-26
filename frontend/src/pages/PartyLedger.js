@@ -393,11 +393,6 @@ export default function PartyLedgerModule() {
     window.open(`${API}/api/party-ledger/parties/${selectedParty.id}/export?fy=${selectedFY}&format=excel`, '_blank');
   }
 
-  const filteredParties = parties.filter(p => 
-    p.party_name.toLowerCase().includes(searchQ.toLowerCase()) ||
-    (p.party_alias || "").toLowerCase().includes(searchQ.toLowerCase())
-  );
-
   // ── LIST VIEW ──────────────────────────────────────────────────────────────
   if (view === "list") return (
     <div style={{ fontFamily: "'Segoe UI', system-ui, sans-serif", background: "#f8fafc", minHeight: "100vh", padding: 24 }}>
