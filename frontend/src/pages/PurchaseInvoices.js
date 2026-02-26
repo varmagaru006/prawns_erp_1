@@ -9,6 +9,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '.
 import { toast } from 'sonner';
 import { Plus, Download, Eye, Check, Trash2, Send, FileText, X, FileSpreadsheet, Lock } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { useSortableTable } from '../hooks/useSortableTable';
+import SortableTableHead from '../components/SortableTableHead';
 
 const PurchaseInvoices = () => {
   const navigate = useNavigate();
