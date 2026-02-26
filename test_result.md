@@ -243,6 +243,20 @@ test_plan:
   test_all: false
   test_priority: "high_first"
 
+  - task: "Party Ledger Module"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/pages/PartyLedger.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "✅ Comprehensive testing completed successfully. All core features working: List view with balance columns, FY selector, ledger detail with multi-line bills, Add Payment, Manual Debit, Manual Credit, Set Opening Balance, Preview, Excel, and PDF buttons. Fixed critical bug: added missing 'partyLedger' module configuration to moduleConfig.js. Module now accessible and fully functional."
+
 agent_communication:
   - agent: "main"
     message: "Completed Phase 1 (P0) - all wastage UI features. Created Market Rates page, Lot Waterfall view, added wastage dialog to Procurement, and yield badges to Pre-processing & Production pages. All features implemented and visually verified via screenshots. Now requesting comprehensive E2E testing."
+  - agent: "testing"
+    message: "✅ Party Ledger Module tested and verified working. CRITICAL FIX APPLIED: Added missing 'partyLedger' configuration to /app/frontend/src/config/moduleConfig.js - module was invisible in menu without this. All requested features tested and working: list view, FY selector, ledger detail operations (payments, debits, credits, opening balance), preview, and export buttons. Invoice integration not tested (requires full invoice creation flow). Module ready for production use."
