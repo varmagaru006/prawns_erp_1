@@ -105,6 +105,7 @@ function App() {
           <FeatureFlagProvider>
             <AppRoutes />
             <Toaster position="top-right" />
+            <ToastContainer position="top-right" autoClose={3000} hideProgressBar={false} />
           </FeatureFlagProvider>
         </AuthProvider>
       </BrandingProvider>
