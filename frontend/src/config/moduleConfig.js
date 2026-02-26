@@ -83,6 +83,12 @@ export const moduleConfig = {
     name: 'Notifications',
     description: 'System notifications',
     roles: '*'
+  },
+  partyLedger: {
+    enabled: true,
+    name: 'Party Ledger',
+    description: 'Party ledger management with FY-wise accounts',
+    roles: ['admin', 'owner', 'accounts_manager']
   }
 };
 
