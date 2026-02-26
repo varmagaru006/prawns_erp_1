@@ -608,6 +608,59 @@ const PurchaseInvoiceForm = () => {
           </div>
         </CardContent>
       </Card>
+
+      {/* Party Creation Modal */}
+      {showPartyCreate && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+            <h3 className="text-xl font-bold mb-4">Create New Party</h3>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-2">Party Name *</label>
+                <Input
+                  value={newPartyName}
+                  onChange={(e) => setNewPartyName(e.target.value)}
+                  placeholder="Enter party name"
+                  autoFocus
+                />
+              </div>
+
+              <div className="text-sm text-gray-600">
+                <p>A new party will be created with:</p>
+                <ul className="list-disc list-inside mt-2">
+                  <li>Party Name: {newPartyName || 'N/A'}</li>
+                  <li>Short Code: {newPartyName ? newPartyName.substring(0, 4).toUpperCase() : 'N/A'}</li>
+                  <li>Status: Active</li>
+                </ul>
+                <p className="mt-2 text-xs text-gray-500">
+                  You can edit additional details (mobile, address, etc.) later from the Party Master page.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex gap-3 mt-6">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setShowPartyCreate(false);
+                  setNewPartyName('');
+                }}
+                className="flex-1"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleCreateParty}
+                className="flex-1"
+                disabled={!newPartyName.trim()}
+              >
+                Create Party
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
