@@ -2821,7 +2821,8 @@ async def get_purchase_invoices(
         query['$or'] = [
             {'farmer_name': {'$regex': search, '$options': 'i'}},
             {'invoice_no': {'$regex': search, '$options': 'i'}},
-            {'agent_ref_name': {'$regex': search, '$options': 'i'}}
+            {'agent_ref_name': {'$regex': search, '$options': 'i'}},
+            {'party_name_text': {'$regex': search, '$options': 'i'}}
         ]
     
     # Get total count
@@ -2840,6 +2841,13 @@ async def get_purchase_invoices(
         .skip(skip) \
         .limit(per_page) \
         .to_list(per_page)
+    
+    # Enrich invoices with party short_code
+    for invoice in invoices:
+        if invoice.get('party_id'):
+            party = await db.parties.find_one({"id": invoice['party_id']}, {"_id": 0, "short_code": 1})
+            if party:
+                invoice['party_short_code'] = party.get('short_code')
     
     # Calculate total pages
     pages = (total + per_page - 1) // per_page
