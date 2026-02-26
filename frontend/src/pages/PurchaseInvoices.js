@@ -36,6 +36,12 @@ const PurchaseInvoices = () => {
   const [showPreview, setShowPreview] = useState(false);
   const [exporting, setExporting] = useState(false);
 
+  // Sortable table hook
+  const { sortedData: sortedInvoices, requestSort, getSortIcon } = useSortableTable(invoices, {
+    key: 'invoice_date',
+    direction: 'desc'
+  });
+
   // Compute isDashboardEnabled directly from isEnabled to ensure reactivity
   // If features are still loading, default to showing features enabled
   const isDashboardEnabled = featureLoading ? true : isEnabled('purchaseInvoiceDashboard');
@@ -498,16 +504,18 @@ const PurchaseInvoices = () => {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Invoice No</TableHead>
-                <TableHead>Date</TableHead>
-                <TableHead>Farmer Name</TableHead>
+                <SortableTableHead label="Invoice No" sortKey="invoice_no" onSort={requestSort} getSortIcon={getSortIcon} />
+                <SortableTableHead label="Date" sortKey="invoice_date" onSort={requestSort} getSortIcon={getSortIcon} />
+                <SortableTableHead label="Farmer Name" sortKey="farmer_name" onSort={requestSort} getSortIcon={getSortIcon} />
                 <TableHead>Mobile</TableHead>
-                <TableHead>Location</TableHead>
-                <TableHead className="text-right">Total Qty (kg)</TableHead>
-                <TableHead className="text-right">Grand Total</TableHead>
-                <TableHead className="text-right">Balance Due</TableHead>
-                <TableHead>Payment</TableHead>
-                <TableHead>Status</TableHead>
+                <SortableTableHead label="Party" sortKey="party_name_text" onSort={requestSort} getSortIcon={getSortIcon} />
+                <SortableTableHead label="Short Code" sortKey="party_short_code" onSort={requestSort} getSortIcon={getSortIcon} />
+                <SortableTableHead label="Location" sortKey="farmer_location" onSort={requestSort} getSortIcon={getSortIcon} />
+                <SortableTableHead label="Total Qty (kg)" sortKey="total_quantity_kg" onSort={requestSort} getSortIcon={getSortIcon} className="text-right" />
+                <SortableTableHead label="Grand Total" sortKey="grand_total" onSort={requestSort} getSortIcon={getSortIcon} className="text-right" />
+                <SortableTableHead label="Balance Due" sortKey="balance_due" onSort={requestSort} getSortIcon={getSortIcon} className="text-right" />
+                <SortableTableHead label="Payment" sortKey="payment_status" onSort={requestSort} getSortIcon={getSortIcon} />
+                <SortableTableHead label="Status" sortKey="status" onSort={requestSort} getSortIcon={getSortIcon} />
                 <TableHead>Audit Book</TableHead>
                 <TableHead>Actions</TableHead>
               </TableRow>
@@ -515,14 +523,14 @@ const PurchaseInvoices = () => {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={10} className="text-center">Loading...</TableCell>
+                  <TableCell colSpan={14} className="text-center">Loading...</TableCell>
                 </TableRow>
-              ) : invoices.length === 0 ? (
+              ) : sortedInvoices.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={12} className="text-center text-gray-500">No invoices found</TableCell>
+                  <TableCell colSpan={14} className="text-center text-gray-500">No invoices found</TableCell>
                 </TableRow>
               ) : (
-                invoices.map((invoice) => (
+                sortedInvoices.map((invoice) => (
                   <TableRow key={invoice.id}>
                     <TableCell className="font-mono">{invoice.invoice_no}</TableCell>
                     <TableCell>{invoice.invoice_date}</TableCell>
@@ -535,6 +543,14 @@ const PurchaseInvoices = () => {
                       ) : (
                         <span className="text-gray-400">-</span>
                       )}
+                    </TableCell>
+                    <TableCell>{invoice.party_name_text || '-'}</TableCell>
+                    <TableCell>
+                      {invoice.party_short_code ? (
+                        <span className="inline-block px-2 py-1 bg-blue-100 text-blue-800 text-xs font-semibold rounded">
+                          {invoice.party_short_code}
+                        </span>
+                      ) : '-'}
                     </TableCell>
                     <TableCell>{invoice.farmer_location || '-'}</TableCell>
                     <TableCell className="text-right">{invoice.total_quantity_kg?.toFixed(3)}</TableCell>
