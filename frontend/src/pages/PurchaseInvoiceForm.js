@@ -72,6 +72,45 @@ const PurchaseInvoiceForm = () => {
     }
   };
 
+  // Handle party creation from invoice form
+  const handleCreateParty = async () => {
+    if (!newPartyName.trim()) {
+      toast.error('Party name is required');
+      return;
+    }
+
+    try {
+      const partyData = {
+        party_name: newPartyName.trim(),
+        party_alias: '',
+        short_code: newPartyName.trim().substring(0, 4).toUpperCase(),
+        mobile: '',
+        address: '',
+        is_active: true
+      };
+
+      const response = await axios.post(`${API}/api/parties`, partyData);
+      const newParty = response.data;
+      
+      // Update parties list
+      setParties([...parties, newParty]);
+      
+      // Select the newly created party
+      setFormData({
+        ...formData,
+        party_id: newParty.id,
+        party_name_text: newParty.party_name
+      });
+      setPartySearch(newParty.party_name);
+      
+      toast.success(`Party "${newParty.party_name}" created successfully`);
+      setShowPartyCreate(false);
+      setNewPartyName('');
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to create party');
+    }
+  };
+
   const fetchInvoice = async () => {
     try {
       const response = await axios.get(`${API}/purchase-invoices/${id}`);
