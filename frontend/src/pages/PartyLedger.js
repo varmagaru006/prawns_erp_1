@@ -248,6 +248,12 @@ export default function PartyLedgerModule() {
 
   const ALL_FY = ["24-25", "25-26", "26-27"];
 
+  // Sortable table for parties list
+  const { sortedData: sortedParties, requestSort: requestPartySort, getSortIcon: getPartySortIcon } = useSortableTable(
+    filteredParties,
+    { key: 'party_name', direction: 'asc' }
+  );
+
   // Fetch parties list
   useEffect(() => {
     fetchParties();
