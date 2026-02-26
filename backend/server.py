@@ -5424,6 +5424,100 @@ async def create_ledger_entry_for_invoice(invoice: dict, current_user_id: str):
     
     return entry
 
+
+
+# ── FIX-3: ADD PAYMENT ENDPOINT ──────────────────────────────────────────────
+
+@api_router.post("/party-ledger/parties/{party_id}/payments")
+async def add_party_payment(
+    party_id: str,
+    payment_data: dict,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    FIX-3: Add payment entry to party ledger
+    Body: { financial_year, payment_date, payment_amount, paid_to, payment_mode, payment_reference, invoice_id? }
+    """
+    # Get ledger account
+    fy = payment_data.get("financial_year") or get_financial_year(date.today())
+    ledger = await db.party_ledger_accounts.find_one(
+        {"party_id": party_id, "financial_year": fy},
+        {"_id": 0}
+    )
+    
+    if not ledger:
+        raise HTTPException(status_code=404, detail=f"No ledger account found for party in FY {fy}")
+    
+    # Get last entry's balance
+    last_entry = await db.party_ledger_entries.find_one(
+        {"ledger_id": ledger["id"]},
+        {"_id": 0},
+        sort=[("entry_order", -1)]
+    )
+    
+    prev_balance = last_entry["balance_after"] if last_entry else ledger["opening_balance"]
+    payment_amount = float(payment_data["payment_amount"])
+    
+    # Create payment entry
+    entry_id = str(uuid.uuid4())
+    entry_order = (last_entry["entry_order"] + 1) if last_entry else 1
+    
+    payment_entry = {
+        "id": entry_id,
+        "ledger_id": ledger["id"],
+        "party_id": party_id,
+        "entry_date": payment_data["payment_date"],
+        "entry_type": "payment",
+        "entry_order": entry_order,
+        "payment_amount": payment_amount,
+        "payment_date": payment_data["payment_date"],
+        "paid_to": payment_data.get("paid_to", ""),
+        "payment_mode": payment_data.get("payment_mode", ""),
+        "payment_reference": payment_data.get("payment_reference", ""),
+        "invoice_id": payment_data.get("invoice_id"),
+        "balance_after": round(prev_balance - payment_amount, 2),
+        "created_at": datetime.now(timezone.utc),
+        "created_by": current_user.id
+    }
+    
+    await db.party_ledger_entries.insert_one(payment_entry)
+    
+    # Update ledger account totals
+    await db.party_ledger_accounts.update_one(
+        {"id": ledger["id"]},
+        {
+            "$set": {
+                "closing_balance": payment_entry["balance_after"],
+                "updated_at": datetime.now(timezone.utc)
+            },
+            "$inc": {"total_payments": payment_amount}
+        }
+    )
+    
+    # If invoice_id provided, update invoice payment status
+    if payment_data.get("invoice_id"):
+        invoice_id = payment_data["invoice_id"]
+        invoice = await db.purchase_invoices.find_one({"id": invoice_id}, {"_id": 0})
+        if invoice:
+            new_advance_paid = invoice.get("advance_paid", 0) + payment_amount
+            balance_due = invoice.get("grand_total", 0) - new_advance_paid
+            
+            payment_status = "paid" if balance_due <= 0 else ("partial" if new_advance_paid > 0 else "pending")
+            
+            await db.purchase_invoices.update_one(
+                {"id": invoice_id},
+                {
+                    "$set": {
+                        "advance_paid": new_advance_paid,
+                        "balance_due": balance_due,
+                        "payment_status": payment_status,
+                        "updated_at": datetime.now(timezone.utc)
+                    }
+                }
+            )
+    
+    return {"entry_id": entry_id, "balance_after": payment_entry["balance_after"]}
+
 @api_router.post("/party-ledger/payment")
 async def add_payment(payment: PaymentCreate, current_user: User = Depends(get_current_user)):
     """Add a payment entry to party ledger"""
