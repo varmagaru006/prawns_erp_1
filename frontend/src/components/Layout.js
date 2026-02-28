@@ -104,6 +104,19 @@ const Layout = () => {
       return canAccessDashboard(user?.role);
     }
     if (!item.moduleKey) return true;
+    
+    // Debug logging for partyLedger
+    if (item.moduleKey === 'partyLedger') {
+      console.log('🔍 Party Ledger Debug:', {
+        moduleKey: item.moduleKey,
+        userRole: user?.role,
+        moduleConfig: moduleConfig.partyLedger,
+        isAccessible: isModuleAccessible(item.moduleKey, user?.role),
+        userName: user?.name,
+        userEmail: user?.email
+      });
+    }
+    
     return isModuleAccessible(item.moduleKey, user?.role);
   });
 
