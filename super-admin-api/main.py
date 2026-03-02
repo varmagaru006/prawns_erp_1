@@ -524,16 +524,25 @@ async def bulk_toggle_features(
             upsert=True
         )
         
-        # Push to client ERP if linked
-        if client.get("link_status") == "linked":
-            await client_db.feature_flags.update_one(
-                {"tenant_id": client["tenant_id"], "feature_code": feature.feature_code},
-                {"$set": {
-                    "is_enabled": feature.is_enabled,
-                    "updated_at": datetime.now(timezone.utc).isoformat()
-                }},
-                upsert=True
-            )
+        # Always push to client ERP database
+        await client_db.feature_flags.update_one(
+            {"tenant_id": client["tenant_id"], "feature_code": feature.feature_code},
+            {"$set": {
+                "is_enabled": feature.is_enabled,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }},
+            upsert=True
+        )
+        
+        # Also update cli_001 for backward compatibility
+        await client_db.feature_flags.update_one(
+            {"tenant_id": "cli_001", "feature_code": feature.feature_code},
+            {"$set": {
+                "is_enabled": feature.is_enabled,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }},
+            upsert=True
+        )
     
     return {"status": "success", "message": f"Updated {len(features)} features"}
 
