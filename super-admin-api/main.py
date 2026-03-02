@@ -269,8 +269,11 @@ async def create_client(client_data: ClientCreate, current_admin = Depends(get_c
     
     await db.clients.insert_one(client)
     
+    # Remove _id from client dict (MongoDB adds it during insert)
+    client.pop("_id", None)
+    
     # Log activity
-    await db.activity_logs.insert_one({
+    activity_log = {
         "id": str(uuid.uuid4()),
         "admin_id": current_admin["id"],
         "admin_email": current_admin["email"],
@@ -279,7 +282,8 @@ async def create_client(client_data: ClientCreate, current_admin = Depends(get_c
         "entity_id": client["id"],
         "details": {"business_name": client_data.business_name},
         "timestamp": datetime.now(timezone.utc).isoformat()
-    })
+    }
+    await db.activity_logs.insert_one(activity_log)
     
     return {
         "client": client,
