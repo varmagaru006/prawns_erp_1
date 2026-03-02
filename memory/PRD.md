@@ -153,3 +153,21 @@ Complete Purchase Invoice module with enhanced patch features for farmer mobile 
 ### Feature Flags Collection (test_database)
 - `feature_flags`: { tenant_id, feature_code, is_enabled, synced_at }
 - Example: `{ tenant_id: "cli_001", feature_code: "purchaseInvoiceDashboard", is_enabled: true }`
+- Example: `{ tenant_id: "cli_001", feature_code: "partyLedger", is_enabled: true }`
+
+## Feature Registry (Super Admin)
+Available features that can be toggled per client:
+- procurement, preprocessing, coldStorage, production, qualityControl
+- sales, accounts, wastageDashboard, yieldBenchmarks, marketRates
+- purchaseInvoiceDashboard, **partyLedger**, admin
+
+## Key Technical Notes
+
+### Super Admin API Routing
+- Super Admin API runs on port 8002
+- Client backend proxies requests from `/api/super-admin/*` to `http://localhost:8002/*`
+- Frontend uses `VITE_API_URL=/api/super-admin` for Super Admin portal
+
+### MongoDB ObjectId Handling
+- Always remove `_id` from documents before returning in API responses
+- Use `client.pop("_id", None)` after `insert_one()` operations
