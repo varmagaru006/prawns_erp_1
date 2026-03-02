@@ -155,6 +155,7 @@ export default function CreateClientModal({ isOpen, onClose, onSuccess }) {
               onChange={(e) => setFormData({ ...formData, plan_id: e.target.value })}
               className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none"
             >
+              <option value="">Select a plan</option>
               {plans.map(plan => (
                 <option key={plan.id} value={plan.id}>
                   {plan.plan_name} - ${plan.price_monthly}/month
@@ -163,76 +164,20 @@ export default function CreateClientModal({ isOpen, onClose, onSuccess }) {
             </select>
           </div>
 
-          {/* Subscription Status */}
+          {/* Subscription Duration */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Subscription Status
+              Subscription Duration (Months)
             </label>
-            <select
-              value={formData.subscription_status}
-              onChange={(e) => setFormData({ ...formData, subscription_status: e.target.value })}
+            <input
+              type="number"
+              min="1"
+              max="24"
+              value={formData.subscription_months}
+              onChange={(e) => setFormData({ ...formData, subscription_months: parseInt(e.target.value) || 1 })}
               className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none"
-            >
-              <option value="trial">Trial</option>
-              <option value="active">Active</option>
-              <option value="suspended">Suspended</option>
-            </select>
-          </div>
-
-          {/* Trial Days */}
-          {formData.subscription_status === 'trial' && (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Trial Days
-              </label>
-              <input
-                type="number"
-                value={formData.trial_days}
-                onChange={(e) => setFormData({ ...formData, trial_days: parseInt(e.target.value) })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none"
-                min="1"
-              />
-            </div>
-          )}
-
-          {/* Limits */}
-          <div className="grid grid-cols-3 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Max Users
-              </label>
-              <input
-                type="number"
-                value={formData.max_users || ''}
-                onChange={(e) => setFormData({ ...formData, max_users: e.target.value ? parseInt(e.target.value) : null })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none"
-                placeholder="Unlimited"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Max Lots/Month
-              </label>
-              <input
-                type="number"
-                value={formData.max_lots_per_month || ''}
-                onChange={(e) => setFormData({ ...formData, max_lots_per_month: e.target.value ? parseInt(e.target.value) : null })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none"
-                placeholder="Unlimited"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Storage (GB)
-              </label>
-              <input
-                type="number"
-                value={formData.storage_limit_gb || ''}
-                onChange={(e) => setFormData({ ...formData, storage_limit_gb: e.target.value ? parseInt(e.target.value) : null })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none"
-                placeholder="Unlimited"
-              />
-            </div>
+            />
+            <p className="mt-1 text-sm text-gray-500">Number of months for the subscription</p>
           </div>
 
           {/* Buttons */}
