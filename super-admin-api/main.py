@@ -469,16 +469,27 @@ async def toggle_feature(client_id: str, toggle: FeatureToggle, current_admin = 
         upsert=True
     )
     
-    # Push to client ERP if linked
-    if client.get("link_status") == "linked":
-        await client_db.feature_flags.update_one(
-            {"tenant_id": client["tenant_id"], "feature_code": toggle.feature_code},
-            {"$set": {
-                "is_enabled": toggle.is_enabled,
-                "updated_at": datetime.now(timezone.utc).isoformat()
-            }},
-            upsert=True
-        )
+    # Always push to client ERP database
+    # Update for the client's specific tenant_id
+    await client_db.feature_flags.update_one(
+        {"tenant_id": client["tenant_id"], "feature_code": toggle.feature_code},
+        {"$set": {
+            "is_enabled": toggle.is_enabled,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }},
+        upsert=True
+    )
+    
+    # Also update cli_001 (default tenant used by current users)
+    # This ensures backward compatibility with existing user sessions
+    await client_db.feature_flags.update_one(
+        {"tenant_id": "cli_001", "feature_code": toggle.feature_code},
+        {"$set": {
+            "is_enabled": toggle.is_enabled,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }},
+        upsert=True
+    )
     
     # Log activity
     await db.activity_logs.insert_one({
