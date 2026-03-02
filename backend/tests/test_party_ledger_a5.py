@@ -8,7 +8,7 @@ import os
 import time
 from datetime import date
 
-BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'https://krish-party-ledger.preview.emergentagent.com')
+BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'https://super-admin-debug-3.preview.emergentagent.com')
 
 # Test data
 TEST_CREDENTIALS = {

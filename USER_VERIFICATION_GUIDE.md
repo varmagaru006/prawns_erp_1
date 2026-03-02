@@ -5,7 +5,7 @@
 - **Full credentials**: See /app/TEST_CREDENTIALS.md
 
 ## App URL
-https://krish-party-ledger.preview.emergentagent.com
+https://super-admin-debug-3.preview.emergentagent.com
 
 ---
 
