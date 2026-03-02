@@ -190,17 +190,48 @@ const Parties = () => {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Party Name</TableHead>
-                  <TableHead>Alias</TableHead>
-                  <TableHead>Short Code</TableHead>
-                  <TableHead>Mobile</TableHead>
-                  <TableHead className="text-right">Current FY Balance</TableHead>
-                  <TableHead>Status</TableHead>
+                  <SortableTableHead 
+                    label="Party Name" 
+                    sortKey="party_name" 
+                    onSort={requestSort} 
+                    getSortIcon={getSortIcon} 
+                  />
+                  <SortableTableHead 
+                    label="Alias" 
+                    sortKey="party_alias" 
+                    onSort={requestSort} 
+                    getSortIcon={getSortIcon} 
+                  />
+                  <SortableTableHead 
+                    label="Short Code" 
+                    sortKey="short_code" 
+                    onSort={requestSort} 
+                    getSortIcon={getSortIcon} 
+                  />
+                  <SortableTableHead 
+                    label="Mobile" 
+                    sortKey="mobile" 
+                    onSort={requestSort} 
+                    getSortIcon={getSortIcon} 
+                  />
+                  <SortableTableHead 
+                    label="Current FY Balance" 
+                    sortKey="current_fy_balance" 
+                    onSort={requestSort} 
+                    getSortIcon={getSortIcon} 
+                    className="text-right"
+                  />
+                  <SortableTableHead 
+                    label="Status" 
+                    sortKey="is_active" 
+                    onSort={requestSort} 
+                    getSortIcon={getSortIcon} 
+                  />
                   <TableHead>Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {parties.map((party) => (
+                {sortedData.map((party) => (
                   <TableRow key={party.id} data-testid={`party-row-${party.id}`}>
                     <TableCell className="font-medium">{party.party_name}</TableCell>
                     <TableCell className="text-gray-600">{party.party_alias || '-'}</TableCell>
