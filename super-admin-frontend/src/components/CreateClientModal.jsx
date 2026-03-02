@@ -6,14 +6,10 @@ export default function CreateClientModal({ isOpen, onClose, onSuccess }) {
   const [formData, setFormData] = useState({
     tenant_id: '',
     business_name: '',
-    contact_person: '',
-    contact_email: '',
+    owner_name: '',
+    owner_email: '',
     plan_id: '',
-    subscription_status: 'trial',
-    trial_days: 30,
-    max_users: null,
-    max_lots_per_month: null,
-    storage_limit_gb: null
+    subscription_months: 1
   });
   const [plans, setPlans] = useState([]);
   const [loading, setLoading] = useState(false);
