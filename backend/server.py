@@ -6949,6 +6949,8 @@ async def super_admin_create_client(data: dict, request: Request):
             headers=headers,
             timeout=10.0
         )
+        if response.status_code >= 400:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
         return response.json()
 
 @super_admin_router.put("/clients/{client_id}")
