@@ -1,13 +1,56 @@
 # Prawn/Aquaculture Export ERP - Product Requirements Document
 
 ## Original Problem Statement
-Build a full-stack, production-ready Prawn/Aquaculture Export ERP web application with a Super Admin Portal (Amendment A2) for multi-tenant SaaS management.
+Build a full-stack, production-ready Prawn/Aquaculture Export ERP web application with a Super Admin Portal (Amendment A2) for multi-tenant SaaS management, including comprehensive Party Ledger Account Module (Amendment A5).
 
 ## Architecture
-- **Super Admin Portal**: React frontend + FastAPI backend + PostgreSQL (`saas_control_db`)
+- **Super Admin Portal**: React frontend + FastAPI backend + MongoDB (`prawn_erp_super_admin`)
 - **Client ERP**: React frontend + FastAPI backend + MongoDB (multi-tenant with `tenant_id`)
+- **Super Admin API**: Port 8002, proxied via client backend at `/api/super-admin`
 
 ## What's Been Implemented
+
+### Session Date: Mar 2, 2026
+
+#### Bug Fix: Super Admin Portal Functionality ✅ COMPLETED
+
+**Issue**: Super Admin Portal was broken - creating clients and toggling features was not working.
+
+**Root Cause**: MongoDB `ObjectId` serialization error. When `insert_one()` is called, MongoDB adds `_id` (ObjectId) to the dict, which cannot be JSON serialized.
+
+**Fix Applied**:
+1. ✅ Removed `_id` from `client` dict after `insert_one()` in `/app/super-admin-api/main.py`
+2. ✅ Added proper error handling in backend proxy to propagate HTTP status codes
+3. ✅ Added `partyLedger` feature to feature registry in super-admin API
+
+**Files Modified**:
+- `/app/super-admin-api/main.py` - Lines 270-290 (create_client), Lines 418-432 & 828-843 (feature registry)
+- `/app/backend/server.py` - Lines 6938-6954 (proxy error handling)
+
+---
+
+#### Bug Fix: Party Ledger Tab Not Displaying ✅ COMPLETED
+
+**Issue**: Party Ledger navigation tab was not showing in client ERP sidebar.
+
+**Root Cause**: The `partyLedger` feature flag was missing from the MongoDB `feature_flags` collection for tenant `cli_001`.
+
+**Fix Applied**:
+1. ✅ Added `partyLedger` to feature registry in super-admin API
+2. ✅ Inserted `partyLedger` feature flag in MongoDB with `is_enabled: true` for `tenant_id: cli_001`
+
+**Verification**: `/api/auth/me` now returns `partyLedger: true` in features object.
+
+---
+
+#### Feature: Party Master Table Sorting ✅ COMPLETED
+
+**Implementation**: Added column sorting to Party Master page using existing `useSortableTable` hook.
+
+**Files Modified**:
+- `/app/frontend/src/pages/Parties.js` - Added sorting to all columns (Party Name, Alias, Short Code, Mobile, Balance, Status)
+
+---
 
 ### Session Date: Feb 25, 2026
 
