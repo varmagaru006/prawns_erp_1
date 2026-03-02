@@ -774,9 +774,12 @@ async def create_announcement(
     
     await db.announcements.insert_one(announcement_doc)
     
+    # Remove _id that MongoDB adds
+    announcement_doc.pop("_id", None)
+    
     # Push to client ERPs based on target
     if announcement.target_type == "all":
-        await client_db.announcements.insert_one(announcement_doc)
+        await client_db.announcements.insert_one({**announcement_doc})
     elif announcement.target_type == "specific_clients" and announcement.target_ids:
         # Push to specific clients only
         for client_id in announcement.target_ids:
