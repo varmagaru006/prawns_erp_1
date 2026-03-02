@@ -114,30 +114,31 @@ export default function CreateClientModal({ isOpen, onClose, onSuccess }) {
             />
           </div>
 
-          {/* Contact Person */}
+          {/* Owner Name */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Contact Person
+              Owner Name *
             </label>
             <input
               type="text"
-              value={formData.contact_person}
-              onChange={(e) => setFormData({ ...formData, contact_person: e.target.value })}
+              required
+              value={formData.owner_name}
+              onChange={(e) => setFormData({ ...formData, owner_name: e.target.value })}
               className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none"
               placeholder="e.g., John Doe"
             />
           </div>
 
-          {/* Contact Email */}
+          {/* Owner Email */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Contact Email *
+              Owner Email *
             </label>
             <input
               type="email"
               required
-              value={formData.contact_email}
-              onChange={(e) => setFormData({ ...formData, contact_email: e.target.value })}
+              value={formData.owner_email}
+              onChange={(e) => setFormData({ ...formData, owner_email: e.target.value })}
               className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none"
               placeholder="e.g., john@example.com"
             />
