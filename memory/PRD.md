@@ -123,13 +123,18 @@ Complete Purchase Invoice module with enhanced patch features for farmer mobile 
 ### P0 (Critical - Completed)
 - ✅ Amendment A4 Purchase Invoice Module with Patch features
 - ✅ Purchase Invoice Dashboard feature toggle from Super Admin
+- ✅ Super Admin Portal bug fix (create client, toggle features)
+- ✅ Party Ledger tab visibility fix
+- ✅ Table sorting on Purchase Invoices, Party Ledger, Party Master
 
 ### P1 (High Priority - Upcoming)
+- Build UI for Financial Year Carry-Forward feature (backend API exists at `/api/party-ledger/carry-forward`)
 - Integrate `purchase_invoice_no` into Production and Cold Storage UI
 - Amendment A2 Phases 8-10 (Activity logs, usage snapshots, billing)
 
 ### P2 (Medium Priority)
-- Refactor monolithic `server.py` into modular FastAPI structure
+- Refactor monolithic `server.py` into modular FastAPI structure (routers, models, services)
+- Review feature flag propagation mechanism for robustness
 
 ## Key Files Reference
 
