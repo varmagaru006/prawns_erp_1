@@ -427,6 +427,7 @@ async def get_client_features(client_id: str, current_admin = Depends(get_curren
         {"code": "yieldBenchmarks", "name": "Yield Benchmarks", "description": "Yield tracking", "module": "Analytics"},
         {"code": "marketRates", "name": "Market Rates", "description": "Market price tracking", "module": "Analytics"},
         {"code": "purchaseInvoiceDashboard", "name": "Purchase Invoice Dashboard", "description": "Invoice metrics, quick preview, and bulk export", "module": "Finance"},
+        {"code": "partyLedger", "name": "Party Ledger", "description": "Party master and ledger management", "module": "Finance"},
         {"code": "admin", "name": "Admin Panel", "description": "Administrative functions", "module": "Admin"}
     ]
     
