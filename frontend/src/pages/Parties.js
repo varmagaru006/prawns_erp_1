@@ -27,6 +27,12 @@ const Parties = () => {
     notes: ''
   });
 
+  // Add sorting hook
+  const { sortedData, requestSort, getSortIcon } = useSortableTable(parties, {
+    key: 'party_name',
+    direction: 'asc'
+  });
+
   useEffect(() => {
     fetchParties();
   }, [search]);
