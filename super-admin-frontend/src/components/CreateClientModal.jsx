@@ -46,14 +46,10 @@ export default function CreateClientModal({ isOpen, onClose, onSuccess }) {
       setFormData({
         tenant_id: '',
         business_name: '',
-        contact_person: '',
-        contact_email: '',
+        owner_name: '',
+        owner_email: '',
         plan_id: plans[0]?.id || '',
-        subscription_status: 'trial',
-        trial_days: 30,
-        max_users: null,
-        max_lots_per_month: null,
-        storage_limit_gb: null
+        subscription_months: 1
       });
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to create client');
