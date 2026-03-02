@@ -7,6 +7,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { toast } from 'sonner';
 import { Plus, Pencil, Trash2, Search, Users, X } from 'lucide-react';
+import { useSortableTable } from '../hooks/useSortableTable';
+import SortableTableHead from '../components/SortableTableHead';
 
 const Parties = () => {
   const [parties, setParties] = useState([]);
