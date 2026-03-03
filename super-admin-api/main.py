@@ -730,6 +730,160 @@ async def provision_user(
     }
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Impersonation
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ImpersonationRequest(BaseModel):
+    reason: str = ""
+    duration_mins: int = 60
+
+@app.post("/clients/{client_id}/impersonate")
+async def impersonate_client(
+    client_id: str, 
+    request: ImpersonationRequest,
+    current_admin = Depends(get_current_super_admin)
+):
+    """
+    Generate an impersonation token for a client.
+    This token can be used to login as the client's admin user.
+    """
+    # Get client info
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    
+    if not client.get("is_active", True):
+        raise HTTPException(status_code=400, detail="Cannot impersonate suspended client")
+    
+    tenant_id = client["tenant_id"]
+    
+    # Find the admin user for this client in the client ERP database
+    admin_user = await client_db.users.find_one(
+        {"tenant_id": tenant_id, "role": "admin", "is_active": True},
+        {"_id": 0}
+    )
+    
+    if not admin_user:
+        # If no admin user found, try to find any active user
+        admin_user = await client_db.users.find_one(
+            {"tenant_id": tenant_id, "is_active": True},
+            {"_id": 0}
+        )
+    
+    if not admin_user:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"No active user found for tenant {tenant_id}. Please create a user first."
+        )
+    
+    # Generate impersonation session
+    session_id = str(uuid.uuid4())
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=request.duration_mins)
+    
+    # Create impersonation token (JWT with special claims)
+    token_data = {
+        "sub": admin_user["email"],
+        "tenant_id": tenant_id,
+        "session_id": session_id,
+        "is_impersonation": True,
+        "impersonator": current_admin["email"],
+        "impersonator_name": current_admin.get("name", "Super Admin"),
+        "exp": expires_at
+    }
+    
+    SECRET_KEY = os.getenv("JWT_SECRET_KEY", os.getenv("SECRET_KEY", "your-secret-key-change-in-production"))
+    token = jwt.encode(token_data, SECRET_KEY, algorithm="HS256")
+    
+    # Store impersonation session
+    session_doc = {
+        "id": session_id,
+        "client_id": client_id,
+        "tenant_id": tenant_id,
+        "admin_id": current_admin["id"],
+        "admin_email": current_admin["email"],
+        "target_user_email": admin_user["email"],
+        "reason": request.reason,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "expires_at": expires_at.isoformat(),
+        "ended_at": None,
+        "is_active": True
+    }
+    await db.impersonation_sessions.insert_one(session_doc)
+    session_doc.pop("_id", None)
+    
+    # Log activity
+    await db.activity_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "admin_id": current_admin["id"],
+        "action": "IMPERSONATE_START",
+        "entity_id": client_id,
+        "details": {
+            "tenant_id": tenant_id,
+            "target_user": admin_user["email"],
+            "reason": request.reason,
+            "session_id": session_id
+        },
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    
+    return {
+        "status": "success",
+        "token": token,
+        "session_id": session_id,
+        "expires_at": expires_at.isoformat(),
+        "target_user": {
+            "email": admin_user["email"],
+            "name": admin_user.get("name", ""),
+            "role": admin_user.get("role", "admin")
+        },
+        "client": {
+            "id": client_id,
+            "business_name": client["business_name"],
+            "tenant_id": tenant_id
+        }
+    }
+
+@app.post("/impersonation/{session_id}/end")
+async def end_impersonation(session_id: str, current_admin = Depends(get_current_super_admin)):
+    """End an active impersonation session"""
+    session = await db.impersonation_sessions.find_one({"id": session_id})
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    if not session.get("is_active"):
+        return {"status": "success", "message": "Session already ended"}
+    
+    # End the session
+    await db.impersonation_sessions.update_one(
+        {"id": session_id},
+        {"$set": {
+            "is_active": False,
+            "ended_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    # Log activity
+    await db.activity_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "admin_id": current_admin["id"],
+        "action": "IMPERSONATE_END",
+        "entity_id": session["client_id"],
+        "details": {"session_id": session_id},
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    
+    return {"status": "success", "message": "Impersonation session ended"}
+
+@app.get("/impersonation/active")
+async def get_active_impersonations(current_admin = Depends(get_current_super_admin)):
+    """Get all active impersonation sessions"""
+    sessions = await db.impersonation_sessions.find(
+        {"is_active": True},
+        {"_id": 0}
+    ).to_list(100)
+    return sessions
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Subscription Plans
 # ══════════════════════════════════════════════════════════════════════════════
 

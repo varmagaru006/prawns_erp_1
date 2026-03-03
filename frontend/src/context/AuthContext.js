@@ -74,6 +74,7 @@ export const AuthProvider = ({ children }) => {
 
   const handleImpersonationLogin = async (token) => {
     try {
+      setLoading(true);
       // Set the token
       localStorage.setItem('token', token);
       localStorage.setItem('isImpersonation', 'true');
@@ -84,19 +85,56 @@ export const AuthProvider = ({ children }) => {
       const userData = {
         ...response.data,
         token: token,
-        is_impersonated: true
+        is_impersonated: response.data.is_impersonated || true
       };
       
       localStorage.setItem('user', JSON.stringify(userData));
       setUser(userData);
       setIsImpersonating(true);
-      setLoading(false);
+      
+      // Force navigation to home page after successful impersonation
+      // Use setTimeout to ensure state is saved before navigation
+      setTimeout(() => {
+        window.location.replace('/');
+      }, 100);
     } catch (err) {
       console.error('Impersonation login failed:', err);
       localStorage.removeItem('token');
       localStorage.removeItem('user');
       localStorage.removeItem('isImpersonation');
       setLoading(false);
+    }
+  };
+
+  const loginWithToken = async (token) => {
+    try {
+      // Set the token
+      localStorage.setItem('token', token);
+      localStorage.setItem('isImpersonation', 'true');
+      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+      
+      // Fetch user info
+      const response = await axios.get(`${API}/auth/me`);
+      const userData = {
+        ...response.data,
+        token: token,
+        is_impersonated: response.data.is_impersonated || true
+      };
+      
+      localStorage.setItem('user', JSON.stringify(userData));
+      setUser(userData);
+      setIsImpersonating(true);
+      
+      // Dispatch custom event to refresh features
+      window.dispatchEvent(new CustomEvent('tokenChanged'));
+      
+      return userData;
+    } catch (err) {
+      console.error('Token login failed:', err);
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      localStorage.removeItem('isImpersonation');
+      throw err;
     }
   };
 
@@ -143,6 +181,7 @@ export const AuthProvider = ({ children }) => {
     <AuthContext.Provider value={{ 
       user, 
       login, 
+      loginWithToken,
       register, 
       logout, 
       loading, 

@@ -64,8 +64,9 @@ export default function Dashboard() {
       });
       
       // Store the impersonation token and redirect to client ERP
-      const clientErpUrl = window.location.origin.replace('/super-admin', '');
-      const redirectUrl = `${clientErpUrl}?impersonation_token=${result.token}`;
+      // The client ERP is at the same origin, just at root path
+      const clientErpUrl = window.location.origin;
+      const redirectUrl = `${clientErpUrl}/login?impersonation_token=${result.token}`;
       
       // Open in new tab
       window.open(redirectUrl, '_blank');

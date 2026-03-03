@@ -19,7 +19,7 @@ const Login = () => {
   const [loading, setLoading] = useState(false);
   const [floatingElements, setFloatingElements] = useState([]);
   
-  const { login, register } = useAuth();
+  const { login, register, user, loading: authLoading } = useAuth();
   const { branding } = useBranding();
   const navigate = useNavigate();
 
@@ -34,6 +34,13 @@ const Login = () => {
     }));
     setFloatingElements(elements);
   }, []);
+  
+  // Handle redirect after impersonation login
+  useEffect(() => {
+    if (user && !loading) {
+      navigate('/');
+    }
+  }, [user, loading, navigate]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
