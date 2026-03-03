@@ -458,6 +458,8 @@ async def toggle_feature(client_id: str, toggle: FeatureToggle, current_admin = 
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
     
+    tenant_id = client["tenant_id"]
+    
     # Upsert feature flag in super admin DB
     await db.feature_flags.update_one(
         {"client_id": client_id, "feature_code": toggle.feature_code},
@@ -469,21 +471,9 @@ async def toggle_feature(client_id: str, toggle: FeatureToggle, current_admin = 
         upsert=True
     )
     
-    # Always push to client ERP database
-    # Update for the client's specific tenant_id
+    # Push to client ERP database for this client's tenant_id
     await client_db.feature_flags.update_one(
-        {"tenant_id": client["tenant_id"], "feature_code": toggle.feature_code},
-        {"$set": {
-            "is_enabled": toggle.is_enabled,
-            "updated_at": datetime.now(timezone.utc).isoformat()
-        }},
-        upsert=True
-    )
-    
-    # Also update cli_001 (default tenant used by current users)
-    # This ensures backward compatibility with existing user sessions
-    await client_db.feature_flags.update_one(
-        {"tenant_id": "cli_001", "feature_code": toggle.feature_code},
+        {"tenant_id": tenant_id, "feature_code": toggle.feature_code},
         {"$set": {
             "is_enabled": toggle.is_enabled,
             "updated_at": datetime.now(timezone.utc).isoformat()
@@ -497,7 +487,7 @@ async def toggle_feature(client_id: str, toggle: FeatureToggle, current_admin = 
         "admin_id": current_admin["id"],
         "action": "TOGGLE_FEATURE",
         "entity_id": client_id,
-        "details": {"feature_code": toggle.feature_code, "is_enabled": toggle.is_enabled},
+        "details": {"feature_code": toggle.feature_code, "is_enabled": toggle.is_enabled, "tenant_id": tenant_id},
         "timestamp": datetime.now(timezone.utc).isoformat()
     })
     
@@ -514,6 +504,8 @@ async def bulk_toggle_features(
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
     
+    tenant_id = client["tenant_id"]
+    
     for feature in features:
         await db.feature_flags.update_one(
             {"client_id": client_id, "feature_code": feature.feature_code},
@@ -524,19 +516,9 @@ async def bulk_toggle_features(
             upsert=True
         )
         
-        # Always push to client ERP database
+        # Push to client ERP database for this client's tenant_id only
         await client_db.feature_flags.update_one(
-            {"tenant_id": client["tenant_id"], "feature_code": feature.feature_code},
-            {"$set": {
-                "is_enabled": feature.is_enabled,
-                "updated_at": datetime.now(timezone.utc).isoformat()
-            }},
-            upsert=True
-        )
-        
-        # Also update cli_001 for backward compatibility
-        await client_db.feature_flags.update_one(
-            {"tenant_id": "cli_001", "feature_code": feature.feature_code},
+            {"tenant_id": tenant_id, "feature_code": feature.feature_code},
             {"$set": {
                 "is_enabled": feature.is_enabled,
                 "updated_at": datetime.now(timezone.utc).isoformat()
@@ -544,7 +526,7 @@ async def bulk_toggle_features(
             upsert=True
         )
     
-    return {"status": "success", "message": f"Updated {len(features)} features"}
+    return {"status": "success", "message": f"Updated {len(features)} features for tenant {tenant_id}"}
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Client Linking

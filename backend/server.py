@@ -1782,7 +1782,10 @@ async def login(credentials: UserLogin):
     # Remove both password fields before creating user object
     user_data = {k: v for k, v in user_doc.items() if k not in ['password', 'password_hash']}
     user = User(**user_data)
-    access_token = create_access_token(data={"sub": user.email})
+    
+    # Include tenant_id in JWT token for proper multi-tenant support
+    tenant_id = user_doc.get('tenant_id', 'cli_001')
+    access_token = create_access_token(data={"sub": user.email, "tenant_id": tenant_id})
     
     return Token(access_token=access_token, token_type="bearer", user=user)
 
