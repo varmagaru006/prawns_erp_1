@@ -71,6 +71,9 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      {/* Redirect old super-admin URL to new integrated panel */}
+      <Route path="/super-admin" element={<Navigate to="/platform-admin" replace />} />
+      <Route path="/super-admin/*" element={<Navigate to="/platform-admin" replace />} />
       <Route
         path="/"
         element={

@@ -116,6 +116,48 @@ async def get_current_super_admin(credentials: HTTPAuthorizationCredentials = De
         raise HTTPException(status_code=401, detail="Invalid token")
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Super Admin Authentication
+# ══════════════════════════════════════════════════════════════════════════════
+
+@super_admin_router.post("/auth/login")
+async def super_admin_login(credentials: dict):
+    """
+    Super Admin login endpoint.
+    Accepts email/password and returns JWT if the user has super_admin role.
+    """
+    email = credentials.get("email", "")
+    password = credentials.get("password", "")
+
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email and password required")
+
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    if not user or user.get("role") != "super_admin":
+        raise HTTPException(status_code=401, detail="Invalid credentials or insufficient permissions")
+
+    if not verify_password(password, user.get("password", "")):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if not user.get("is_active", True):
+        raise HTTPException(status_code=403, detail="Account is disabled")
+
+    # Generate JWT token (same as main auth system)
+    token_data = {
+        "sub": user["email"],
+        "tenant_id": user.get("tenant_id"),
+        "exp": datetime.now(timezone.utc) + timedelta(days=7)
+    }
+    access_token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
+
+    user_response = {k: v for k, v in user.items() if k != "password"}
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": user_response
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Bootstrap Super Admin (One-time setup)
 # ══════════════════════════════════════════════════════════════════════════════
 
