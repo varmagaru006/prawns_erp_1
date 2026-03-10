@@ -5,7 +5,7 @@
 - **Full credentials**: See /app/TEST_CREDENTIALS.md
 
 ## App URL
-https://super-admin-debug-3.preview.emergentagent.com
+https://erp-admin-upgrade.preview.emergentagent.com
 
 ---
 

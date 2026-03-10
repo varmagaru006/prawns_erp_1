@@ -96,7 +96,7 @@ const Layout = () => {
     { name: 'Audit Trail', path: '/admin/audit-trail', icon: 'History', moduleKey: 'admin' },
     { name: 'Company Settings', path: '/admin/company-settings', icon: 'Building2', moduleKey: 'admin' },
     { name: 'Admin Panel', path: '/admin', icon: 'Settings', moduleKey: 'admin' },
-    { name: 'Super Admin', path: '/super-admin', icon: 'Shield', moduleKey: 'superAdmin' },
+    { name: 'Super Admin', path: '/platform-admin', icon: 'Shield', moduleKey: 'superAdmin' },
     { name: 'Notifications', path: '/notifications', icon: 'Bell', moduleKey: 'notifications' },
   ];
 
@@ -117,6 +117,16 @@ const Layout = () => {
         isAccessible: isModuleAccessible(item.moduleKey, user?.role),
         userName: user?.name,
         userEmail: user?.email
+      });
+    }
+    
+    // Debug logging for superAdmin
+    if (item.moduleKey === 'superAdmin') {
+      console.log('🔍 Super Admin Debug:', {
+        moduleKey: item.moduleKey,
+        userRole: user?.role,
+        moduleConfig: moduleConfig.superAdmin,
+        isAccessible: isModuleAccessible(item.moduleKey, user?.role)
       });
     }
     

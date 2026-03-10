@@ -3,7 +3,7 @@
 ## 🌐 **ACCESS URL**
 
 ```
-https://super-admin-debug-3.preview.emergentagent.com/super-admin/
+https://erp-admin-upgrade.preview.emergentagent.com/super-admin/
 ```
 
 **⚠️ IMPORTANT:** Don't forget the trailing slash `/` at the end!
@@ -93,7 +93,7 @@ The system has **46 features** across **11 modules**:
 ## 🚀 **START HERE**
 
 1. **Open your browser**
-2. **Go to:** https://super-admin-debug-3.preview.emergentagent.com/super-admin/
+2. **Go to:** https://erp-admin-upgrade.preview.emergentagent.com/super-admin/
 3. **Login with:** superadmin@prawnrp.com / admin123
 4. **Explore the dashboard and toggle features!**
 

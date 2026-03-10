@@ -14,8 +14,8 @@ import jwt
 import uuid
 import os
 
-# Router - Use different prefix to avoid conflict with existing super-admin proxy
-super_admin_router = APIRouter(prefix="/api/platform-admin", tags=["Platform Admin"])
+# Router - matches the API spec from the guide
+super_admin_router = APIRouter(prefix="/api/super-admin", tags=["Super Admin"])
 
 # Security
 security = HTTPBearer()

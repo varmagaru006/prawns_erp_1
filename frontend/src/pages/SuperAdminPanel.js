@@ -78,34 +78,37 @@ const SuperAdminPanel = () => {
 
   const loadTenants = useCallback(async () => {
     try {
-      const response = await axios.get(`${API}/platform-admin/tenants`);
+      const response = await axios.get(`${API}/super-admin/tenants`);
       setTenants(response.data);
     } catch (error) {
-      toast.error('Failed to load tenants');
+      if (error.code !== 'ERR_CANCELED') toast.error('Failed to load tenants');
     }
   }, []);
 
   const loadMetrics = useCallback(async () => {
     try {
-      const response = await axios.get(`${API}/platform-admin/metrics`);
+      const response = await axios.get(`${API}/super-admin/metrics`);
       setMetrics(response.data);
     } catch (error) {
-      console.error('Failed to load metrics:', error);
+      if (error.code !== 'ERR_CANCELED') console.error('Failed to load metrics:', error);
     }
   }, []);
 
   useEffect(() => {
     const loadData = async () => {
       setLoading(true);
-      await Promise.all([loadTenants(), loadMetrics()]);
-      setLoading(false);
+      try {
+        await Promise.all([loadTenants(), loadMetrics()]);
+      } finally {
+        setLoading(false);
+      }
     };
     loadData();
   }, [loadTenants, loadMetrics]);
 
   const handleCreateTenant = async () => {
     try {
-      const response = await axios.post(`${API}/platform-admin/tenants`, wizardData);
+      const response = await axios.post(`${API}/super-admin/tenants`, wizardData);
       toast.success(`Tenant "${wizardData.name}" created successfully!`);
       setShowWizard(false);
       setWizardStep(1);
@@ -144,7 +147,7 @@ const SuperAdminPanel = () => {
     if (!selectedTenant) return;
     
     try {
-      await axios.put(`${API}/platform-admin/tenants/${selectedTenant.id}/features`, {
+      await axios.put(`${API}/super-admin/tenants/${selectedTenant.id}/features`, {
         feature_flags: selectedTenant.feature_flags
       });
       toast.success('Feature flags updated successfully');
@@ -161,14 +164,14 @@ const SuperAdminPanel = () => {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
+      <div className="flex items-center justify-center h-64" data-testid="super-admin-loading">
         <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
       </div>
     );
   }
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-6 space-y-6" data-testid="super-admin-panel">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -180,7 +183,7 @@ const SuperAdminPanel = () => {
             <p className="text-gray-500">Manage tenants, features, and platform settings</p>
           </div>
         </div>
-        <Button onClick={() => setShowWizard(true)} className="bg-purple-600 hover:bg-purple-700">
+        <Button onClick={() => setShowWizard(true)} className="bg-purple-600 hover:bg-purple-700" data-testid="new-client-btn">
           <Plus className="h-4 w-4 mr-2" />
           New Client
         </Button>

@@ -36,8 +36,7 @@ import { Toaster } from './components/ui/sonner';
 import { canAccessDashboard } from './config/moduleConfig';
 import './App.css';
 
-// Lazy load SuperAdminPanel for code splitting
-const SuperAdminPanel = lazy(() => import('./pages/SuperAdminPanel'));
+import SuperAdminPanel from './pages/SuperAdminPanel';
 
 // Loading fallback for lazy components
 const LoadingFallback = () => (
@@ -102,14 +101,7 @@ function AppRoutes() {
         <Route path="party-ledger/:partyId" element={<PartyLedger />} />
         <Route path="admin/company-settings" element={<CompanySettings />} />
         <Route path="notifications" element={<Notifications />} />
-        <Route 
-          path="super-admin" 
-          element={
-            <Suspense fallback={<LoadingFallback />}>
-              <SuperAdminPanel />
-            </Suspense>
-          } 
-        />
+        <Route path="platform-admin" element={<SuperAdminPanel />} />
       </Route>
     </Routes>
   );

@@ -11,7 +11,7 @@ from datetime import date, datetime
 from typing import Dict, Optional, List
 
 # Configuration
-BASE_URL = "https://super-admin-debug-3.preview.emergentagent.com/api"
+BASE_URL = "https://erp-admin-upgrade.preview.emergentagent.com/api"
 TEST_CREDENTIALS = {
     "email": "john@aquapremium.com", 
     "password": "Admin123!"

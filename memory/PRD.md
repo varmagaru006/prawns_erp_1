@@ -101,12 +101,12 @@ Complete Purchase Invoice module with enhanced patch features for farmer mobile 
 ## Test Credentials
 
 ### Super Admin Portal
-- **URL**: https://super-admin-debug-3.preview.emergentagent.com/super-admin/
+- **URL**: https://erp-admin-upgrade.preview.emergentagent.com/super-admin/
 - **Email**: superadmin@prawnrp.com
 - **Password**: admin123
 
 ### Client ERP
-- **URL**: https://super-admin-debug-3.preview.emergentagent.com/
+- **URL**: https://erp-admin-upgrade.preview.emergentagent.com/
 - **Email**: john@aquapremium.com
 - **Password**: Admin123!
 

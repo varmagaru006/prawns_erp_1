@@ -1576,7 +1576,7 @@ async def launch_client(client_id: str, current_admin = Depends(get_current_supe
         except Exception as e:
             results["steps"].append({"name": "health_check", "status": "error", "error": str(e)})
     
-    results["launch_url"] = f"https://super-admin-debug-3.preview.emergentagent.com"
+    results["launch_url"] = f"https://erp-admin-upgrade.preview.emergentagent.com"
     results["status"] = "launched"
     
     return results

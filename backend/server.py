@@ -27,8 +27,8 @@ from enum import Enum
 # Multi-tenant services
 from services.multi_tenant import tenant_context, FeatureFlagService, tenant_middleware
 
-# Super Admin module (integrated tenant management)
-from super_admin import super_admin_router as platform_admin_router, set_database as set_super_admin_db, create_indexes as create_super_admin_indexes
+# Super Admin module (integrated tenant management) - follows the 3-Feature Upgrade Guide
+from super_admin import super_admin_router, set_database as set_super_admin_db, create_indexes as create_super_admin_indexes
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -6855,13 +6855,14 @@ app.add_middleware(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SUPER ADMIN ENDPOINTS (Proxy to Super Admin API)
+# SUPER ADMIN PROXY ENDPOINTS (Legacy - proxies to Super Admin API on port 8002)
 # ═══════════════════════════════════════════════════════════════════════════════
+# NOTE: These are kept for backward compatibility with the separate super-admin-frontend
 import httpx
 
-super_admin_router = APIRouter(prefix="/api/super-admin", tags=["Super Admin"])
+super_admin_proxy_router = APIRouter(prefix="/api/sa", tags=["Super Admin Proxy"])
 
-@super_admin_router.post("/auth/login")
+@super_admin_proxy_router.post("/auth/login")
 async def super_admin_login(credentials: dict):
     """Proxy super admin login to the Super Admin API"""
     async with httpx.AsyncClient() as client:
@@ -6872,7 +6873,7 @@ async def super_admin_login(credentials: dict):
         )
         return response.json()
 
-@super_admin_router.get("/auth/me")
+@super_admin_proxy_router.get("/auth/me")
 async def super_admin_me(request: Request):
     """Proxy super admin me endpoint"""
     headers = {}
@@ -6887,7 +6888,7 @@ async def super_admin_me(request: Request):
         )
         return response.json()
 
-@super_admin_router.get("/clients")
+@super_admin_proxy_router.get("/clients")
 async def super_admin_get_clients(request: Request):
     """Proxy get clients"""
     headers = {}
@@ -6902,7 +6903,7 @@ async def super_admin_get_clients(request: Request):
         )
         return response.json()
 
-@super_admin_router.get("/clients/{client_id}")
+@super_admin_proxy_router.get("/clients/{client_id}")
 async def super_admin_get_client(client_id: str, request: Request):
     """Proxy get client detail"""
     headers = {}
@@ -6917,7 +6918,7 @@ async def super_admin_get_client(client_id: str, request: Request):
         )
         return response.json()
 
-@super_admin_router.get("/clients/{client_id}/features")
+@super_admin_proxy_router.get("/clients/{client_id}/features")
 async def super_admin_get_features(client_id: str, request: Request):
     """Proxy get client features"""
     headers = {}
@@ -6932,7 +6933,7 @@ async def super_admin_get_features(client_id: str, request: Request):
         )
         return response.json()
 
-@super_admin_router.post("/clients/{client_id}/features/toggle")
+@super_admin_proxy_router.post("/clients/{client_id}/features/toggle")
 async def super_admin_toggle_feature(client_id: str, data: dict, request: Request):
     """Proxy toggle feature"""
     headers = {}
@@ -6948,7 +6949,7 @@ async def super_admin_toggle_feature(client_id: str, data: dict, request: Reques
         )
         return response.json()
 
-@super_admin_router.post("/clients")
+@super_admin_proxy_router.post("/clients")
 async def super_admin_create_client(data: dict, request: Request):
     """Proxy create client"""
     headers = {"Content-Type": "application/json"}
@@ -6966,7 +6967,7 @@ async def super_admin_create_client(data: dict, request: Request):
             raise HTTPException(status_code=response.status_code, detail=response.text)
         return response.json()
 
-@super_admin_router.put("/clients/{client_id}")
+@super_admin_proxy_router.put("/clients/{client_id}")
 async def super_admin_update_client(client_id: str, data: dict, request: Request):
     """Proxy update client"""
     headers = {"Content-Type": "application/json"}
@@ -6982,7 +6983,7 @@ async def super_admin_update_client(client_id: str, data: dict, request: Request
         )
         return response.json()
 
-@super_admin_router.get("/subscription-plans")
+@super_admin_proxy_router.get("/subscription-plans")
 async def super_admin_get_plans(request: Request):
     """Proxy get subscription plans"""
     headers = {}
@@ -6997,7 +6998,7 @@ async def super_admin_get_plans(request: Request):
         )
         return response.json()
 
-@super_admin_router.delete("/clients/{client_id}")
+@super_admin_proxy_router.delete("/clients/{client_id}")
 async def super_admin_delete_client(client_id: str, request: Request):
     """Proxy delete/suspend client"""
     headers = {}
@@ -7012,7 +7013,7 @@ async def super_admin_delete_client(client_id: str, request: Request):
         )
         return response.json()
 
-@super_admin_router.post("/clients/{client_id}/activate")
+@super_admin_proxy_router.post("/clients/{client_id}/activate")
 async def super_admin_activate_client(client_id: str, request: Request):
     """Proxy activate client"""
     headers = {}
@@ -7027,7 +7028,7 @@ async def super_admin_activate_client(client_id: str, request: Request):
         )
         return response.json()
 
-@super_admin_router.post("/clients/{client_id}/bulk-features")
+@super_admin_proxy_router.post("/clients/{client_id}/bulk-features")
 async def super_admin_bulk_features(client_id: str, data: dict, request: Request):
     """Proxy bulk feature toggle"""
     headers = {"Content-Type": "application/json"}
@@ -7043,7 +7044,7 @@ async def super_admin_bulk_features(client_id: str, data: dict, request: Request
         )
         return response.json()
 
-@super_admin_router.get("/announcements")
+@super_admin_proxy_router.get("/announcements")
 async def super_admin_get_announcements(request: Request):
     """Proxy get announcements"""
     headers = {}
@@ -7058,7 +7059,7 @@ async def super_admin_get_announcements(request: Request):
         )
         return response.json()
 
-@super_admin_router.post("/announcements")
+@super_admin_proxy_router.post("/announcements")
 async def super_admin_create_announcement(request: Request):
     """Proxy create announcement"""
     headers = {}
@@ -7075,7 +7076,7 @@ async def super_admin_create_announcement(request: Request):
         )
         return response.json()
 
-@super_admin_router.delete("/announcements/{announcement_id}")
+@super_admin_proxy_router.delete("/announcements/{announcement_id}")
 async def super_admin_delete_announcement(announcement_id: str, request: Request):
     """Proxy delete announcement"""
     headers = {}
@@ -7090,7 +7091,7 @@ async def super_admin_delete_announcement(announcement_id: str, request: Request
         )
         return response.json()
 
-@super_admin_router.post("/clients/{client_id}/impersonate")
+@super_admin_proxy_router.post("/clients/{client_id}/impersonate")
 async def super_admin_impersonate(client_id: str, request: Request):
     """Proxy impersonation request"""
     headers = {"Content-Type": "application/json"}
@@ -7107,7 +7108,7 @@ async def super_admin_impersonate(client_id: str, request: Request):
         )
         return response.json()
 
-@super_admin_router.post("/impersonation/{session_id}/end")
+@super_admin_proxy_router.post("/impersonation/{session_id}/end")
 async def super_admin_end_impersonation(session_id: str, request: Request):
     """Proxy end impersonation"""
     headers = {}
@@ -7122,7 +7123,7 @@ async def super_admin_end_impersonation(session_id: str, request: Request):
         )
         return response.json()
 
-@super_admin_router.get("/impersonation/active")
+@super_admin_proxy_router.get("/impersonation/active")
 async def super_admin_get_active_impersonations(request: Request):
     """Proxy get active impersonations"""
     headers = {}
@@ -7139,7 +7140,7 @@ async def super_admin_get_active_impersonations(request: Request):
 
 # A3 Proxy Routes - Client Linking, Branding & User Provisioning
 
-@super_admin_router.post("/clients/{client_id}/link")
+@super_admin_proxy_router.post("/clients/{client_id}/link")
 async def super_admin_link_client(client_id: str, request: Request):
     """Proxy link client"""
     headers = {"Content-Type": "application/json"}
@@ -7159,7 +7160,7 @@ async def super_admin_link_client(client_id: str, request: Request):
         )
         return response.json()
 
-@super_admin_router.get("/clients/{client_id}/health")
+@super_admin_proxy_router.get("/clients/{client_id}/health")
 async def super_admin_client_health(client_id: str, request: Request):
     """Proxy client health check"""
     headers = {}
@@ -7174,7 +7175,7 @@ async def super_admin_client_health(client_id: str, request: Request):
         )
         return response.json()
 
-@super_admin_router.post("/clients/{client_id}/push-features")
+@super_admin_proxy_router.post("/clients/{client_id}/push-features")
 async def super_admin_push_features(client_id: str, request: Request):
     """Proxy push features to client"""
     headers = {}
@@ -7189,7 +7190,7 @@ async def super_admin_push_features(client_id: str, request: Request):
         )
         return response.json()
 
-@super_admin_router.post("/clients/{client_id}/push-branding")
+@super_admin_proxy_router.post("/clients/{client_id}/push-branding")
 async def super_admin_push_branding(client_id: str, request: Request):
     """Proxy push branding to client"""
     headers = {"Content-Type": "application/json"}
@@ -7206,7 +7207,7 @@ async def super_admin_push_branding(client_id: str, request: Request):
         )
         return response.json()
 
-@super_admin_router.get("/clients/{client_id}/users")
+@super_admin_proxy_router.get("/clients/{client_id}/users")
 async def super_admin_get_users(client_id: str, request: Request):
     """Proxy get provisioned users"""
     headers = {}
@@ -7221,7 +7222,7 @@ async def super_admin_get_users(client_id: str, request: Request):
         )
         return response.json()
 
-@super_admin_router.post("/clients/{client_id}/users")
+@super_admin_proxy_router.post("/clients/{client_id}/users")
 async def super_admin_provision_user(client_id: str, request: Request):
     """Proxy provision user"""
     headers = {"Content-Type": "application/json"}
@@ -7238,7 +7239,7 @@ async def super_admin_provision_user(client_id: str, request: Request):
         )
         return response.json()
 
-@super_admin_router.patch("/clients/{client_id}/users/{user_id}")
+@super_admin_proxy_router.patch("/clients/{client_id}/users/{user_id}")
 async def super_admin_update_user(client_id: str, user_id: str, request: Request):
     """Proxy update user"""
     headers = {"Content-Type": "application/json"}
@@ -7255,7 +7256,7 @@ async def super_admin_update_user(client_id: str, user_id: str, request: Request
         )
         return response.json()
 
-@super_admin_router.delete("/clients/{client_id}/users/{user_id}")
+@super_admin_proxy_router.delete("/clients/{client_id}/users/{user_id}")
 async def super_admin_delete_user(client_id: str, user_id: str, request: Request):
     """Proxy delete user"""
     headers = {}
@@ -7270,7 +7271,7 @@ async def super_admin_delete_user(client_id: str, user_id: str, request: Request
         )
         return response.json()
 
-@super_admin_router.post("/clients/{client_id}/launch")
+@super_admin_proxy_router.post("/clients/{client_id}/launch")
 async def super_admin_launch_client(client_id: str, request: Request):
     """Proxy launch client"""
     headers = {}
@@ -7285,7 +7286,7 @@ async def super_admin_launch_client(client_id: str, request: Request):
         )
         return response.json()
 
-app.include_router(super_admin_router)
+app.include_router(super_admin_proxy_router)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Super Admin Frontend Static Files
@@ -7341,8 +7342,8 @@ async def serve_super_admin_root():
         )
     return {"error": "Super Admin frontend not built"}
 
-# Mount the consolidated platform admin router (new tenant management)
-app.include_router(platform_admin_router)
+# Mount the integrated super admin router (from super_admin.py - 3-Feature Upgrade)
+app.include_router(super_admin_router)
 
 logging.basicConfig(
     level=logging.INFO,
