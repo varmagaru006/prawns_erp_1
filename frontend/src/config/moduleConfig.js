@@ -89,6 +89,12 @@ export const moduleConfig = {
     name: 'Party Ledger',
     description: 'Party ledger management with FY-wise accounts',
     roles: ['admin', 'owner', 'accounts_manager']
+  },
+  superAdmin: {
+    enabled: true,
+    name: 'Super Admin',
+    description: 'Platform-wide tenant and feature management',
+    roles: ['super_admin']
   }
 };
 

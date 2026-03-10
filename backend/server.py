@@ -27,6 +27,9 @@ from enum import Enum
 # Multi-tenant services
 from services.multi_tenant import tenant_context, FeatureFlagService, tenant_middleware
 
+# Super Admin module (integrated tenant management)
+from super_admin import super_admin_router as platform_admin_router, set_database as set_super_admin_db, create_indexes as create_super_admin_indexes
+
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
@@ -70,6 +73,7 @@ app.middleware("http")(tenant_middleware)
 
 # Enums
 class UserRole(str, Enum):
+    super_admin = "super_admin"
     admin = "admin"
     owner = "owner"
     procurement_manager = "procurement_manager"
@@ -7337,11 +7341,21 @@ async def serve_super_admin_root():
         )
     return {"error": "Super Admin frontend not built"}
 
+# Mount the consolidated platform admin router (new tenant management)
+app.include_router(platform_admin_router)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize super admin module and create indexes"""
+    set_super_admin_db(db)
+    await create_super_admin_indexes()
+    logger.info("Super Admin module initialized with database indexes")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

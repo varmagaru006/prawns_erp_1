@@ -29,7 +29,8 @@ import {
   DollarSign,
   FileText,
   Building2,
-  BookOpen
+  BookOpen,
+  Shield
 } from 'lucide-react';
 
 const Layout = () => {
@@ -70,7 +71,8 @@ const Layout = () => {
     History,
     FileText,
     Building2,
-    BookOpen
+    BookOpen,
+    Shield
   };
 
   const navigation = [
@@ -94,6 +96,7 @@ const Layout = () => {
     { name: 'Audit Trail', path: '/admin/audit-trail', icon: 'History', moduleKey: 'admin' },
     { name: 'Company Settings', path: '/admin/company-settings', icon: 'Building2', moduleKey: 'admin' },
     { name: 'Admin Panel', path: '/admin', icon: 'Settings', moduleKey: 'admin' },
+    { name: 'Super Admin', path: '/super-admin', icon: 'Shield', moduleKey: 'superAdmin' },
     { name: 'Notifications', path: '/notifications', icon: 'Bell', moduleKey: 'notifications' },
   ];
 

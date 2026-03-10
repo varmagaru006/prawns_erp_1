@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
@@ -35,6 +35,16 @@ import { BrandingProvider } from './context/BrandingContext';
 import { Toaster } from './components/ui/sonner';
 import { canAccessDashboard } from './config/moduleConfig';
 import './App.css';
+
+// Lazy load SuperAdminPanel for code splitting
+const SuperAdminPanel = lazy(() => import('./pages/SuperAdminPanel'));
+
+// Loading fallback for lazy components
+const LoadingFallback = () => (
+  <div className="flex items-center justify-center h-64">
+    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600"></div>
+  </div>
+);
 
 const PrivateRoute = ({ children }) => {
   const { user } = useAuth();
@@ -92,6 +102,14 @@ function AppRoutes() {
         <Route path="party-ledger/:partyId" element={<PartyLedger />} />
         <Route path="admin/company-settings" element={<CompanySettings />} />
         <Route path="notifications" element={<Notifications />} />
+        <Route 
+          path="super-admin" 
+          element={
+            <Suspense fallback={<LoadingFallback />}>
+              <SuperAdminPanel />
+            </Suspense>
+          } 
+        />
       </Route>
     </Routes>
   );
