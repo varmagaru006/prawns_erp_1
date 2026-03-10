@@ -53,6 +53,11 @@ const PrivateRoute = ({ children }) => {
 const DashboardRoute = () => {
   const { user } = useAuth();
   
+  // Redirect super_admin to their admin panel
+  if (user?.role === 'super_admin') {
+    return <Navigate to="/platform-admin" replace />;
+  }
+  
   // Check if user has dashboard access
   if (user && canAccessDashboard(user.role)) {
     return <Dashboard />;

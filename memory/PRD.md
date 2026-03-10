@@ -1,16 +1,49 @@
 # Prawn/Aquaculture Export ERP - Product Requirements Document
 
 ## Original Problem Statement
-Build a full-stack, production-ready Prawn/Aquaculture Export ERP web application with a Super Admin Portal (Amendment A2) for multi-tenant SaaS management, including comprehensive Party Ledger Account Module (Amendment A5).
+Build a full-stack, production-ready Prawn/Aquaculture Export ERP web application with a Super Admin Portal for multi-tenant SaaS management. The "Prawn ERP — 3-Feature Upgrade Guide" defines the target architecture: a consolidated, integrated Super Admin panel within the main application.
 
-## Architecture
-- **Super Admin Portal**: React frontend + FastAPI backend + MongoDB (`prawn_erp_super_admin`)
-- **Client ERP**: React frontend + FastAPI backend + MongoDB (multi-tenant with `tenant_id`)
-- **Super Admin API**: Port 8002, proxied via client backend at `/api/super-admin`
+## Architecture (CURRENT - as of Mar 10, 2026)
+- **Super Admin Panel**: Integrated at `/platform-admin` route in the main React app
+- **Client ERP**: React frontend + FastAPI backend + MongoDB (multi-tenant with `tenant_id`)  
+- **New Super Admin API**: Routes at `/api/super-admin/*` in `backend/super_admin.py`
+- **Legacy System**: DEPRECATED - old `super-admin-api` (port 8002) and `super-admin-frontend` (port 3001) are stopped and disabled
 
 ## What's Been Implemented
 
-### Session Date: Mar 2, 2026
+### Session Date: Mar 10, 2026
+
+#### Feature: New Integrated Super Admin Panel ✅ COMPLETED
+
+**Issue**: New Super Admin panel at `/platform-admin` was stuck on a loading spinner.
+
+**Root Cause**: `try/finally` was missing from `loadData` in `SuperAdminPanel.js`. In React 18 StrictMode, `useEffect` runs twice (mount → cleanup → remount). Without `try/finally`, if `Promise.all` rejected or an edge case occurred, `setLoading(false)` was never called.
+
+**Fix Applied**:
+1. ✅ Added `try/finally` to `loadData` in `SuperAdminPanel.js` to ensure `setLoading(false)` always runs
+2. ✅ Removed lazy loading for `SuperAdminPanel` in `App.js` (was causing additional delay)
+3. ✅ Fixed `DashboardRoute` in `App.js` to redirect `super_admin` role to `/platform-admin` after login
+4. ✅ Added `data-testid` attributes to key panel elements
+
+**Files Modified**:
+- `/app/frontend/src/pages/SuperAdminPanel.js` - Fixed loading state management
+- `/app/frontend/src/App.js` - Removed lazy loading, fixed DashboardRoute redirect
+
+---
+
+#### Feature: Deprecated Legacy Super Admin System ✅ COMPLETED
+
+**Actions Taken**:
+1. ✅ Stopped `superadmin` (port 8002) and `super-admin-frontend` (port 3001) supervisor services
+2. ✅ Disabled autostart in supervisor configs
+3. ✅ Removed all `/api/sa/*` legacy proxy routes from `server.py` (~500 lines removed)
+4. ✅ Removed old super-admin frontend static file serving from `server.py`
+
+**Result**: Single, unified Super Admin panel at `/platform-admin`. No routing conflicts.
+
+---
+
+
 
 #### Bug Fix: Super Admin Portal Functionality ✅ COMPLETED
 
@@ -163,11 +196,30 @@ Available features that can be toggled per client:
 
 ## Key Technical Notes
 
-### Super Admin API Routing
-- Super Admin API runs on port 8002
-- Client backend proxies requests from `/api/super-admin/*` to `http://localhost:8002/*`
-- Frontend uses `VITE_API_URL=/api/super-admin` for Super Admin portal
+### Super Admin Panel (Integrated - Mar 10, 2026)
+- Route: `/platform-admin` in the main React app
+- Super admin login → auto-redirected to `/platform-admin` 
+- Backend: `/api/super-admin/*` routes in `backend/super_admin.py`
+- Authentication: JWT with `role: super_admin` in DB (NOT `tenant_id` in JWT - that's a known quirk)
+- Feature flags stored in `tenants.feature_flags` object (not separate collection)
+
+### Legacy System (DEPRECATED)
+- Old `super-admin-api` (port 8002) and `super-admin-frontend` (port 3001) are stopped
+- Supervisor autostart disabled for both services
+- Old `/api/sa/*` proxy routes removed from `server.py`
+- Old directories `/app/super-admin-api/` and `/app/super-admin-frontend/` kept for reference
 
 ### MongoDB ObjectId Handling
 - Always remove `_id` from documents before returning in API responses
 - Use `client.pop("_id", None)` after `insert_one()` operations
+
+## Prioritized Backlog
+
+### P1 - In Progress/Next
+- Performance optimizations (DB indexing, API pagination, frontend lazy loading) per Upgrade Guide
+- Financial Year Carry-Forward UI
+
+### P2 - Upcoming
+- Refactor monolithic `server.py` into modular FastAPI structure
+- Amendment A2 features (activity logs, usage snapshots)
+- User impersonation flow from new Super Admin panel (currently only in legacy system)
