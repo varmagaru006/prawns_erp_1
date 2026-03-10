@@ -60,7 +60,7 @@
 
 ## Quick Start Guide
 
-1. **Go to:** https://erp-admin-upgrade.preview.emergentagent.com
+1. **Go to:** https://erp-migration-5.preview.emergentagent.com
 2. **Choose a role** from the list above
 3. **Login** with the corresponding email and password
 4. **Explore** the modules based on your role access
@@ -101,5 +101,5 @@
 
 For access issues or password reset, contact your system administrator.
 
-**System URL:** https://erp-admin-upgrade.preview.emergentagent.com
+**System URL:** https://erp-migration-5.preview.emergentagent.com
 **Status:** ✅ Active and Running

@@ -5,7 +5,7 @@
 - **Full credentials**: See /app/TEST_CREDENTIALS.md
 
 ## App URL
-https://erp-admin-upgrade.preview.emergentagent.com
+https://erp-migration-5.preview.emergentagent.com
 
 ---
 

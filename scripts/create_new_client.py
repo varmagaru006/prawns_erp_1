@@ -171,7 +171,7 @@ To enable more features:
   2. Click "Manage" on your client
   3. Toggle the features you want to enable
 
-Login URL: https://erp-admin-upgrade.preview.emergentagent.com/login
+Login URL: https://erp-migration-5.preview.emergentagent.com/login
 """)
 
 if __name__ == "__main__":

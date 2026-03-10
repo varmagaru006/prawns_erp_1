@@ -76,12 +76,56 @@ const SuperAdminPanel = () => {
     { code: 'admin', name: 'Admin Panel', description: 'Administrative functions' }
   ];
 
+  // Load data on mount
+  useEffect(() => {
+    const controller = new AbortController();
+    let cancelled = false;
+    
+    const fetchData = async () => {
+      console.log('SuperAdminPanel: Starting data load...');
+      setLoading(true);
+      
+      try {
+        // Load tenants
+        console.log('Loading tenants from:', `${API}/super-admin/tenants`);
+        const [tenantsRes, metricsRes] = await Promise.all([
+          axios.get(`${API}/super-admin/tenants`, { signal: controller.signal }),
+          axios.get(`${API}/super-admin/metrics`, { signal: controller.signal })
+        ]);
+        
+        if (!cancelled) {
+          console.log('Tenants loaded:', tenantsRes.data?.length || 0);
+          console.log('Metrics loaded:', metricsRes.data);
+          setTenants(tenantsRes.data || []);
+          setMetrics(metricsRes.data);
+        }
+      } catch (error) {
+        if (!cancelled && error.name !== 'CanceledError') {
+          console.error('Failed to load data:', error);
+          toast.error('Failed to load data');
+        }
+      } finally {
+        if (!cancelled) {
+          console.log('SuperAdminPanel: Data load complete, setting loading to false');
+          setLoading(false);
+        }
+      }
+    };
+    
+    fetchData();
+    
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, []); // Empty dependency - only run on mount
+  
   const loadTenants = useCallback(async () => {
     try {
       const response = await axios.get(`${API}/super-admin/tenants`);
-      setTenants(response.data);
+      setTenants(response.data || []);
     } catch (error) {
-      if (error.code !== 'ERR_CANCELED') toast.error('Failed to load tenants');
+      if (error.name !== 'CanceledError') toast.error('Failed to load tenants');
     }
   }, []);
 
@@ -90,21 +134,9 @@ const SuperAdminPanel = () => {
       const response = await axios.get(`${API}/super-admin/metrics`);
       setMetrics(response.data);
     } catch (error) {
-      if (error.code !== 'ERR_CANCELED') console.error('Failed to load metrics:', error);
+      if (error.name !== 'CanceledError') console.error('Failed to load metrics:', error);
     }
   }, []);
-
-  useEffect(() => {
-    const loadData = async () => {
-      setLoading(true);
-      try {
-        await Promise.all([loadTenants(), loadMetrics()]);
-      } finally {
-        setLoading(false);
-      }
-    };
-    loadData();
-  }, [loadTenants, loadMetrics]);
 
   const handleCreateTenant = async () => {
     try {

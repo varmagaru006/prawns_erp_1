@@ -493,6 +493,286 @@ async def get_tenant_features_public(tenant_id: str):
     }
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Legacy Compatibility Endpoints (for old super-admin-frontend)
+# These map the old API structure to the new backend
+# ══════════════════════════════════════════════════════════════════════════════
+
+SUBSCRIPTION_PLANS = [
+    {"id": "starter", "name": "Starter", "price": 0, "max_users": 5, "features": ["procurement", "sales"]},
+    {"id": "professional", "name": "Professional", "price": 49, "max_users": 20, "features": ["procurement", "sales", "preprocessing", "coldStorage", "accounts"]},
+    {"id": "enterprise", "name": "Enterprise", "price": 99, "max_users": -1, "features": ["*"]},
+]
+
+FEATURE_REGISTRY = [
+    {"code": "procurement", "name": "Procurement", "description": "Lot purchases and procurement management"},
+    {"code": "preprocessing", "name": "Preprocessing", "description": "Pre-processing stages"},
+    {"code": "coldStorage", "name": "Cold Storage", "description": "Cold storage management"},
+    {"code": "production", "name": "Production", "description": "Production processing"},
+    {"code": "qualityControl", "name": "Quality Control", "description": "QC checks and reports"},
+    {"code": "sales", "name": "Sales", "description": "Sales orders and invoicing"},
+    {"code": "accounts", "name": "Accounts", "description": "Financial accounts and ledger"},
+    {"code": "wastageDashboard", "name": "Wastage Dashboard", "description": "Wastage tracking"},
+    {"code": "yieldBenchmarks", "name": "Yield Benchmarks", "description": "Yield analysis"},
+    {"code": "marketRates", "name": "Market Rates", "description": "Live market rates"},
+    {"code": "purchaseInvoiceDashboard", "name": "Purchase Invoice Dashboard", "description": "Invoice management"},
+    {"code": "partyLedger", "name": "Party Ledger", "description": "Party ledger accounts"},
+    {"code": "admin", "name": "Admin Panel", "description": "Admin management panel"},
+]
+
+
+def _tenant_to_client(tenant: dict) -> dict:
+    """Convert tenant doc to client format expected by old frontend"""
+    return {
+        "id": tenant.get("id"),
+        "tenant_id": tenant.get("id"),
+        "name": tenant.get("name"),
+        "business_name": tenant.get("name"),
+        "plan": tenant.get("plan", "starter"),
+        "contact_name": tenant.get("contact_name", ""),
+        "contact_email": tenant.get("contact_email", ""),
+        "is_active": tenant.get("is_active", True),
+        "feature_flags": tenant.get("feature_flags", {}),
+        "user_count": tenant.get("user_count", 0),
+        "created_at": tenant.get("created_at", ""),
+        "updated_at": tenant.get("updated_at", ""),
+    }
+
+
+@super_admin_router.get("/clients")
+async def legacy_list_clients(current_admin = Depends(get_current_super_admin)):
+    """Legacy: List all clients (maps to tenants)"""
+    tenants = await db.tenants.find({}, {"_id": 0}).to_list(1000)
+    clients = []
+    for t in tenants:
+        user_count = await db.users.count_documents({"tenant_id": t["id"], "role": {"$ne": "super_admin"}})
+        t["user_count"] = user_count
+        clients.append(_tenant_to_client(t))
+    return clients
+
+
+@super_admin_router.get("/clients/{client_id}")
+async def legacy_get_client(client_id: str, current_admin = Depends(get_current_super_admin)):
+    """Legacy: Get a specific client"""
+    tenant = await db.tenants.find_one({"id": client_id}, {"_id": 0})
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Client not found")
+    user_count = await db.users.count_documents({"tenant_id": client_id, "role": {"$ne": "super_admin"}})
+    tenant["user_count"] = user_count
+    return _tenant_to_client(tenant)
+
+
+@super_admin_router.post("/clients")
+async def legacy_create_client(data: dict, current_admin = Depends(get_current_super_admin)):
+    """Legacy: Create a new client (maps to create tenant)"""
+    tenant_id = data.get("tenant_id") or data.get("id") or f"cli_{str(uuid.uuid4())[:8]}"
+    name = data.get("name") or data.get("business_name", "")
+    plan = data.get("plan", "starter")
+    contact_name = data.get("contact_name") or data.get("admin_name", "Admin")
+    contact_email = data.get("contact_email") or data.get("admin_email", "")
+    admin_password = data.get("admin_password", "Admin123!")
+    feature_flags = data.get("feature_flags", {
+        "procurement": True, "sales": True, "preprocessing": True,
+        "coldStorage": True, "production": True, "qualityControl": True,
+        "accounts": True, "wastageDashboard": True, "yieldBenchmarks": True,
+        "marketRates": True, "purchaseInvoiceDashboard": True, "partyLedger": True
+    })
+
+    if not name or not contact_email:
+        raise HTTPException(status_code=400, detail="name and contact_email are required")
+
+    existing = await db.tenants.find_one({"id": tenant_id})
+    if existing:
+        raise HTTPException(status_code=400, detail="Tenant ID already exists")
+
+    now = datetime.now(timezone.utc).isoformat()
+    tenant_doc = {
+        "id": tenant_id, "name": name, "slug": tenant_id,
+        "plan": plan, "contact_name": contact_name, "contact_email": contact_email,
+        "is_active": True, "feature_flags": feature_flags,
+        "created_at": now, "updated_at": now,
+        "created_by": current_admin.get("email")
+    }
+    await db.tenants.insert_one(tenant_doc)
+    tenant_doc.pop("_id", None)
+
+    # Create admin user
+    user_doc = {
+        "id": str(uuid.uuid4()), "email": contact_email, "name": contact_name,
+        "password": hash_password(admin_password), "role": "admin",
+        "tenant_id": tenant_id, "is_active": True, "created_at": now
+    }
+    await db.users.insert_one(user_doc)
+    user_doc.pop("_id", None)
+    user_doc.pop("password", None)
+
+    return {"status": "success", "client": _tenant_to_client(tenant_doc), "admin_user": user_doc}
+
+
+@super_admin_router.put("/clients/{client_id}")
+async def legacy_update_client(client_id: str, data: dict, current_admin = Depends(get_current_super_admin)):
+    """Legacy: Update a client"""
+    tenant = await db.tenants.find_one({"id": client_id})
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Client not found")
+    update = {k: v for k, v in data.items() if v is not None and k not in ["id", "_id"]}
+    update["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.tenants.update_one({"id": client_id}, {"$set": update})
+    updated = await db.tenants.find_one({"id": client_id}, {"_id": 0})
+    return _tenant_to_client(updated)
+
+
+@super_admin_router.delete("/clients/{client_id}")
+async def legacy_delete_client(client_id: str, current_admin = Depends(get_current_super_admin)):
+    """Legacy: Suspend/deactivate a client"""
+    await db.tenants.update_one(
+        {"id": client_id},
+        {"$set": {"is_active": False, "updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    return {"status": "success", "message": "Client suspended"}
+
+
+@super_admin_router.post("/clients/{client_id}/activate")
+async def legacy_activate_client(client_id: str, current_admin = Depends(get_current_super_admin)):
+    """Legacy: Activate a client"""
+    await db.tenants.update_one(
+        {"id": client_id},
+        {"$set": {"is_active": True, "updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    return {"status": "success", "message": "Client activated"}
+
+
+@super_admin_router.get("/clients/{client_id}/features")
+async def legacy_get_client_features(client_id: str, current_admin = Depends(get_current_super_admin)):
+    """Legacy: Get feature flags for a client"""
+    tenant = await db.tenants.find_one({"id": client_id}, {"_id": 0, "feature_flags": 1})
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Client not found")
+    flags = tenant.get("feature_flags", {})
+    return [{"feature_code": k, "is_enabled": v} for k, v in flags.items()]
+
+
+@super_admin_router.post("/clients/{client_id}/features/toggle")
+async def legacy_toggle_feature(client_id: str, data: dict, current_admin = Depends(get_current_super_admin)):
+    """Legacy: Toggle a single feature flag"""
+    feature_code = data.get("feature_code")
+    is_enabled = data.get("is_enabled")
+    if not feature_code or is_enabled is None:
+        raise HTTPException(status_code=400, detail="feature_code and is_enabled required")
+    now = datetime.now(timezone.utc).isoformat()
+    await db.tenants.update_one(
+        {"id": client_id},
+        {"$set": {f"feature_flags.{feature_code}": is_enabled, "updated_at": now}}
+    )
+    await db.feature_flags.update_one(
+        {"tenant_id": client_id, "feature_code": feature_code},
+        {"$set": {"is_enabled": is_enabled, "updated_at": now}},
+        upsert=True
+    )
+    return {"status": "success", "feature_code": feature_code, "is_enabled": is_enabled}
+
+
+@super_admin_router.post("/clients/{client_id}/bulk-features")
+async def legacy_bulk_features(client_id: str, data: dict, current_admin = Depends(get_current_super_admin)):
+    """Legacy: Bulk update feature flags"""
+    features = data.get("features", {})
+    now = datetime.now(timezone.utc).isoformat()
+    for code, enabled in features.items():
+        await db.tenants.update_one(
+            {"id": client_id},
+            {"$set": {f"feature_flags.{code}": enabled, "updated_at": now}}
+        )
+    return {"status": "success", "message": "Features updated"}
+
+
+@super_admin_router.get("/subscription-plans")
+async def legacy_get_plans(current_admin = Depends(get_current_super_admin)):
+    """Legacy: Get available subscription plans"""
+    return SUBSCRIPTION_PLANS
+
+
+@super_admin_router.get("/feature-registry")
+async def legacy_get_feature_registry(current_admin = Depends(get_current_super_admin)):
+    """Legacy: Get feature registry"""
+    return FEATURE_REGISTRY
+
+
+@super_admin_router.get("/announcements")
+async def legacy_get_announcements(current_admin = Depends(get_current_super_admin)):
+    """Legacy: Get announcements"""
+    announcements = await db.announcements.find({}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return announcements
+
+
+@super_admin_router.post("/announcements")
+async def legacy_create_announcement(data: dict, current_admin = Depends(get_current_super_admin)):
+    """Legacy: Create an announcement"""
+    doc = {
+        "id": str(uuid.uuid4()),
+        "title": data.get("title", ""),
+        "message": data.get("message", ""),
+        "type": data.get("type", "info"),
+        "created_by": current_admin.get("email"),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "is_active": True
+    }
+    await db.announcements.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@super_admin_router.delete("/announcements/{announcement_id}")
+async def legacy_delete_announcement(announcement_id: str, current_admin = Depends(get_current_super_admin)):
+    """Legacy: Delete an announcement"""
+    await db.announcements.delete_one({"id": announcement_id})
+    return {"status": "success"}
+
+
+@super_admin_router.post("/clients/{client_id}/impersonate")
+async def legacy_impersonate_client(client_id: str, data: dict, current_admin = Depends(get_current_super_admin)):
+    """Legacy: Start impersonation session for a client"""
+    tenant = await db.tenants.find_one({"id": client_id}, {"_id": 0})
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Client not found")
+    admin_user = await db.users.find_one(
+        {"tenant_id": client_id, "role": "admin"},
+        {"_id": 0, "password": 0}
+    )
+    if not admin_user:
+        raise HTTPException(status_code=404, detail="No admin user found for this client")
+
+    duration_mins = data.get("duration_mins", 60)
+    token_data = {
+        "sub": admin_user["email"],
+        "tenant_id": client_id,
+        "is_impersonation": True,
+        "impersonator": current_admin.get("email"),
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=duration_mins)
+    }
+    impersonation_token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
+    session_id = str(uuid.uuid4())
+
+    return {
+        "session_id": session_id,
+        "token": impersonation_token,
+        "user": admin_user,
+        "tenant": _tenant_to_client(tenant),
+        "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=duration_mins)).isoformat()
+    }
+
+
+@super_admin_router.post("/impersonation/{session_id}/end")
+async def legacy_end_impersonation(session_id: str, current_admin = Depends(get_current_super_admin)):
+    """Legacy: End impersonation session"""
+    return {"status": "success", "message": "Impersonation ended"}
+
+
+@super_admin_router.get("/impersonation/active")
+async def legacy_get_active_impersonations(current_admin = Depends(get_current_super_admin)):
+    """Legacy: Get active impersonation sessions"""
+    return []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Database Indexes (call on startup)
 # ══════════════════════════════════════════════════════════════════════════════
 
