@@ -161,7 +161,14 @@ async def super_admin_login(credentials: dict):
 # Bootstrap Super Admin (One-time setup)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@super_admin_router.post("/create-super-admin")
+@super_admin_router.get("/auth/me")
+async def super_admin_me(current_admin = Depends(get_current_super_admin)):
+    """Get current super admin profile - for old frontend compatibility"""
+    user_response = {k: v for k, v in current_admin.items() if k != "password"}
+    return user_response
+
+
+
 async def create_super_admin(data: SuperAdminCreate):
     """
     Bootstrap the first super admin user.
