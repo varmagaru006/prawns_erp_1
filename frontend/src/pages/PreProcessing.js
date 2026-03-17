@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { toast } from 'sonner';
+import { formatLoadErrorMessage } from '../utils/apiError';
 import { Plus, AlertTriangle, TrendingUp, TrendingDown } from 'lucide-react';
 
 const PreProcessing = () => {
@@ -62,7 +63,7 @@ const PreProcessing = () => {
       setWastageData(wastageMap);
       
     } catch (error) {
-      toast.error('Failed to load data');
+      toast.error(formatLoadErrorMessage('Failed to load data', error));
     } finally {
       setLoading(false);
     }

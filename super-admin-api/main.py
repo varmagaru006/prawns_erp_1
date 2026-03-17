@@ -14,10 +14,87 @@ from jose import JWTError, jwt
 import os
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import OperationFailure
 import uuid
 import hashlib
 
 load_dotenv()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Feature registry (keep in sync with backend/feature_registry.py)
+# ══════════════════════════════════════════════════════════════════════════════
+FEATURE_REGISTRY = [
+    {"code": "dashboard", "name": "Dashboard", "description": "Main dashboard and analytics", "module": "Core", "default_enabled": True},
+    {"code": "procurement", "name": "Procurement", "description": "Incoming prawn lots management", "module": "Procurement", "default_enabled": True},
+    {"code": "agents", "name": "Agents & Vendors", "description": "Vendor and agent management", "module": "Procurement", "default_enabled": True},
+    {"code": "preprocessing", "name": "Pre-Processing", "description": "Batch processing and yield tracking", "module": "Processing", "default_enabled": True},
+    {"code": "production", "name": "Production", "description": "Production orders and conversion", "module": "Production", "default_enabled": True},
+    {"code": "qualityControl", "name": "Quality Control", "description": "QC inspections and quality assurance", "module": "Quality", "default_enabled": True},
+    {"code": "coldStorage", "name": "Cold Storage", "description": "Inventory and temperature monitoring", "module": "Storage", "default_enabled": True},
+    {"code": "finishedGoods", "name": "Finished Goods", "description": "Ready inventory for dispatch", "module": "Storage", "default_enabled": True},
+    {"code": "sales", "name": "Sales & Dispatch", "description": "Buyer management and orders", "module": "Sales", "default_enabled": True},
+    {"code": "accounts", "name": "Accounts", "description": "Wage bills and payments", "module": "Finance", "default_enabled": True},
+    {"code": "purchaseInvoiceDashboard", "name": "Purchase Invoice Dashboard", "description": "Invoice metrics, quick preview, and bulk export", "module": "Finance", "default_enabled": True},
+    {"code": "parties", "name": "Party Master", "description": "Party/vendor master data and management", "module": "Finance", "default_enabled": True},
+    {"code": "partyLedger", "name": "Party Ledger", "description": "Party ledger and FY-wise accounts", "module": "Finance", "default_enabled": True},
+    {"code": "wastageDashboard", "name": "Wastage Dashboard", "description": "Yield tracking and revenue loss monitoring", "module": "Analytics", "default_enabled": False},
+    {"code": "yieldBenchmarks", "name": "Yield Benchmarks", "description": "Configure wastage thresholds", "module": "Analytics", "default_enabled": False},
+    {"code": "marketRates", "name": "Market Rates", "description": "Configure pricing for revenue calculations", "module": "Analytics", "default_enabled": False},
+    {"code": "admin", "name": "Admin Panel", "description": "Company settings, audit trail, attachments", "module": "Admin", "default_enabled": True},
+    {"code": "notifications", "name": "Notifications", "description": "System notifications", "module": "Core", "default_enabled": True},
+    {"code": "superAdmin", "name": "Super Admin", "description": "Platform-wide tenant and feature management", "module": "Admin", "default_enabled": False},
+]
+
+
+def _get_default_flags() -> Dict[str, bool]:
+    return {f["code"]: f["default_enabled"] for f in FEATURE_REGISTRY}
+
+
+def _merge_flags_with_registry(db_flags: Dict[str, bool]) -> Dict[str, bool]:
+    merged = dict(_get_default_flags())
+    for code, enabled in db_flags.items():
+        if code in merged:
+            merged[code] = bool(enabled)
+    return merged
+
+
+# Redis (optional): invalidate client ERP's feature-flag cache when we toggle so changes apply immediately
+def _invalidate_client_flags_cache(tenant_id: str) -> None:
+    """Invalidate the client ERP's Redis cache for this tenant so toggled features apply immediately."""
+    try:
+        import redis
+        r = redis.Redis(
+            host=os.getenv("REDIS_HOST", "localhost"),
+            port=int(os.getenv("REDIS_PORT", "6379")),
+            db=0,
+            decode_responses=True,
+        )
+        r.delete(f"flags:{tenant_id}")
+        # Also delete per-feature keys if they exist (pattern: feature:{tenant_id}:*)
+        for key in r.scan_iter(match=f"feature:{tenant_id}:*", count=100):
+            r.delete(key)
+    except Exception:
+        pass  # Redis optional; client will see change after cache TTL (e.g. 60s)
+
+# Default client ERP URL for push (when client has no webhook_url)
+CLIENT_ERP_URL = os.getenv("CLIENT_ERP_URL", "http://localhost:8000")
+
+async def _push_features_to_client_erp(tenant_id: str, client: dict) -> None:
+    """
+    Push current feature flags to the client ERP via HTTP so it updates its DB and invalidates its Redis.
+    Sends full merged set (registry + DB) so client always has every feature code.
+    """
+    try:
+        import httpx
+        cursor = client_db.feature_flags.find({"tenant_id": tenant_id}, {"_id": 0, "feature_code": 1, "is_enabled": 1})
+        db_flags = {doc["feature_code"]: doc["is_enabled"] for doc in await cursor.to_list(length=1000)}
+        features = _merge_flags_with_registry(db_flags)
+        base_url = (client.get("webhook_url") or "").split("/internal")[0].rstrip("/") or CLIENT_ERP_URL
+        push_url = f"{base_url}/internal/saas-hook/features"
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            await http.post(push_url, json={"tenant_id": tenant_id, "features": features})
+    except Exception:
+        pass  # Don't fail the toggle if push fails (e.g. client ERP not running)
 
 # MongoDB connection
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
@@ -92,6 +169,11 @@ class FeatureToggle(BaseModel):
     feature_code: str
     is_enabled: bool
 
+class BulkFeaturesUpdate(BaseModel):
+    """Format sent by Super Admin frontend: list of codes + one is_enabled for all."""
+    feature_codes: List[str]
+    is_enabled: bool
+
 class LinkRequest(BaseModel):
     webhook_url: Optional[str] = None
 
@@ -116,27 +198,46 @@ class AnnouncementCreate(BaseModel):
 
 @app.on_event("startup")
 async def startup():
-    # Create indexes
-    await db.super_admins.create_index("email", unique=True)
-    await db.clients.create_index("id", unique=True)
-    await db.clients.create_index("tenant_id", unique=True)
-    await db.provisioned_users.create_index([("client_id", 1), ("email", 1)], unique=True)
-    await db.feature_flags.create_index([("client_id", 1), ("feature_code", 1)], unique=True)
-    await db.announcements.create_index("created_at")
-    
-    # Ensure default super admin exists
-    existing = await db.super_admins.find_one({"email": "superadmin@prawnrp.com"})
+    try:
+        # Create indexes
+        await db.super_admins.create_index("email", unique=True)
+        await db.clients.create_index("id", unique=True)
+        await db.clients.create_index("tenant_id", unique=True)
+        await db.provisioned_users.create_index([("client_id", 1), ("email", 1)], unique=True)
+        await db.feature_flags.create_index([("client_id", 1), ("feature_code", 1)], unique=True)
+        await db.announcements.create_index("created_at")
+    except OperationFailure as e:
+        if "authentication" in str(e).lower() or "unauthorized" in str(e).lower():
+            raise RuntimeError(
+                "MongoDB requires authentication. Either:\n"
+                "  1. Set MONGO_URL in .env with credentials, e.g.:\n"
+                "     MONGO_URL=mongodb://username:password@localhost:27017\n"
+                "  2. Or run MongoDB without auth for local dev (default for Homebrew)."
+            ) from e
+        raise
+
+    # Ensure default super admin exists and password is verifiable by this process (fixes bcrypt mismatch)
+    default_email = "superadmin@prawnrp.com"
+    default_password = "admin123"
+    fresh_hash = pwd_context.hash(default_password)
+    existing = await db.super_admins.find_one({"email": default_email})
     if not existing:
         await db.super_admins.insert_one({
             "id": str(uuid.uuid4()),
-            "email": "superadmin@prawnrp.com",
-            "password_hash": pwd_context.hash("admin123"),
+            "email": default_email,
+            "password_hash": fresh_hash,
             "name": "Super Administrator",
             "is_active": True,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "last_login_at": None
         })
         print("✅ Created default super admin: superadmin@prawnrp.com / admin123")
+    else:
+        await db.super_admins.update_one(
+            {"email": default_email},
+            {"$set": {"password_hash": fresh_hash, "is_active": True}}
+        )
+        print("✅ Reset default super admin password: superadmin@prawnrp.com / admin123")
     
     # Ensure default subscription plans exist
     plans_count = await db.subscription_plans.count_documents({})
@@ -148,6 +249,31 @@ async def startup():
         ]
         await db.subscription_plans.insert_many(default_plans)
         print("✅ Created default subscription plans")
+    
+    # Seed default client (tenant_id cli_001) so portal shows an existing client
+    existing_client = await db.clients.find_one({"tenant_id": "cli_001"})
+    if not existing_client:
+        subscription_to = datetime.now(timezone.utc) + timedelta(days=365)
+        free_plan = await db.subscription_plans.find_one({"plan_name": "Free"}, {"id": 1})
+        plan_id = free_plan["id"] if free_plan else None
+        default_client = {
+            "id": str(uuid.uuid4()),
+            "tenant_id": "cli_001",
+            "business_name": "Prawn Export Company",
+            "owner_email": "admin@prawnexport.com",
+            "owner_name": "Admin User",
+            "plan_id": plan_id,
+            "subscription_status": "active",
+            "subscription_to": subscription_to.isoformat(),
+            "is_active": True,
+            "api_key_hash": hash_api_key("placeholder"),
+            "link_status": "pending",
+            "branding": {},
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.clients.insert_one(default_client)
+        print("✅ Created default client: Prawn Export Company (tenant_id: cli_001)")
     
     print("✅ MongoDB Super Admin API started")
 
@@ -268,9 +394,22 @@ async def create_client(client_data: ClientCreate, current_admin = Depends(get_c
     }
     
     await db.clients.insert_one(client)
-    
-    # Remove _id from client dict (MongoDB adds it during insert)
     client.pop("_id", None)
+
+    # Seed feature flags (registry defaults) so client ERP and Super Admin UI have full set
+    tenant_id = client_data.tenant_id
+    now_ts = datetime.now(timezone.utc).isoformat()
+    for code, is_enabled in _get_default_flags().items():
+        await db.feature_flags.update_one(
+            {"client_id": client["id"], "feature_code": code},
+            {"$set": {"is_enabled": is_enabled, "updated_at": now_ts}},
+            upsert=True,
+        )
+        await client_db.feature_flags.update_one(
+            {"tenant_id": tenant_id, "feature_code": code},
+            {"$set": {"is_enabled": is_enabled, "updated_at": now_ts}},
+            upsert=True,
+        )
     
     # Log activity
     activity_log = {
@@ -413,42 +552,23 @@ async def update_client_branding(client_id: str, branding: BrandingUpdate, curre
 
 @app.get("/clients/{client_id}/features")
 async def get_client_features(client_id: str, current_admin = Depends(get_current_super_admin)):
-    """Get all feature flags for a client, merged with feature registry"""
-    # Get features from registry
-    feature_registry = [
-        {"code": "procurement", "name": "Procurement Module", "description": "Manage prawn procurement", "module": "Procurement"},
-        {"code": "preprocessing", "name": "Pre-Processing", "description": "Processing operations", "module": "Processing"},
-        {"code": "coldStorage", "name": "Cold Storage", "description": "Cold storage management", "module": "Storage"},
-        {"code": "production", "name": "Production", "description": "Production tracking", "module": "Production"},
-        {"code": "qualityControl", "name": "Quality Control", "description": "Quality checks", "module": "Quality"},
-        {"code": "sales", "name": "Sales & Dispatch", "description": "Sales and dispatch", "module": "Sales"},
-        {"code": "accounts", "name": "Accounts & Billing", "description": "Financial management", "module": "Finance"},
-        {"code": "wastageDashboard", "name": "Wastage Dashboard", "description": "Track wastage", "module": "Analytics"},
-        {"code": "yieldBenchmarks", "name": "Yield Benchmarks", "description": "Yield tracking", "module": "Analytics"},
-        {"code": "marketRates", "name": "Market Rates", "description": "Market price tracking", "module": "Analytics"},
-        {"code": "purchaseInvoiceDashboard", "name": "Purchase Invoice Dashboard", "description": "Invoice metrics, quick preview, and bulk export", "module": "Finance"},
-        {"code": "partyLedger", "name": "Party Ledger", "description": "Party master and ledger management", "module": "Finance"},
-        {"code": "admin", "name": "Admin Panel", "description": "Administrative functions", "module": "Admin"}
-    ]
-    
-    # Get existing feature flags from DB
+    """Get all feature flags for a client, merged with feature registry (full list for Super Admin UI)."""
     db_features = await db.feature_flags.find({"client_id": client_id}, {"_id": 0}).to_list(1000)
     db_feature_map = {f["feature_code"]: f for f in db_features}
-    
-    # Merge registry with DB state
+    defaults = _get_default_flags()
     merged_features = []
-    for reg_feature in feature_registry:
-        db_feature = db_feature_map.get(reg_feature["code"])
+    for reg in FEATURE_REGISTRY:
+        code = reg["code"]
+        db_f = db_feature_map.get(code)
         merged_features.append({
-            "feature_code": reg_feature["code"],
-            "feature_name": reg_feature["name"],
-            "description": reg_feature["description"],
-            "module": reg_feature["module"],
-            "is_enabled": db_feature["is_enabled"] if db_feature else False,
-            "updated_at": db_feature.get("updated_at") if db_feature else None,
-            "updated_by": db_feature.get("updated_by") if db_feature else None
+            "feature_code": code,
+            "feature_name": reg["name"],
+            "description": reg["description"],
+            "module": reg["module"],
+            "is_enabled": db_f["is_enabled"] if db_f else defaults.get(code, False),
+            "updated_at": db_f.get("updated_at") if db_f else None,
+            "updated_by": db_f.get("updated_by") if db_f else None,
         })
-    
     return merged_features
 
 @app.post("/clients/{client_id}/features/toggle")
@@ -481,6 +601,11 @@ async def toggle_feature(client_id: str, toggle: FeatureToggle, current_admin = 
         upsert=True
     )
     
+    # Invalidate client ERP's Redis cache so the toggle applies immediately
+    _invalidate_client_flags_cache(tenant_id)
+    # Push to client ERP via HTTP so it updates DB and invalidates its own Redis
+    await _push_features_to_client_erp(tenant_id, client)
+    
     # Log activity
     await db.activity_logs.insert_one({
         "id": str(uuid.uuid4()),
@@ -495,16 +620,17 @@ async def toggle_feature(client_id: str, toggle: FeatureToggle, current_admin = 
 
 @app.post("/clients/{client_id}/bulk-features")
 async def bulk_toggle_features(
-    client_id: str, 
-    features: List[FeatureToggle], 
+    client_id: str,
+    body: BulkFeaturesUpdate,
     current_admin = Depends(get_current_super_admin)
 ):
-    """Toggle multiple features at once"""
+    """Toggle multiple features at once. Accepts { feature_codes: string[], is_enabled: bool }."""
     client = await db.clients.find_one({"id": client_id})
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
     
     tenant_id = client["tenant_id"]
+    features = [FeatureToggle(feature_code=code, is_enabled=body.is_enabled) for code in body.feature_codes]
     
     for feature in features:
         await db.feature_flags.update_one(
@@ -525,6 +651,11 @@ async def bulk_toggle_features(
             }},
             upsert=True
         )
+    
+    # Invalidate client ERP's Redis cache so toggles apply immediately
+    _invalidate_client_flags_cache(tenant_id)
+    # Push to client ERP via HTTP so it updates DB and invalidates its own Redis
+    await _push_features_to_client_erp(tenant_id, client)
     
     return {"status": "success", "message": f"Updated {len(features)} features for tenant {tenant_id}"}
 

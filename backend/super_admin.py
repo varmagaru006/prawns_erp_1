@@ -14,6 +14,11 @@ import jwt
 import uuid
 import os
 
+try:
+    from feature_registry import get_default_flags, merge_flags_with_registry, registry_as_list
+except ImportError:
+    from backend.feature_registry import get_default_flags, merge_flags_with_registry, registry_as_list
+
 # Router - matches the API spec from the guide
 super_admin_router = APIRouter(prefix="/api/super-admin", tags=["Super Admin"])
 
@@ -25,11 +30,18 @@ ALGORITHM = "HS256"
 
 # Database reference (set during app startup)
 db: AsyncIOMotorDatabase = None
+# Feature flag service for cache invalidation (set at startup)
+_feature_service = None
 
 def set_database(database: AsyncIOMotorDatabase):
     """Set the database reference"""
     global db
     db = database
+
+def set_feature_service(service):
+    """Set the feature flag service so we can invalidate cache when features are updated"""
+    global _feature_service
+    _feature_service = service
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Pydantic Models
@@ -53,22 +65,8 @@ class TenantCreate(BaseModel):
     owner_email: EmailStr = Field(..., description="Admin user email")
     owner_password: str = Field(..., description="Admin user password")
     
-    # Step 3: Feature Flags (modules)
-    feature_flags: Dict[str, bool] = Field(default_factory=lambda: {
-        "procurement": True,
-        "preprocessing": True,
-        "coldStorage": True,
-        "production": True,
-        "qualityControl": True,
-        "sales": True,
-        "accounts": True,
-        "wastageDashboard": False,
-        "yieldBenchmarks": False,
-        "marketRates": False,
-        "purchaseInvoiceDashboard": True,
-        "partyLedger": True,
-        "admin": True
-    })
+    # Step 3: Feature Flags (modules) - from shared registry
+    feature_flags: Dict[str, bool] = Field(default_factory=get_default_flags)
 
 class TenantUpdate(BaseModel):
     name: Optional[str] = None
@@ -366,7 +364,12 @@ async def update_tenant_features(
             }},
             upsert=True
         )
-    
+    # Invalidate feature-flag cache so client portal gets new flags on next /auth/me
+    if _feature_service:
+        try:
+            _feature_service.invalidate_cache(tenant_id)
+        except Exception:
+            pass
     return {"status": "success", "message": "Feature flags updated"}
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -459,38 +462,20 @@ async def get_platform_metrics(current_admin = Depends(get_current_super_admin))
 async def get_tenant_features_public(tenant_id: str):
     """
     Get feature flags for a tenant (used by client app).
-    No authentication required.
+    Returns full set from registry; DB values override defaults.
     """
-    # First try tenants collection
+    raw: Dict[str, bool] = {}
     tenant = await db.tenants.find_one({"id": tenant_id}, {"_id": 0, "feature_flags": 1})
     if tenant and tenant.get("feature_flags"):
-        return tenant["feature_flags"]
-    
-    # Fallback to feature_flags collection
-    flags = await db.feature_flags.find(
-        {"tenant_id": tenant_id},
-        {"_id": 0, "feature_code": 1, "is_enabled": 1}
-    ).to_list(100)
-    
-    if flags:
-        return {f["feature_code"]: f["is_enabled"] for f in flags}
-    
-    # Default: all features enabled for legacy/unknown tenants
-    return {
-        "procurement": True,
-        "preprocessing": True,
-        "coldStorage": True,
-        "production": True,
-        "qualityControl": True,
-        "sales": True,
-        "accounts": True,
-        "wastageDashboard": True,
-        "yieldBenchmarks": True,
-        "marketRates": True,
-        "purchaseInvoiceDashboard": True,
-        "partyLedger": True,
-        "admin": True
-    }
+        raw = tenant["feature_flags"]
+    else:
+        flags = await db.feature_flags.find(
+            {"tenant_id": tenant_id},
+            {"_id": 0, "feature_code": 1, "is_enabled": 1}
+        ).to_list(100)
+        if flags:
+            raw = {f["feature_code"]: f["is_enabled"] for f in flags}
+    return merge_flags_with_registry(raw)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Legacy Compatibility Endpoints (for old super-admin-frontend)
@@ -503,21 +488,8 @@ SUBSCRIPTION_PLANS = [
     {"id": "enterprise", "name": "Enterprise", "price": 99, "max_users": -1, "features": ["*"]},
 ]
 
-FEATURE_REGISTRY = [
-    {"code": "procurement", "name": "Procurement", "description": "Lot purchases and procurement management"},
-    {"code": "preprocessing", "name": "Preprocessing", "description": "Pre-processing stages"},
-    {"code": "coldStorage", "name": "Cold Storage", "description": "Cold storage management"},
-    {"code": "production", "name": "Production", "description": "Production processing"},
-    {"code": "qualityControl", "name": "Quality Control", "description": "QC checks and reports"},
-    {"code": "sales", "name": "Sales", "description": "Sales orders and invoicing"},
-    {"code": "accounts", "name": "Accounts", "description": "Financial accounts and ledger"},
-    {"code": "wastageDashboard", "name": "Wastage Dashboard", "description": "Wastage tracking"},
-    {"code": "yieldBenchmarks", "name": "Yield Benchmarks", "description": "Yield analysis"},
-    {"code": "marketRates", "name": "Market Rates", "description": "Live market rates"},
-    {"code": "purchaseInvoiceDashboard", "name": "Purchase Invoice Dashboard", "description": "Invoice management"},
-    {"code": "partyLedger", "name": "Party Ledger", "description": "Party ledger accounts"},
-    {"code": "admin", "name": "Admin Panel", "description": "Admin management panel"},
-]
+# Use shared feature registry (backend/feature_registry.py)
+FEATURE_REGISTRY = registry_as_list()
 
 
 def _tenant_to_client(tenant: dict) -> dict:
@@ -570,12 +542,7 @@ async def legacy_create_client(data: dict, current_admin = Depends(get_current_s
     contact_name = data.get("contact_name") or data.get("admin_name", "Admin")
     contact_email = data.get("contact_email") or data.get("admin_email", "")
     admin_password = data.get("admin_password", "Admin123!")
-    feature_flags = data.get("feature_flags", {
-        "procurement": True, "sales": True, "preprocessing": True,
-        "coldStorage": True, "production": True, "qualityControl": True,
-        "accounts": True, "wastageDashboard": True, "yieldBenchmarks": True,
-        "marketRates": True, "purchaseInvoiceDashboard": True, "partyLedger": True
-    })
+    feature_flags = data.get("feature_flags", get_default_flags())
 
     if not name or not contact_email:
         raise HTTPException(status_code=400, detail="name and contact_email are required")

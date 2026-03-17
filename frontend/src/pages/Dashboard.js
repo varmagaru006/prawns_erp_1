@@ -3,6 +3,7 @@ import axios from 'axios';
 import { API } from '../context/AuthContext';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { toast } from 'sonner';
+import { formatLoadErrorMessage } from '../utils/apiError';
 import { Package, Weight, DollarSign, Factory, Box, AlertTriangle, TrendingUp, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
@@ -16,45 +17,54 @@ const Dashboard = () => {
   useEffect(() => {
     fetchData();
     
-    // Auto-refresh every 30 seconds
+    // Auto-refresh every 2 minutes (less load but keeps data reasonably fresh)
     const interval = setInterval(() => {
       fetchData();
-    }, 30000);
+    }, 120000);
     
     return () => clearInterval(interval);
   }, []);
 
   const fetchData = async () => {
     try {
-      const [statsRes, lotsRes, batchesRes, pricesRes] = await Promise.all([
-        axios.get(`${API}/dashboard/stats`),
-        axios.get(`${API}/procurement/lots`),
-        axios.get(`${API}/preprocessing/batches`),
-        axios.get(`${API}/live-prices`)
-      ]);
-      setStats(statsRes.data);
-      setLots(lotsRes.data);
-      setBatches(batchesRes.data);
-      setLivePrices(pricesRes.data);
+      let res;
+      if (typeof window !== 'undefined' && window.__dashboardPrefetch) {
+        res = { data: window.__dashboardPrefetch };
+        window.__dashboardPrefetch = null;
+      } else {
+        try {
+          res = await axios.get(`${API}/dashboard/overview`);
+        } catch (overviewErr) {
+        if (overviewErr.response?.status === 404) {
+          const statsRes = await axios.get(`${API}/dashboard/stats`);
+          res = {
+            data: {
+              stats: statsRes.data,
+              lots: [],
+              batches: [],
+              live_prices: [],
+            },
+          };
+        } else {
+          throw overviewErr;
+        }
+      }
+      }
+      setStats(res.data.stats);
+      setLots(res.data.lots || []);
+      setBatches(res.data.batches || []);
+      setLivePrices(res.data.live_prices || []);
     } catch (error) {
-      toast.error('Failed to load dashboard stats');
+      toast.error(formatLoadErrorMessage('Failed to load dashboard stats', error));
     } finally {
       setLoading(false);
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-screen">
-        <div className="relative">
-          <div className="animate-spin rounded-full h-16 w-16 border-b-4 border-blue-600"></div>
-          <div className="absolute top-0 left-0 animate-ping rounded-full h-16 w-16 border-4 border-blue-400 opacity-20"></div>
-        </div>
-      </div>
-    );
-  }
+  // Show dashboard shell + skeleton immediately so layout and sidebar are visible; data fills in when ready
+  const showSkeleton = loading;
 
-  // Prepare chart data
+  // Prepare chart data (safe when stats/lots/batches empty)
   const speciesData = lots.reduce((acc, lot) => {
     const existing = acc.find(item => item.name === lot.species);
     if (existing) {
@@ -164,17 +174,41 @@ const Dashboard = () => {
           <h1 className="text-3xl font-bold text-slate-800 tracking-tight" data-testid="dashboard-title">
             Dashboard Overview
           </h1>
-          <p className="text-slate-600 mt-1">Real-time insights into your aquaculture operations</p>
+          <p className="text-slate-600 mt-1">
+            {showSkeleton ? (
+              <span className="inline-flex items-center gap-2">
+                <span className="animate-pulse bg-slate-200 h-4 w-48 rounded" />
+                Loading…
+              </span>
+            ) : (
+              'Real-time insights into your aquaculture operations'
+            )}
+          </p>
         </div>
         <div className="flex items-center gap-2 text-sm text-slate-500">
-          <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse"></div>
-          Live Data
+          <div className={`h-2 w-2 rounded-full ${showSkeleton ? 'bg-slate-300 animate-pulse' : 'bg-green-500'}`}></div>
+          {showSkeleton ? 'Loading…' : 'Live Data'}
         </div>
       </div>
 
       {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {statCards.map((stat, index) => {
+        {showSkeleton ? (
+          Array.from({ length: 6 }).map((_, i) => (
+            <Card key={i} className="overflow-hidden">
+              <CardHeader className="flex flex-row items-center justify-between pb-2">
+                <div className="space-y-2">
+                  <div className="h-4 w-24 bg-slate-200 rounded animate-pulse" />
+                  <div className="h-8 w-16 bg-slate-200 rounded animate-pulse" />
+                </div>
+                <div className="h-12 w-12 bg-slate-200 rounded-lg animate-pulse" />
+              </CardHeader>
+              <CardContent>
+                <div className="h-3 w-full bg-slate-100 rounded animate-pulse" />
+              </CardContent>
+            </Card>
+          ))
+        ) : statCards.map((stat, index) => {
           const Icon = stat.icon;
           const TrendIcon = stat.trend === 'up' ? ArrowUpRight : stat.trend === 'down' ? ArrowDownRight : TrendingUp;
           
@@ -218,6 +252,33 @@ const Dashboard = () => {
 
       {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {showSkeleton ? (
+          <>
+            <Card className="hover:shadow-lg transition-shadow duration-300">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <div className="h-4 w-12 bg-slate-200 rounded animate-pulse" />
+                  <div className="h-4 w-32 bg-slate-200 rounded animate-pulse" />
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="h-[300px] w-full bg-slate-100 rounded animate-pulse" />
+              </CardContent>
+            </Card>
+            <Card className="hover:shadow-lg transition-shadow duration-300">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <div className="h-4 w-12 bg-slate-200 rounded animate-pulse" />
+                  <div className="h-4 w-40 bg-slate-200 rounded animate-pulse" />
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="h-[300px] w-full bg-slate-100 rounded animate-pulse" />
+              </CardContent>
+            </Card>
+          </>
+        ) : (
+          <>
         {/* Species Distribution */}
         <Card className="hover:shadow-lg transition-shadow duration-300">
           <CardHeader>
@@ -283,7 +344,6 @@ const Dashboard = () => {
             )}
           </CardContent>
         </Card>
-      </div>
 
       {/* Yield Trend */}
       {yieldTrendData.length > 0 && (
@@ -413,6 +473,9 @@ const Dashboard = () => {
           )}
         </CardContent>
       </Card>
+          </>
+        )}
+      </div>
     </div>
   );
 };

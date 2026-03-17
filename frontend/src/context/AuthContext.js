@@ -3,12 +3,20 @@ import axios from 'axios';
 
 const AuthContext = createContext(null);
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
 const API = `${BACKEND_URL}/api`;
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  // When no token, show login immediately (no loading frame)
+  const [loading, setLoading] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    try {
+      return !!new URLSearchParams(window.location.search).get('impersonation_token') || !!localStorage.getItem('token');
+    } catch {
+      return false;
+    }
+  });
   const [isImpersonating, setIsImpersonating] = useState(false);
 
   useEffect(() => {
@@ -17,14 +25,11 @@ export const AuthProvider = ({ children }) => {
     const impersonationToken = urlParams.get('impersonation_token');
     
     if (impersonationToken) {
-      // Use impersonation token
       handleImpersonationLogin(impersonationToken);
-      // Clean URL
       window.history.replaceState({}, document.title, window.location.pathname);
       return;
     }
     
-    // Regular token check
     const token = localStorage.getItem('token');
     const savedUser = localStorage.getItem('user');
     
@@ -140,7 +145,7 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (email, password) => {
     const response = await axios.post(`${API}/auth/login`, { email, password });
-    const { access_token, user: userData } = response.data;
+    const { access_token, user: userData, features, tenant_id, lot_number_prefix } = response.data;
     
     localStorage.setItem('token', access_token);
     localStorage.setItem('user', JSON.stringify(userData));
@@ -149,9 +154,14 @@ export const AuthProvider = ({ children }) => {
     setUser(userData);
     setIsImpersonating(false);
     
-    // Dispatch custom event to refresh features
-    window.dispatchEvent(new CustomEvent('tokenChanged'));
-    
+    // Pass features in event so FeatureFlagProvider can skip /auth/me (faster load)
+    window.dispatchEvent(new CustomEvent('tokenChanged', { detail: { features, tenant_id, lot_number_prefix } }));
+
+    // Prefetch dashboard so it can be ready when user lands on /
+    axios.get(`${API}/dashboard/overview`).then((r) => {
+      window.__dashboardPrefetch = r.data;
+    }).catch(() => {});
+
     return userData;
   };
 

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, AlertCircle, AlertTriangle, Info, Megaphone } from 'lucide-react';
 
-const API_URL = process.env.REACT_APP_BACKEND_URL || '';
+const API_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
 
 export default function AnnouncementBanner({ token }) {
   const [announcements, setAnnouncements] = useState([]);

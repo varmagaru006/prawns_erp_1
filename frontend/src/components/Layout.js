@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
+import React, { useState, Suspense } from 'react';
+import { Outlet, Link, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useFeatureFlags } from '../context/FeatureFlagContext';
 import { useBranding } from '../context/BrandingContext';
@@ -35,7 +35,7 @@ import {
 
 const Layout = () => {
   const { user, logout, isImpersonating, endImpersonation } = useAuth();
-  const { isEnabled } = useFeatureFlags();
+  const { isEnabled, refreshFeatures, loading: featuresLoading, features } = useFeatureFlags();
   const { branding } = useBranding();
   const location = useLocation();
   const navigate = useNavigate();
@@ -75,62 +75,84 @@ const Layout = () => {
     Shield
   };
 
+  // Each item has moduleKey (role check) and featureCode (super-admin feature flag)
   const navigation = [
-    { name: 'Dashboard', path: '/', icon: 'LayoutDashboard', moduleKey: 'dashboard' },
-    { name: 'Procurement', path: '/procurement', icon: 'ShoppingCart', moduleKey: 'procurement' },
-    { name: 'Agents', path: '/agents', icon: 'Users', moduleKey: 'agents' },
-    { name: 'Pre-Processing', path: '/preprocessing', icon: 'Package', moduleKey: 'preprocessing' },
-    { name: 'Production', path: '/production', icon: 'Factory', moduleKey: 'production' },
-    { name: 'Quality Control', path: '/qc', icon: 'ClipboardCheck', moduleKey: 'qc' },
-    { name: 'Cold Storage', path: '/cold-storage', icon: 'Snowflake', moduleKey: 'coldStorage' },
-    { name: 'Finished Goods', path: '/finished-goods', icon: 'Box', moduleKey: 'finishedGoods' },
-    { name: 'Sales & Dispatch', path: '/sales', icon: 'Ship', moduleKey: 'sales' },
-    { name: 'Accounts', path: '/accounts', icon: 'Receipt', moduleKey: 'accounts' },
-    { name: 'Purchase Invoices', path: '/purchase-invoices', icon: 'FileText', moduleKey: 'procurement' },
-    { name: 'Party Master', path: '/parties', icon: 'Users', moduleKey: 'procurement' },
-    { name: 'Party Ledger', path: '/party-ledger', icon: 'BookOpen', moduleKey: 'partyLedger' },
-    { name: 'Wastage Dashboard', path: '/admin/wastage-dashboard', icon: 'TrendingDown', moduleKey: 'wastageDashboard' },
-    { name: 'Yield Benchmarks', path: '/admin/yield-benchmarks', icon: 'Target', moduleKey: 'yieldBenchmarks' },
-    { name: 'Market Rates', path: '/admin/market-rates', icon: 'DollarSign', moduleKey: 'marketRates' },
-    { name: 'Attachments Demo', path: '/admin/attachments-demo', icon: 'Paperclip', moduleKey: 'admin' },
-    { name: 'Audit Trail', path: '/admin/audit-trail', icon: 'History', moduleKey: 'admin' },
-    { name: 'Company Settings', path: '/admin/company-settings', icon: 'Building2', moduleKey: 'admin' },
-    { name: 'Admin Panel', path: '/admin', icon: 'Settings', moduleKey: 'admin' },
-    { name: 'Super Admin', path: '/platform-admin', icon: 'Shield', moduleKey: 'superAdmin' },
-    { name: 'Notifications', path: '/notifications', icon: 'Bell', moduleKey: 'notifications' },
+    { name: 'Dashboard', path: '/', icon: 'LayoutDashboard', moduleKey: 'dashboard', featureCode: 'dashboard' },
+    { name: 'Procurement', path: '/procurement', icon: 'ShoppingCart', moduleKey: 'procurement', featureCode: 'procurement' },
+    { name: 'Agents', path: '/agents', icon: 'Users', moduleKey: 'agents', featureCode: 'agents' },
+    { name: 'Pre-Processing', path: '/preprocessing', icon: 'Package', moduleKey: 'preprocessing', featureCode: 'preprocessing' },
+    { name: 'Production', path: '/production', icon: 'Factory', moduleKey: 'production', featureCode: 'production' },
+    { name: 'Quality Control', path: '/qc', icon: 'ClipboardCheck', moduleKey: 'qc', featureCode: 'qualityControl' },
+    { name: 'Cold Storage', path: '/cold-storage', icon: 'Snowflake', moduleKey: 'coldStorage', featureCode: 'coldStorage' },
+    { name: 'Finished Goods', path: '/finished-goods', icon: 'Box', moduleKey: 'finishedGoods', featureCode: 'finishedGoods' },
+    { name: 'Sales & Dispatch', path: '/sales', icon: 'Ship', moduleKey: 'sales', featureCode: 'sales' },
+    { name: 'Accounts', path: '/accounts', icon: 'Receipt', moduleKey: 'accounts', featureCode: 'accounts' },
+    { name: 'Purchase Invoices', path: '/purchase-invoices', icon: 'FileText', moduleKey: 'procurement', featureCode: 'purchaseInvoiceDashboard' },
+    { name: 'Party Master', path: '/parties', icon: 'Users', moduleKey: 'procurement', featureCode: 'parties' },
+    { name: 'Party Ledger', path: '/party-ledger', icon: 'BookOpen', moduleKey: 'partyLedger', featureCode: 'partyLedger' },
+    { name: 'Wastage Dashboard', path: '/admin/wastage-dashboard', icon: 'TrendingDown', moduleKey: 'wastageDashboard', featureCode: 'wastageDashboard' },
+    { name: 'Yield Benchmarks', path: '/admin/yield-benchmarks', icon: 'Target', moduleKey: 'yieldBenchmarks', featureCode: 'yieldBenchmarks' },
+    { name: 'Market Rates', path: '/admin/market-rates', icon: 'DollarSign', moduleKey: 'marketRates', featureCode: 'marketRates' },
+    { name: 'Attachments Demo', path: '/admin/attachments-demo', icon: 'Paperclip', moduleKey: 'admin', featureCode: 'admin' },
+    { name: 'Audit Trail', path: '/admin/audit-trail', icon: 'History', moduleKey: 'admin', featureCode: 'admin' },
+    { name: 'Company Settings', path: '/admin/company-settings', icon: 'Building2', moduleKey: 'admin', featureCode: 'admin' },
+    { name: 'Admin Panel', path: '/admin', icon: 'Settings', moduleKey: 'admin', featureCode: 'admin' },
+    { name: 'Notifications', path: '/notifications', icon: 'Bell', moduleKey: 'notifications', featureCode: 'notifications' },
   ];
 
-  // Filter navigation based on module configuration and user role
-  const visibleNav = navigation.filter(item => {
-    // Dashboard needs special handling based on canAccessDashboard
+  // Path → feature code: redirect if user opens a URL for a disabled feature
+  const pathToFeature = {
+    '/': 'dashboard',
+    '/procurement': 'procurement',
+    '/agents': 'agents',
+    '/preprocessing': 'preprocessing',
+    '/production': 'production',
+    '/qc': 'qualityControl',
+    '/cold-storage': 'coldStorage',
+    '/finished-goods': 'finishedGoods',
+    '/sales': 'sales',
+    '/accounts': 'accounts',
+    '/purchase-invoices': 'purchaseInvoiceDashboard',
+    '/parties': 'parties',
+    '/party-ledger': 'partyLedger',
+    '/admin/wastage-dashboard': 'wastageDashboard',
+    '/admin/yield-benchmarks': 'yieldBenchmarks',
+    '/admin/market-rates': 'marketRates',
+    '/admin/attachments-demo': 'admin',
+    '/admin/audit-trail': 'admin',
+    '/admin/company-settings': 'admin',
+    '/admin': 'admin',
+    '/notifications': 'notifications',
+  };
+  const pathname = location.pathname;
+  const normalized = pathname.replace(/\/$/, '') || '/';
+  const matchedKey = pathToFeature[normalized] != null
+    ? normalized
+    : Object.keys(pathToFeature)
+        .filter((k) => k !== '/' && pathname.startsWith(k))
+        .sort((a, b) => b.length - a.length)[0];
+  const featureForPath = matchedKey ? pathToFeature[matchedKey] : null;
+  const hasFeatures = Object.keys(features).length > 0;
+  // Don't block while flags are loading (avoid showing "not enabled" before /auth/me returns)
+  // If flags never loaded (empty after load), allow access so user isn't locked out
+  // Super admin always passes through so they can reach the /platform-admin redirect page
+  const featureBlocked =
+    !featuresLoading &&
+    hasFeatures &&
+    featureForPath &&
+    !isEnabled(featureForPath) &&
+    user?.role !== 'super_admin';
+
+  // Filter navigation: role (moduleKey) + feature flag (featureCode) from super admin — only show tabs enabled in Super Admin
+  const visibleNav = navigation.filter((item) => {
     if (item.moduleKey === 'dashboard') {
-      return canAccessDashboard(user?.role);
+      if (!canAccessDashboard(user?.role)) return false;
+      return item.featureCode ? isEnabled(item.featureCode) : true;
     }
     if (!item.moduleKey) return true;
-    
-    // Debug logging for partyLedger
-    if (item.moduleKey === 'partyLedger') {
-      console.log('🔍 Party Ledger Debug:', {
-        moduleKey: item.moduleKey,
-        userRole: user?.role,
-        moduleConfig: moduleConfig.partyLedger,
-        isAccessible: isModuleAccessible(item.moduleKey, user?.role),
-        userName: user?.name,
-        userEmail: user?.email
-      });
-    }
-    
-    // Debug logging for superAdmin
-    if (item.moduleKey === 'superAdmin') {
-      console.log('🔍 Super Admin Debug:', {
-        moduleKey: item.moduleKey,
-        userRole: user?.role,
-        moduleConfig: moduleConfig.superAdmin,
-        isAccessible: isModuleAccessible(item.moduleKey, user?.role)
-      });
-    }
-    
-    return isModuleAccessible(item.moduleKey, user?.role);
+    if (!isModuleAccessible(item.moduleKey, user?.role)) return false;
+    if (item.featureCode && !isEnabled(item.featureCode)) return false;
+    return true;
   });
 
   return (
@@ -182,6 +204,14 @@ const Layout = () => {
           </div>
           
           <div className="flex items-center gap-4">
+            <button
+              type="button"
+              onClick={() => refreshFeatures()}
+              className="text-xs text-slate-500 hover:text-slate-700 underline"
+              title="Refresh feature flags (e.g. after Super Admin changes)"
+            >
+              Refresh features
+            </button>
             <div className="text-right hidden sm:block">
               <p className="text-sm font-medium text-slate-800" data-testid="user-name">{user?.name}</p>
               <p className="text-xs text-slate-500 capitalize" data-testid="user-role">{user?.role?.replace('_', ' ')}</p>
@@ -249,7 +279,25 @@ const Layout = () => {
 
         {/* Main Content */}
         <main className="flex-1 p-4 lg:p-6">
-          <Outlet />
+          <Suspense fallback={
+            <div className="flex items-center justify-center min-h-[200px]">
+              <div className="animate-spin rounded-full h-10 w-10 border-2 border-slate-300 border-t-blue-600" />
+            </div>
+          }>
+            {featureBlocked ? (
+              normalized === '/' && visibleNav[0]?.path ? (
+                <Navigate to={visibleNav[0].path} replace />
+              ) : (
+                <div className="flex flex-col items-center justify-center min-h-[200px] text-slate-600">
+                  <p className="font-medium">This feature is not enabled for your organization.</p>
+                  <p className="text-sm mt-1">Contact your administrator to enable it.</p>
+                  <Link to="/" className="mt-4 text-blue-600 hover:underline">Go to Dashboard</Link>
+                </div>
+              )
+            ) : (
+              <Outlet />
+            )}
+          </Suspense>
         </main>
       </div>
     </div>

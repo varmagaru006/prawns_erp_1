@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { toast } from 'sonner';
+import { formatLoadErrorMessage } from '../utils/apiError';
 import { Plus, Box } from 'lucide-react';
 
 const FinishedGoods = () => {
@@ -38,7 +39,7 @@ const FinishedGoods = () => {
       setGoods(goodsRes.data);
       setOrders(ordersRes.data);
     } catch (error) {
-      toast.error('Failed to load data');
+      toast.error(formatLoadErrorMessage('Failed to load data', error));
     } finally {
       setLoading(false);
     }

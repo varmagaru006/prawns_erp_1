@@ -3,15 +3,7 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import { useSortableTable } from '../hooks/useSortableTable';
 
-const API = process.env.REACT_APP_BACKEND_URL;
-
-const COMPANY = {
-  name: "KRISH AQUA TRADERS",
-  addr1: "195/1A1&1A2, Batnavelli Village, By-Pass Road, Amalapuram,",
-  addr2: "Dr.BR Ambedkar Konaseema District, Andhra Pradesh-533201.",
-  phone: "8096696789",
-  email: "krishaquatraders@gmail.com",
-};
+const API = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
 
 // Compute running balance
 function computeBalances(entries, opening) {
@@ -101,7 +93,7 @@ function Field({ label, value, onChange, type = "text", required, hint }) {
 }
 
 // ─── LEDGER PRINT TEMPLATE ────────────────────────────────────────────────────
-function LedgerPrintView({ party, fy, entries, opening }) {
+function LedgerPrintView({ party, fy, entries, opening, company }) {
   const computed = computeBalances(entries, opening);
   
   // Calculate totals
@@ -120,9 +112,9 @@ function LedgerPrintView({ party, fy, entries, opening }) {
       <style>{PRINT_STYLE}</style>
       {/* Header */}
       <div style={{ textAlign: "center", borderBottom: "2px solid #0369a1", paddingBottom: 8, marginBottom: 10 }}>
-        <div style={{ fontSize: 16, fontWeight: 900, color: "#0c4a6e" }}>{COMPANY.name}</div>
-        <div style={{ fontSize: 10, color: "#334155" }}>{COMPANY.addr1}</div>
-        <div style={{ fontSize: 10, color: "#334155" }}>{COMPANY.addr2}</div>
+        <div style={{ fontSize: 16, fontWeight: 900, color: "#0c4a6e" }}>{company?.name || ""}</div>
+        <div style={{ fontSize: 10, color: "#334155" }}>{company?.addr1 || ""}</div>
+        <div style={{ fontSize: 10, color: "#334155" }}>{company?.addr2 || ""}</div>
         <div style={{ fontSize: 11, fontWeight: 700, marginTop: 4 }}>
           PARTY NAME: {party.party_name}{party.party_alias ? ` (${party.party_alias})` : ""}
         </div>
@@ -181,7 +173,7 @@ function LedgerPrintView({ party, fy, entries, opening }) {
                 <tr key={e.id} style={{ background: "#fef9c3" }}>
                   <td style={tdStyle}>{fmtDate(e.entry_date)}</td>
                   <td colSpan={8} style={{...tdStyle, textAlign: "center", fontStyle: "italic"}}>
-                    {e.entry_type === "manual_credit" ? `Credit: ${e.description}` : "Payment Received"}
+                    {e.entry_type === "manual_credit" ? `Credit: ${e.description}` : (e.description || "Payment Received")}
                   </td>
                   <td style={{ ...tdStyle, textAlign: "right", fontWeight: 700, color: "#15803d" }}>{fmt(e.payment_amount)}</td>
                   <td style={{ ...tdStyle, textAlign: "center" }}>{fmtDate(e.payment_date || e.entry_date)}</td>
@@ -245,6 +237,7 @@ export default function PartyLedgerModule() {
   const [partyForm, setPartyForm] = useState({ party_name: "", party_alias: "", short_code: "", mobile: "", address: "" });
   const [manualForm, setManualForm] = useState({ date: "", amount: "", description: "" });
   const [obForm, setObForm] = useState({ amount: "" });
+  const [tenantConfig, setTenantConfig] = useState(null);
 
   const ALL_FY = ["24-25", "25-26", "26-27"];
 
@@ -253,6 +246,27 @@ export default function PartyLedgerModule() {
     p.party_name.toLowerCase().includes(searchQ.toLowerCase()) ||
     (p.party_alias || "").toLowerCase().includes(searchQ.toLowerCase())
   );
+
+  // Load company settings (tenant config) for header text
+  useEffect(() => {
+    async function loadTenantConfig() {
+      try {
+        const res = await axios.get(`${API}/tenant-config`);
+        const map = {};
+        (res.data || []).forEach(c => { map[c.key] = c.value; });
+        setTenantConfig({
+          name: map.company_name || "",
+          addr1: map.company_address_1 || "",
+          addr2: map.company_address_2 || "",
+          phone: map.company_phone || "",
+          email: map.company_email || "",
+        });
+      } catch (err) {
+        console.error("Failed to load tenant config", err);
+      }
+    }
+    loadTenantConfig();
+  }, []);
 
   // Sortable table for parties list (after filteredParties is defined)
   const { sortedData: sortedParties, requestSort: requestPartySort, getSortIcon: getPartySortIcon } = useSortableTable(
@@ -652,7 +666,7 @@ export default function PartyLedgerModule() {
                           <tr key={e.id} style={{ background: "#fef9c3", borderBottom: "2px solid #fde68a" }}>
                             <td style={{ padding: "7px 8px", textAlign: "center", color: "#92400e", fontWeight: 600 }}>{fmtDate(e.entry_date)}</td>
                             <td colSpan={8} style={{ padding: "7px 8px", textAlign: "center", color: "#92400e", fontStyle: "italic" }}>
-                              {e.entry_type === "manual_credit" ? `Credit: ${e.description}` : "Payment Received"}
+                              {e.entry_type === "manual_credit" ? `Credit: ${e.description}` : (e.description || "Payment Received")}
                             </td>
                             <td style={{ padding: "7px 8px", textAlign: "right", fontWeight: 800, color: "#15803d", fontSize: 13 }}>{fmt(e.payment_amount)}</td>
                             <td style={{ padding: "7px 8px", textAlign: "center", color: "#92400e" }}>{fmtDate(e.payment_date || e.entry_date)}</td>
@@ -706,7 +720,13 @@ export default function PartyLedgerModule() {
             <button onClick={() => window.print()} style={{ background: "#0f172a", color: "#fff", border: "none", borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>↓ Print / Save PDF</button>
           </div>
           <div style={{ overflowX: "auto", border: "1px solid #e2e8f0", borderRadius: 8 }}>
-            <LedgerPrintView party={selectedParty} fy={selectedFY} entries={entries} opening={currentLedger.opening_balance} />
+            <LedgerPrintView
+              party={selectedParty}
+              fy={selectedFY}
+              entries={entries}
+              opening={currentLedger.opening_balance}
+              company={tenantConfig}
+            />
           </div>
         </Modal>
       )}

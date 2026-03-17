@@ -48,24 +48,22 @@ const PurchaseInvoices = () => {
 
   useEffect(() => {
     fetchInvoices();
-    if (isDashboardEnabled) {
-      fetchMetrics();
-    }
   }, [filters, pagination.page, pagination.per_page, isDashboardEnabled]);
 
   const fetchInvoices = async () => {
     setLoading(true);
+    setMetrics(null); // Clear so stats cards don't show stale numbers while refetching with new filters
     try {
       const params = new URLSearchParams({
         page: pagination.page,
         per_page: pagination.per_page
       });
-
+      // Include all filters so list and metrics both use date, search, payment status, invoice status
       if (filters.from_date) params.append('from_date', filters.from_date);
       if (filters.to_date) params.append('to_date', filters.to_date);
       if (filters.payment_status) params.append('payment_status', filters.payment_status);
       if (filters.invoice_status) params.append('invoice_status', filters.invoice_status);
-      if (filters.search) params.append('search', filters.search);
+      if (filters.search && filters.search.trim()) params.append('search', filters.search.trim());
 
       const response = await axios.get(`${API}/purchase-invoices?${params}`);
       setInvoices(response.data.data);
@@ -74,25 +72,24 @@ const PurchaseInvoices = () => {
         total: response.data.total,
         pages: response.data.pages
       }));
+      // Prefer metrics from list response (same query = cards match table); fallback to metrics API if backend is older
+      if (response.data.metrics != null) {
+        setMetrics(response.data.metrics);
+      } else if (isDashboardEnabled) {
+        try {
+          const metricsRes = await axios.get(`${API}/purchase-invoices/metrics?${params}`);
+          setMetrics(metricsRes.data);
+        } catch (e) {
+          console.error('Failed to load metrics', e);
+          setMetrics(null);
+        }
+      } else {
+        setMetrics(null);
+      }
     } catch (error) {
       toast.error('Failed to load invoices');
     } finally {
       setLoading(false);
-    }
-  };
-
-  const fetchMetrics = async () => {
-    try {
-      const params = new URLSearchParams();
-      if (filters.from_date) params.append('from_date', filters.from_date);
-      if (filters.to_date) params.append('to_date', filters.to_date);
-      if (filters.payment_status) params.append('payment_status', filters.payment_status);
-      if (filters.invoice_status) params.append('invoice_status', filters.invoice_status);
-
-      const response = await axios.get(`${API}/purchase-invoices/metrics?${params}`);
-      setMetrics(response.data);
-    } catch (error) {
-      console.error('Failed to load metrics', error);
     }
   };
 
@@ -121,7 +118,6 @@ const PurchaseInvoices = () => {
       await axios.delete(`${API}/purchase-invoices/${invoiceId}`);
       toast.success('Invoice deleted');
       fetchInvoices();
-      fetchMetrics();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to delete invoice');
     }
@@ -134,7 +130,6 @@ const PurchaseInvoices = () => {
       await axios.post(`${API}/purchase-invoices/${invoiceId}/approve`);
       toast.success('Invoice approved');
       fetchInvoices();
-      fetchMetrics();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to approve invoice');
     }
@@ -147,7 +142,6 @@ const PurchaseInvoices = () => {
       const response = await axios.post(`${API}/purchase-invoices/${invoiceId}/push-to-procurement`);
       toast.success(`Pushed! Lot ${response.data.lot_number} created`);
       fetchInvoices();
-      fetchMetrics();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to push invoice');
     }
@@ -218,7 +212,7 @@ const PurchaseInvoices = () => {
       }
 
       // Build CSV
-      const headers = ['Invoice No', 'Date', 'Farmer Name', 'Mobile', 'Location', 'Total Qty (kg)', 'Subtotal', 'TDS', 'Grand Total', 'Advance', 'Balance Due', 'Payment Status', 'Status', 'Manual Audit'];
+      const headers = ['Invoice No', 'Date', 'Farmer Name', 'Mobile', 'Location', 'Total Qty (kg)', 'Subtotal', 'TDS', 'Grand Total', 'Advance', 'Balance Due', 'Status', 'Manual Audit'];
       const rows = data.map(inv => [
         inv.invoice_no,
         inv.invoice_date,
@@ -231,7 +225,6 @@ const PurchaseInvoices = () => {
         inv.grand_total?.toFixed(2) || '0',
         inv.advance_paid?.toFixed(2) || '0',
         inv.balance_due?.toFixed(2) || '0',
-        inv.payment_status || '',
         inv.status || '',
         inv.is_manually_recorded ? 'Yes' : 'No'
       ]);
@@ -273,7 +266,7 @@ const PurchaseInvoices = () => {
       }
 
       // Create simple HTML table for Excel
-      const headers = ['Invoice No', 'Date', 'Farmer Name', 'Mobile', 'Location', 'Total Qty (kg)', 'Subtotal', 'TDS', 'Grand Total', 'Advance', 'Balance Due', 'Payment Status', 'Status', 'Manual Audit'];
+      const headers = ['Invoice No', 'Date', 'Farmer Name', 'Mobile', 'Location', 'Total Qty (kg)', 'Subtotal', 'TDS', 'Grand Total', 'Advance', 'Balance Due', 'Status', 'Manual Audit'];
       let tableHTML = '<table border="1"><tr>' + headers.map(h => `<th style="background:#0d47a1;color:white;padding:8px">${h}</th>`).join('') + '</tr>';
       
       data.forEach(inv => {
@@ -289,7 +282,6 @@ const PurchaseInvoices = () => {
         tableHTML += `<td style="text-align:right;font-weight:bold">${inv.grand_total?.toFixed(2) || '0'}</td>`;
         tableHTML += `<td style="text-align:right">${inv.advance_paid?.toFixed(2) || '0'}</td>`;
         tableHTML += `<td style="text-align:right;color:${inv.balance_due > 0 ? 'red' : 'green'}">${inv.balance_due?.toFixed(2) || '0'}</td>`;
-        tableHTML += `<td>${inv.payment_status || ''}</td>`;
         tableHTML += `<td>${inv.status || ''}</td>`;
         tableHTML += `<td>${inv.is_manually_recorded ? 'Yes' : 'No'}</td>`;
         tableHTML += '</tr>';
@@ -456,6 +448,16 @@ const PurchaseInvoices = () => {
 
           <Card>
             <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-gray-600">Total Kg Purchased</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-slate-700">{(metrics.total_quantity_kg_all ?? metrics.total_quantity_kg ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 3 })} kg</div>
+              <div className="text-xs text-gray-500">All invoices</div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium text-gray-600">Total Value</CardTitle>
             </CardHeader>
             <CardContent>
@@ -465,31 +467,21 @@ const PurchaseInvoices = () => {
 
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-gray-600">Pending ⏳</CardTitle>
+              <CardTitle className="text-sm font-medium text-gray-600">Pending</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-red-600">₹{metrics.pending_total.toLocaleString('en-IN')}</div>
-              <div className="text-xs text-gray-500">{metrics.pending_count} invoices</div>
+              <div className="text-2xl font-bold text-amber-600">₹{(metrics.partial_total ?? 0).toLocaleString('en-IN')}</div>
+              <div className="text-xs text-gray-500">{metrics.partial_count ?? 0} invoices</div>
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-gray-600">Partial 🔶</CardTitle>
+              <CardTitle className="text-sm font-medium text-gray-600">Advances paid</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-amber-600">₹{metrics.partial_total.toLocaleString('en-IN')}</div>
-              <div className="text-xs text-gray-500">{metrics.partial_count} invoices</div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-gray-600">Paid ✅</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-green-600">₹{metrics.paid_total.toLocaleString('en-IN')}</div>
-              <div className="text-xs text-gray-500">{metrics.paid_count} invoices</div>
+              <div className="text-2xl font-bold text-green-600">₹{(metrics.advances_paid_total ?? metrics.paid_total ?? 0).toLocaleString('en-IN')}</div>
+              <div className="text-xs text-gray-500">Total advance in filter · {(metrics.advances_paid_count ?? metrics.paid_count ?? 0)} with advance</div>
             </CardContent>
           </Card>
         </div>
@@ -513,8 +505,8 @@ const PurchaseInvoices = () => {
                 <SortableTableHead label="Location" sortKey="farmer_location" onSort={requestSort} getSortIcon={getSortIcon} />
                 <SortableTableHead label="Total Qty (kg)" sortKey="total_quantity_kg" onSort={requestSort} getSortIcon={getSortIcon} className="text-right" />
                 <SortableTableHead label="Grand Total" sortKey="grand_total" onSort={requestSort} getSortIcon={getSortIcon} className="text-right" />
+                <SortableTableHead label="Advance Paid" sortKey="advance_paid" onSort={requestSort} getSortIcon={getSortIcon} className="text-right" />
                 <SortableTableHead label="Balance Due" sortKey="balance_due" onSort={requestSort} getSortIcon={getSortIcon} className="text-right" />
-                <SortableTableHead label="Payment" sortKey="payment_status" onSort={requestSort} getSortIcon={getSortIcon} />
                 <SortableTableHead label="Status" sortKey="status" onSort={requestSort} getSortIcon={getSortIcon} />
                 <TableHead>Audit Book</TableHead>
                 <TableHead>Actions</TableHead>
@@ -555,10 +547,10 @@ const PurchaseInvoices = () => {
                     <TableCell>{invoice.farmer_location || '-'}</TableCell>
                     <TableCell className="text-right">{invoice.total_quantity_kg?.toFixed(3)}</TableCell>
                     <TableCell className="text-right font-medium">₹{invoice.grand_total?.toLocaleString('en-IN')}</TableCell>
+                    <TableCell className="text-right font-medium text-green-700">₹{(invoice.advance_paid ?? 0).toLocaleString('en-IN')}</TableCell>
                     <TableCell className={`text-right font-medium ${invoice.balance_due > 0 ? 'text-red-600' : ''}`}>
                       ₹{invoice.balance_due?.toLocaleString('en-IN')}
                     </TableCell>
-                    <TableCell>{getPaymentChip(invoice.payment_status)}</TableCell>
                     <TableCell>{getStatusChip(invoice.status)}</TableCell>
                     <TableCell>
                       <button

@@ -9,8 +9,26 @@ import os
 import redis
 import json
 
-# Redis connection
-redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+try:
+    from feature_registry import merge_flags_with_registry
+except ImportError:
+    try:
+        from backend.feature_registry import merge_flags_with_registry
+    except ImportError:
+        def merge_flags_with_registry(db_flags: dict) -> dict:
+            return dict(db_flags)  # no registry available, return as-is
+
+# Redis connection (optional - if Redis is down, cache is skipped and app still works)
+try:
+    redis_client = redis.Redis(
+        host=os.environ.get("REDIS_HOST", "localhost"),
+        port=int(os.environ.get("REDIS_PORT", "6379")),
+        db=0,
+        decode_responses=True,
+        socket_connect_timeout=2,
+    )
+except Exception:
+    redis_client = None
 
 class TenantContext:
     """Manages tenant context for the current request"""
@@ -65,26 +83,26 @@ class FeatureFlagService:
     async def is_enabled(self, tenant_id: str, feature_code: str) -> bool:
         """
         Check if a feature is enabled for a tenant
-        Uses Redis cache with 60-second TTL
+        Uses Redis cache with 60-second TTL (skipped if Redis unavailable)
         """
         cache_key = f"feature:{tenant_id}:{feature_code}"
-        
-        # Check Redis cache
-        cached = redis_client.get(cache_key)
-        if cached is not None:
-            return cached == "1"
-        
-        # Query MongoDB
+        if redis_client:
+            try:
+                cached = redis_client.get(cache_key)
+                if cached is not None:
+                    return cached == "1"
+            except Exception:
+                pass
         flag = await self.db.feature_flags.find_one({
             "tenant_id": tenant_id,
             "feature_code": feature_code
         }, {"_id": 0})
-        
         is_enabled = flag.get("is_enabled", False) if flag else False
-        
-        # Cache in Redis
-        redis_client.setex(cache_key, self.cache_ttl, "1" if is_enabled else "0")
-        
+        if redis_client:
+            try:
+                redis_client.setex(cache_key, self.cache_ttl, "1" if is_enabled else "0")
+            except Exception:
+                pass
         return is_enabled
     
     async def get_all_flags(self, tenant_id: str) -> Dict[str, bool]:
@@ -93,15 +111,13 @@ class FeatureFlagService:
         Uses Redis cache for entire flags object
         """
         cache_key = f"flags:{tenant_id}"
-        
-        # Check Redis cache
-        try:
-            cached = redis_client.get(cache_key)
-            if cached:
-                return json.loads(cached)
-        except:
-            pass  # Redis unavailable, skip cache
-        
+        if redis_client:
+            try:
+                cached = redis_client.get(cache_key)
+                if cached:
+                    return json.loads(cached)
+            except Exception:
+                pass
         # Query MongoDB
         flags = await self.db.feature_flags.find(
             {"tenant_id": tenant_id},
@@ -109,26 +125,26 @@ class FeatureFlagService:
         ).to_list(1000)
         
         flags_dict = {flag["feature_code"]: flag["is_enabled"] for flag in flags}
+        # Merge with registry so client always gets full set (unknown codes default off)
+        flags_dict = merge_flags_with_registry(flags_dict)
         
-        # Cache in Redis
-        try:
-            redis_client.setex(cache_key, self.cache_ttl, json.dumps(flags_dict))
-        except:
-            pass  # Redis unavailable, skip caching
-        
+        if redis_client:
+            try:
+                redis_client.setex(cache_key, self.cache_ttl, json.dumps(flags_dict))
+            except Exception:
+                pass
         return flags_dict
     
     def invalidate_cache(self, tenant_id: str, feature_code: Optional[str] = None):
         """Invalidate Redis cache when features are toggled"""
+        if not redis_client:
+            return
         try:
             if feature_code:
-                cache_key = f"feature:{tenant_id}:{feature_code}"
-                redis_client.delete(cache_key)
-            
-            # Always invalidate the full flags cache
+                redis_client.delete(f"feature:{tenant_id}:{feature_code}")
             redis_client.delete(f"flags:{tenant_id}")
-        except:
-            pass  # Redis unavailable, skip cache invalidation
+        except Exception:
+            pass
 
 
 # Middleware to inject tenant context

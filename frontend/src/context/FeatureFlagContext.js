@@ -5,18 +5,14 @@ const FeatureFlagContext = createContext();
 
 export const FeatureFlagProvider = ({ children }) => {
   const [features, setFeatures] = useState({});
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false); // No token = no /auth/me, so don't block login
   const [tenantInfo, setTenantInfo] = useState({
     tenantId: null,
     lotNumberPrefix: null
   });
 
-  const [tokenPresent, setTokenPresent] = useState(!!localStorage.getItem('token'));
-
   const loadFeatures = useCallback(async () => {
     const token = localStorage.getItem('token');
-    setTokenPresent(!!token);
-    
     if (!token) {
       setLoading(false);
       setFeatures({});
@@ -25,7 +21,7 @@ export const FeatureFlagProvider = ({ children }) => {
 
     setLoading(true);
     try {
-      const response = await axios.get(`${process.env.REACT_APP_BACKEND_URL}/api/auth/me`, {
+      const response = await axios.get(`${process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000'}/api/auth/me`, {
         headers: { Authorization: `Bearer ${token}` }
       });
 
@@ -44,45 +40,43 @@ export const FeatureFlagProvider = ({ children }) => {
   }, []);
 
   useEffect(() => {
-    // Load features on mount
+    // Load features on mount (and when token is present after login)
     loadFeatures();
-    
-    // Poll for token changes every 500ms (handles same-tab login)
-    const pollToken = setInterval(() => {
-      const token = localStorage.getItem('token');
-      const hadToken = tokenPresent;
-      
-      if (token && !hadToken) {
-        // Token was added (user just logged in)
-        loadFeatures();
-      } else if (!token && hadToken) {
-        // Token was removed (user logged out)
-        setFeatures({});
-        setTokenPresent(false);
-      }
-    }, 500);
-    
-    // Listen for storage changes (e.g., when token is set after login in another tab)
+
+    // Listen for storage changes (e.g. token set in another tab)
     const handleStorageChange = (e) => {
       if (e.key === 'token' && e.newValue) {
         loadFeatures();
       }
     };
-    
-    // Listen for custom tokenChanged event (same tab login)
-    const handleTokenChanged = () => {
+    // Same-tab login: use features from event detail to skip /auth/me
+    const handleTokenChanged = (e) => {
+      const d = e?.detail;
+      if (d?.features && typeof d.features === 'object') {
+        setFeatures(d.features);
+        setTenantInfo({ tenantId: d.tenant_id || null, lotNumberPrefix: d.lot_number_prefix || null });
+        setLoading(false);
+        return;
+      }
       loadFeatures();
     };
-    
+
+    // Refetch features when user returns to this tab (e.g. after toggling in Super Admin)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && localStorage.getItem('token')) {
+        loadFeatures();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     window.addEventListener('storage', handleStorageChange);
     window.addEventListener('tokenChanged', handleTokenChanged);
-    
     return () => {
-      clearInterval(pollToken);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('storage', handleStorageChange);
       window.removeEventListener('tokenChanged', handleTokenChanged);
     };
-  }, [loadFeatures, tokenPresent]);
+  }, [loadFeatures]);
 
   const isEnabled = (featureCode) => {
     return features[featureCode] === true;
@@ -92,7 +86,7 @@ export const FeatureFlagProvider = ({ children }) => {
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
-      const response = await axios.get(`${process.env.REACT_APP_BACKEND_URL}/api/auth/me`, {
+      const response = await axios.get(`${process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000'}/api/auth/me`, {
         headers: { Authorization: `Bearer ${token}` }
       });
 

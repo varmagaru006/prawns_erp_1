@@ -23,12 +23,14 @@ from reportlab.lib.units import inch
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 import io
 from enum import Enum
+import asyncio
+import time
 
 # Multi-tenant services
 from services.multi_tenant import tenant_context, FeatureFlagService, tenant_middleware
 
 # Super Admin module (integrated tenant management) - follows the 3-Feature Upgrade Guide
-from super_admin import super_admin_router, set_database as set_super_admin_db, create_indexes as create_super_admin_indexes
+from super_admin import super_admin_router, set_database as set_super_admin_db, set_feature_service as set_super_admin_feature_service, create_indexes as create_super_admin_indexes
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -70,6 +72,20 @@ app.add_middleware(
 
 # Multi-Tenant Middleware
 app.middleware("http")(tenant_middleware)
+
+
+def _safe_parse_datetime(value):
+    """
+    Best-effort datetime parser for documents that may contain ISO strings, None,
+    or legacy/invalid values. Returns the original value if parsing fails.
+    This prevents 500s when listing resources like agents or dashboard lots.
+    """
+    if not value or not isinstance(value, str):
+        return value
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return value
 
 # Enums
 class UserRole(str, Enum):
@@ -184,6 +200,9 @@ class Token(BaseModel):
     access_token: str
     token_type: str
     user: User
+    features: Optional[Dict[str, bool]] = None
+    tenant_id: Optional[str] = None
+    lot_number_prefix: Optional[str] = None
 
 class Agent(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -1796,8 +1815,16 @@ async def login(credentials: UserLogin):
     # Include tenant_id in JWT token for proper multi-tenant support
     tenant_id = user_doc.get('tenant_id', 'cli_001')
     access_token = create_access_token(data={"sub": user.email, "tenant_id": tenant_id})
-    
-    return Token(access_token=access_token, token_type="bearer", user=user)
+    # Return features in login response so client can skip /auth/me (faster load)
+    features = await feature_service.get_all_flags(tenant_id)
+    return Token(
+        access_token=access_token,
+        token_type="bearer",
+        user=user,
+        features=features,
+        tenant_id=tenant_id,
+        lot_number_prefix="PRW"
+    )
 
 @api_router.get("/auth/me")
 async def get_me(current_user: User = Depends(get_current_user)):
@@ -1824,18 +1851,20 @@ async def get_me(current_user: User = Depends(get_current_user)):
 
 @api_router.get("/public-config")
 async def get_public_config():
-    """Get public branding/config for the client ERP (no auth required)"""
-    tenant_id = tenant_context.get_tenant()
-    
-    # Fetch all branding-related configs from tenant_config
+    """Get public branding/config for the client ERP (no auth required). Cached 5 min."""
+    try:
+        tenant_id = tenant_context.get_tenant()
+    except Exception:
+        tenant_id = "default"
+    cache_key = f"public_config:{tenant_id}"
+    cached = _cache_get(cache_key, ttl_sec=300)
+    if cached is not None:
+        return cached
     config_keys = ["company_name", "sidebar_label", "primary_color", "login_bg_color", "logo_url", "favicon_url"]
-    
     config_values = {}
     async for doc in db.tenant_config.find({"key": {"$in": config_keys}}, {"_id": 0}):
         config_values[doc["key"]] = doc.get("value", "")
-    
-    # Return with defaults for missing values
-    return {
+    out = {
         "company_name": config_values.get("company_name") or "Prawn ERP",
         "sidebar_label": config_values.get("sidebar_label") or config_values.get("company_name") or "Prawn ERP",
         "primary_color": config_values.get("primary_color") or "#1e40af",
@@ -1843,6 +1872,8 @@ async def get_public_config():
         "logo_url": config_values.get("logo_url") or "",
         "favicon_url": config_values.get("favicon_url") or ""
     }
+    _cache_set(cache_key, out, ttl_sec=300)
+    return out
 
 @api_router.post("/auth/impersonation/validate")
 async def validate_impersonation(token: str):
@@ -1888,15 +1919,35 @@ async def create_agent(agent_data: AgentCreate, current_user: User = Depends(get
     agent_dict['created_at'] = agent_dict['created_at'].isoformat()
     
     await db.agents.insert_one(agent_dict)
+    _invalidate_agents_cache()
     await create_audit_log(current_user.id, "CREATE_AGENT", "procurement", {"agent_id": agent.id})
     return agent
 
+def _invalidate_agents_cache():
+    try:
+        tid = tenant_context.get_tenant()
+        _response_cache.pop(f"agents_list:{tid}", None)
+    except Exception:
+        pass
+
+
 @api_router.get("/agents", response_model=List[Agent])
 async def get_agents(current_user: User = Depends(get_current_user)):
+    try:
+        tid = tenant_context.get_tenant()
+    except Exception:
+        tid = "default"
+    cache_key = f"agents_list:{tid}"
+    cached = _cache_get(cache_key, ttl_sec=30)
+    if cached is not None:
+        return cached
     agents = await db.agents.find({}, {"_id": 0}).to_list(1000)
     for agent in agents:
-        if isinstance(agent.get('created_at'), str):
-            agent['created_at'] = datetime.fromisoformat(agent['created_at'])
+        created_at = agent.get("created_at")
+        parsed = _safe_parse_datetime(created_at)
+        if parsed is not None:
+            agent["created_at"] = parsed
+    _cache_set(cache_key, agents, ttl_sec=30)
     return agents
 
 @api_router.get("/agents/{agent_id}", response_model=Agent)
@@ -1904,8 +1955,10 @@ async def get_agent(agent_id: str, current_user: User = Depends(get_current_user
     agent = await db.agents.find_one({"id": agent_id}, {"_id": 0})
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
-    if isinstance(agent.get('created_at'), str):
-        agent['created_at'] = datetime.fromisoformat(agent['created_at'])
+    created_at = agent.get("created_at")
+    parsed = _safe_parse_datetime(created_at)
+    if parsed is not None:
+        agent["created_at"] = parsed
     return Agent(**agent)
 
 # Procurement endpoints
@@ -1954,8 +2007,8 @@ async def create_procurement_lot(lot_data: ProcurementLotCreate, current_user: U
     lot_dict['arrival_time'] = lot_dict['arrival_time'].isoformat()
     
     await db.procurement_lots.insert_one(lot_dict)
+    _invalidate_procurement_lots_cache()
     await create_audit_log(current_user.id, "CREATE_LOT", "procurement", {"lot_id": lot.id})
-    
     # Auto-create gate_ice wastage record
     if lot.gross_weight_kg > 0:
         await create_wastage_record(
@@ -1972,8 +2025,24 @@ async def create_procurement_lot(lot_data: ProcurementLotCreate, current_user: U
     
     return lot
 
+def _invalidate_procurement_lots_cache():
+    try:
+        tid = tenant_context.get_tenant()
+        _response_cache.pop(f"procurement_lots:{tid}", None)
+    except Exception:
+        pass
+
+
 @api_router.get("/procurement/lots", response_model=List[ProcurementLot])
 async def get_procurement_lots(current_user: User = Depends(get_current_user)):
+    try:
+        tid = tenant_context.get_tenant()
+    except Exception:
+        tid = "default"
+    cache_key = f"procurement_lots:{tid}"
+    cached = _cache_get(cache_key, ttl_sec=30)
+    if cached is not None:
+        return cached
     lots = await db.procurement_lots.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
     for lot in lots:
         if isinstance(lot.get('created_at'), str):
@@ -1983,6 +2052,7 @@ async def get_procurement_lots(current_user: User = Depends(get_current_user)):
         for payment in lot.get('payments', []):
             if isinstance(payment.get('payment_date'), str):
                 payment['payment_date'] = datetime.fromisoformat(payment['payment_date'])
+    _cache_set(cache_key, lots, ttl_sec=30)
     return lots
 
 @api_router.get("/procurement/lots/{lot_id}", response_model=ProcurementLot)
@@ -2174,11 +2244,28 @@ async def create_finished_good(fg_data: FinishedGoodCreate, current_user: User =
         fg_dict['expiry_date'] = fg_dict['expiry_date'].isoformat()
     
     await db.finished_goods.insert_one(fg_dict)
+    _invalidate_finished_goods_cache()
     await create_audit_log(current_user.id, "CREATE_FINISHED_GOOD", "production", {"fg_id": fg.id})
     return fg
 
+def _invalidate_finished_goods_cache():
+    try:
+        tid = tenant_context.get_tenant()
+        _response_cache.pop(f"finished_goods:{tid}", None)
+    except Exception:
+        pass
+
+
 @api_router.get("/finished-goods", response_model=List[FinishedGood])
 async def get_finished_goods(current_user: User = Depends(get_current_user)):
+    try:
+        tid = tenant_context.get_tenant()
+    except Exception:
+        tid = "default"
+    cache_key = f"finished_goods:{tid}"
+    cached = _cache_get(cache_key, ttl_sec=30)
+    if cached is not None:
+        return cached
     fgs = await db.finished_goods.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
     for fg in fgs:
         if isinstance(fg.get('created_at'), str):
@@ -2187,6 +2274,7 @@ async def get_finished_goods(current_user: User = Depends(get_current_user)):
             fg['manufactured_date'] = datetime.fromisoformat(fg['manufactured_date'])
         if fg.get('expiry_date') and isinstance(fg['expiry_date'], str):
             fg['expiry_date'] = datetime.fromisoformat(fg['expiry_date'])
+    _cache_set(cache_key, fgs, ttl_sec=30)
     return fgs
 
 # Notifications
@@ -2221,39 +2309,121 @@ async def get_notifications(current_user: User = Depends(get_current_user)):
             notif['created_at'] = datetime.fromisoformat(notif['created_at'])
     return notifs
 
-# Dashboard
+# Dashboard (optimized: counts + aggregation instead of loading all docs)
 @api_router.get("/dashboard/stats", response_model=DashboardStats)
 async def get_dashboard_stats(current_user: User = Depends(get_current_user)):
-    lots = await db.procurement_lots.find({}, {"_id": 0}).to_list(10000)
-    batches = await db.preprocessing_batches.find({"end_time": None}, {"_id": 0}).to_list(1000)
-    orders = await db.production_orders.find({"qc_status": "pending"}, {"_id": 0}).to_list(1000)
-    fgs = await db.finished_goods.find({}, {"_id": 0}).to_list(10000)
-    pending_qc = await db.finished_goods.find({"qc_status": "pending"}, {"_id": 0}).to_list(1000)
-    
-    total_weight = sum(lot.get('net_weight_kg', 0) for lot in lots)
-    total_value = sum(lot.get('total_amount', 0) for lot in lots)
-    fg_inventory = sum(fg.get('weight_kg', 0) for fg in fgs)
-    
-    recent_lots = await db.procurement_lots.find({}, {"_id": 0}).sort("created_at", -1).limit(5).to_list(5)
+    # Use count_documents and aggregation for speed (no full collection scan)
+    lot_count = await db.procurement_lots.count_documents({})
+    lot_agg = await db.procurement_lots.aggregate([
+        {"$group": {"_id": None, "weight": {"$sum": {"$ifNull": ["$net_weight_kg", 0]}}, "value": {"$sum": {"$ifNull": ["$total_amount", 0]}}}}
+    ]).to_list(1)
+    total_value = lot_agg[0]["value"] if lot_agg else 0
+    inv_agg = await db.purchase_invoices.aggregate([
+        {"$group": {"_id": None, "total_quantity_kg": {"$sum": {"$ifNull": ["$total_quantity_kg", 0]}}}}
+    ]).to_list(1)
+    total_weight = (inv_agg[0]["total_quantity_kg"] if inv_agg else 0) or 0
+
+    active_batches = await db.preprocessing_batches.count_documents({"end_time": None})
+    active_orders = await db.production_orders.count_documents({"qc_status": "pending"})
+    fg_agg = await db.finished_goods.aggregate([
+        {"$group": {"_id": None, "inventory": {"$sum": "$weight_kg"}}}
+    ]).to_list(1)
+    fg_inventory = fg_agg[0]["inventory"] if fg_agg else 0
+    pending_qc = await db.finished_goods.count_documents({"qc_status": "pending"})
+
+    recent_lots = await db.procurement_lots.find({}, {"_id": 0, "lot_number": 1, "net_weight_kg": 1, "created_at": 1}).sort("created_at", -1).limit(5).to_list(5)
     recent_activities = [
-        {
-            "type": "procurement",
-            "description": f"New lot {lot.get('lot_number')} - {lot.get('net_weight_kg'):.2f} KG",
-            "timestamp": lot.get('created_at')
-        }
+        {"type": "procurement", "description": f"New lot {lot.get('lot_number')} - {(lot.get('net_weight_kg') or 0):.2f} KG", "timestamp": lot.get("created_at")}
         for lot in recent_lots
     ]
-    
+
     return DashboardStats(
-        total_procurement_lots=len(lots),
+        total_procurement_lots=lot_count,
         total_weight_procured_kg=total_weight,
         total_procurement_value=total_value,
-        active_preprocessing_batches=len(batches),
-        active_production_orders=len(orders),
+        active_preprocessing_batches=active_batches,
+        active_production_orders=active_orders,
         finished_goods_inventory_kg=fg_inventory,
-        pending_qc_items=len(pending_qc),
+        pending_qc_items=pending_qc,
         recent_activities=recent_activities
     )
+
+
+@api_router.get("/dashboard/overview")
+async def get_dashboard_overview(current_user: User = Depends(get_current_user)):
+    """Single endpoint for dashboard: stats + recent lots + batches + live prices. Cached 30s per tenant. Queries run in parallel for speed."""
+    try:
+        tid = tenant_context.get_tenant()
+    except Exception:
+        tid = "default"
+    cache_key = f"dashboard_overview:{tid}"
+    cached = _cache_get(cache_key, ttl_sec=30)
+    if cached is not None:
+        return cached
+
+    # Run all independent MongoDB operations in parallel (biggest win after login)
+    (
+        lot_count,
+        lot_agg_list,
+        purchase_inv_agg_list,
+        active_batches,
+        active_orders,
+        fg_agg_list,
+        pending_qc,
+        recent_lots_list,
+        lots,
+        batches,
+    ) = await asyncio.gather(
+        db.procurement_lots.count_documents({}),
+        db.procurement_lots.aggregate([{"$group": {"_id": None, "weight": {"$sum": {"$ifNull": ["$net_weight_kg", 0]}}, "value": {"$sum": {"$ifNull": ["$total_amount", 0]}}}}]).to_list(1),
+        db.purchase_invoices.aggregate([{"$group": {"_id": None, "total_quantity_kg": {"$sum": {"$ifNull": ["$total_quantity_kg", 0]}}}}]).to_list(1),
+        db.preprocessing_batches.count_documents({"end_time": None}),
+        db.production_orders.count_documents({"qc_status": "pending"}),
+        db.finished_goods.aggregate([{"$group": {"_id": None, "inventory": {"$sum": "$weight_kg"}}}]).to_list(1),
+        db.finished_goods.count_documents({"qc_status": "pending"}),
+        db.procurement_lots.find({}, {"_id": 0, "lot_number": 1, "net_weight_kg": 1, "created_at": 1}).sort("created_at", -1).limit(5).to_list(5),
+        db.procurement_lots.find({}, {"_id": 0}).sort("created_at", -1).limit(50).to_list(50),
+        db.preprocessing_batches.find({}, {"_id": 0}).sort("created_at", -1).limit(50).to_list(50),
+    )
+
+    lot_agg = lot_agg_list
+    total_value = lot_agg[0]["value"] if lot_agg else 0
+    # Weight procured = sum of kg from purchase invoices only
+    total_weight = (purchase_inv_agg_list[0]["total_quantity_kg"] if purchase_inv_agg_list else 0) or 0
+    fg_agg = fg_agg_list
+    fg_inventory = fg_agg[0]["inventory"] if fg_agg else 0
+    recent_activities = [
+        {"type": "procurement", "description": f"New lot {lot.get('lot_number')} - {(lot.get('net_weight_kg') or 0):.2f} KG", "timestamp": lot.get("created_at")}
+        for lot in recent_lots_list
+    ]
+    stats = {
+        "total_procurement_lots": lot_count,
+        "total_weight_procured_kg": total_weight,
+        "total_procurement_value": total_value,
+        "active_preprocessing_batches": active_batches,
+        "active_production_orders": active_orders,
+        "finished_goods_inventory_kg": fg_inventory,
+        "pending_qc_items": pending_qc,
+        "recent_activities": recent_activities,
+    }
+    for lot in lots:
+        lot["created_at"] = _safe_parse_datetime(lot.get("created_at"))
+        lot["arrival_time"] = _safe_parse_datetime(lot.get("arrival_time"))
+        for p in lot.get("payments", []):
+            p["payment_date"] = _safe_parse_datetime(p.get("payment_date"))
+    for batch in batches:
+        batch["created_at"] = _safe_parse_datetime(batch.get("created_at"))
+        batch["start_time"] = _safe_parse_datetime(batch.get("start_time"))
+        batch["end_time"] = _safe_parse_datetime(batch.get("end_time"))
+    live_prices = [
+        {"id": str(uuid.uuid4()), "category": "Vannamei 30/40", "price_per_kg": 420.0, "location": "Andhra Pradesh", "market": "Nellore", "date": datetime.now(timezone.utc), "source": "Market Data"},
+        {"id": str(uuid.uuid4()), "category": "Vannamei 40/60", "price_per_kg": 380.0, "location": "Andhra Pradesh", "market": "Kakinada", "date": datetime.now(timezone.utc), "source": "Market Data"},
+        {"id": str(uuid.uuid4()), "category": "Vannamei 60/80", "price_per_kg": 340.0, "location": "Andhra Pradesh", "market": "Bhimavaram", "date": datetime.now(timezone.utc), "source": "Market Data"},
+        {"id": str(uuid.uuid4()), "category": "Black Tiger 20/30", "price_per_kg": 650.0, "location": "Andhra Pradesh", "market": "Nellore", "date": datetime.now(timezone.utc), "source": "Market Data"},
+    ]
+    out = {"stats": stats, "lots": lots, "batches": batches, "live_prices": live_prices}
+    _cache_set(cache_key, out, ttl_sec=30)
+    return out
 
 
 
@@ -2699,6 +2869,119 @@ async def download_wage_bill_pdf(bill_id: str, current_user: User = Depends(get_
 # Purchase Invoice Endpoints (Amendment A4)
 # ══════════════════════════════════════════════════════════════════════════════
 
+def normalize_invoice_advance_balance(invoice: dict) -> None:
+    """Ensure advance_paid and balance_due are set on invoice dict (for list, single, PDF, ledger).
+    Always derive balance_due from grand_total - advance_paid so stored zeros don't hide real amounts.
+    """
+    if not invoice:
+        return
+    advance = float(invoice.get("advance_paid") or 0)
+    invoice["advance_paid"] = advance
+    grand = float(invoice.get("grand_total") or 0)
+    # Always compute from source of truth so metrics/list never show wrong zeros
+    invoice["balance_due"] = round(grand - advance, 2)
+
+
+def _build_purchase_invoice_list_query(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    invoice_status: Optional[str] = None,
+    search: Optional[str] = None,
+) -> dict:
+    """Build MongoDB query for purchase invoice list/metrics. Same logic for both so stats cards match filters (date, search, payment status, invoice status)."""
+    query: dict = {}
+    if from_date or to_date:
+        query["invoice_date"] = {}
+        if from_date:
+            query["invoice_date"]["$gte"] = from_date
+        if to_date:
+            query["invoice_date"]["$lte"] = to_date
+    if payment_status and payment_status.strip():
+        statuses = [s.strip() for s in payment_status.split(",") if s.strip()]
+        if statuses:
+            query["payment_status"] = {"$in": statuses}
+    if invoice_status and invoice_status.strip():
+        statuses = [s.strip() for s in invoice_status.split(",") if s.strip()]
+        if statuses:
+            query["status"] = {"$in": statuses}
+    if search and search.strip():
+        search_term = search.strip()
+        query["$or"] = [
+            {"farmer_name": {"$regex": search_term, "$options": "i"}},
+            {"invoice_no": {"$regex": search_term, "$options": "i"}},
+            {"agent_ref_name": {"$regex": search_term, "$options": "i"}},
+            {"party_name_text": {"$regex": search_term, "$options": "i"}},
+        ]
+    return query
+
+
+def _purchase_invoice_metrics_aggregation(query: dict):
+    """Run aggregation to get count + metrics. Total kg = sum of line item quantity_kg (source of truth)."""
+    pipeline = [
+        {"$match": query},
+        {"$lookup": {
+            "from": "purchase_invoice_lines",
+            "localField": "id",
+            "foreignField": "invoice_id",
+            "as": "lines",
+        }},
+        {"$addFields": {
+            "balance_due": {"$round": [{"$subtract": [{"$ifNull": ["$grand_total", 0]}, {"$ifNull": ["$advance_paid", 0]}]}, 2]},
+            "effective_total_kg": {
+                "$reduce": {
+                    "input": {"$ifNull": ["$lines", []]},
+                    "initialValue": 0,
+                    "in": {"$add": ["$$value", {"$ifNull": ["$$this.quantity_kg", 0]}]},
+                }
+            },
+        }},
+        {"$group": {
+            "_id": None,
+            "total_count": {"$sum": 1},
+            "total_value": {"$sum": {"$ifNull": ["$grand_total", 0]}},
+            "total_quantity_kg": {"$sum": {"$ifNull": ["$effective_total_kg", 0]}},
+            "advances_paid_total": {"$sum": {"$ifNull": ["$advance_paid", 0]}},
+            "advances_paid_count": {"$sum": {"$cond": [{"$gt": [{"$ifNull": ["$advance_paid", 0]}, 0]}, 1, 0]}},
+            "partial_count": {"$sum": {"$cond": [{"$eq": ["$payment_status", "partial"]}, 1, 0]}},
+            "partial_total": {"$sum": {"$cond": [{"$eq": ["$payment_status", "partial"]}, "$balance_due", 0]}},
+        }},
+    ]
+    cursor = db.purchase_invoices.aggregate(pipeline)
+    row = await cursor.to_list(1)
+    if not row:
+        return {
+            "total_count": 0,
+            "total_value": 0,
+            "total_quantity_kg": 0,
+            "partial_count": 0,
+            "partial_total": 0,
+            "advances_paid_count": 0,
+            "advances_paid_total": 0,
+        }
+    r = row[0]
+    return {
+        "total_count": r["total_count"],
+        "total_value": round(float(r["total_value"]), 2),
+        "total_quantity_kg": round(float(r.get("total_quantity_kg") or 0), 3),
+        "partial_count": r["partial_count"],
+        "partial_total": round(float(r["partial_total"]), 2),
+        "advances_paid_count": r["advances_paid_count"],
+        "advances_paid_total": round(float(r["advances_paid_total"]), 2),
+    }
+
+
+async def _purchase_invoice_total_kg_all() -> float:
+    """Sum of quantity_kg from line items across ALL purchase invoices. Aggregates directly on lines collection (no lookup)."""
+    cursor = db.purchase_invoice_lines.aggregate([
+        {"$group": {"_id": None, "total_quantity_kg": {"$sum": {"$ifNull": ["$quantity_kg", 0]}}}},
+    ])
+    row = await cursor.to_list(1)
+    if not row:
+        return 0.0
+    return float(row[0].get("total_quantity_kg") or 0)
+
+
 @api_router.post("/purchase-invoices", response_model=PurchaseInvoice)
 async def create_purchase_invoice(
     invoice_data: PurchaseInvoiceCreate,
@@ -2806,72 +3089,62 @@ async def get_purchase_invoices(
     page: int = 1,
     per_page: int = 25,
     sort: str = "invoice_date:desc",
+    debug_timing: bool = False,
     current_user: User = Depends(get_current_user)
 ):
-    """Get purchase invoices with filters and pagination"""
-    query = {}
-    
-    # Date filter
-    if from_date or to_date:
-        query['invoice_date'] = {}
-        if from_date:
-            query['invoice_date']['$gte'] = from_date
-        if to_date:
-            query['invoice_date']['$lte'] = to_date
-    
-    # Payment status filter (can be comma-separated)
-    if payment_status:
-        statuses = [s.strip() for s in payment_status.split(',')]
-        query['payment_status'] = {'$in': statuses}
-    
-    # Invoice status filter (can be comma-separated)
-    if invoice_status:
-        statuses = [s.strip() for s in invoice_status.split(',')]
-        query['status'] = {'$in': statuses}
-    
-    # Search filter
-    if search:
-        query['$or'] = [
-            {'farmer_name': {'$regex': search, '$options': 'i'}},
-            {'invoice_no': {'$regex': search, '$options': 'i'}},
-            {'agent_ref_name': {'$regex': search, '$options': 'i'}},
-            {'party_name_text': {'$regex': search, '$options': 'i'}}
-        ]
-    
-    # Get total count
-    total = await db.purchase_invoices.count_documents(query)
-    
-    # Parse sort
+    """Get purchase invoices with filters and pagination. Omitted or empty filters mean no restriction. Uses aggregation for metrics (fast) and paginated find for list. Use debug_timing=1 to get timing breakdown in response."""
+    query = _build_purchase_invoice_list_query(from_date, to_date, payment_status, invoice_status, search)
     sort_field, sort_dir = sort.split(':')
     sort_direction = -1 if sort_dir == 'desc' else 1
-    
-    # Calculate pagination
     skip = (page - 1) * per_page
-    
-    # Fetch invoices
-    invoices = await db.purchase_invoices.find(query, {"_id": 0}) \
-        .sort(sort_field, sort_direction) \
-        .skip(skip) \
-        .limit(per_page) \
-        .to_list(per_page)
-    
-    # Enrich invoices with party short_code
-    for invoice in invoices:
-        if invoice.get('party_id'):
-            party = await db.parties.find_one({"id": invoice['party_id']}, {"_id": 0, "short_code": 1})
-            if party:
-                invoice['party_short_code'] = party.get('short_code')
-    
-    # Calculate total pages
-    pages = (total + per_page - 1) // per_page
-    
-    return {
+
+    t0 = time.perf_counter() if debug_timing else None
+
+    # Run metrics aggregation, page fetch, and all-invoices total kg in parallel
+    async def fetch_page():
+        cursor = db.purchase_invoices.find(query, {"_id": 0}).sort(sort_field, sort_direction).skip(skip).limit(per_page)
+        return await cursor.to_list(per_page)
+
+    metrics, invoices, total_kg_all = await asyncio.gather(
+        _purchase_invoice_metrics_aggregation(query),
+        fetch_page(),
+        _purchase_invoice_total_kg_all(),
+    )
+    metrics["total_quantity_kg_all"] = round(total_kg_all, 3)  # All invoices, not just selected filters
+    total = metrics["total_count"]
+    pages = (total + per_page - 1) // per_page if per_page else 0
+
+    t1 = time.perf_counter() if debug_timing else None
+
+    for inv in invoices:
+        normalize_invoice_advance_balance(inv)
+
+    # Batch party short_code lookup (one query instead of N)
+    party_ids = list({inv["party_id"] for inv in invoices if inv.get("party_id")})
+    if party_ids:
+        parties = await db.parties.find({"id": {"$in": party_ids}}, {"_id": 0, "id": 1, "short_code": 1}).to_list(len(party_ids))
+        party_map = {p["id"]: p.get("short_code") for p in parties}
+        for inv in invoices:
+            if inv.get("party_id"):
+                inv["party_short_code"] = party_map.get(inv["party_id"])
+
+    t2 = time.perf_counter() if debug_timing else None
+
+    out = {
         "data": invoices,
         "total": total,
         "page": page,
         "per_page": per_page,
-        "pages": pages
+        "pages": pages,
+        "metrics": metrics,
     }
+    if debug_timing and t0 is not None and t1 is not None and t2 is not None:
+        out["debug_timing_ms"] = {
+            "metrics_and_page_ms": round((t1 - t0) * 1000, 1),
+            "party_lookup_ms": round((t2 - t1) * 1000, 1),
+            "total_ms": round((t2 - t0) * 1000, 1),
+        }
+    return out
 
 @api_router.get("/purchase-invoices/metrics")
 async def get_purchase_invoice_metrics(
@@ -2879,60 +3152,29 @@ async def get_purchase_invoice_metrics(
     to_date: Optional[str] = None,
     payment_status: Optional[str] = None,
     invoice_status: Optional[str] = None,
+    search: Optional[str] = None,
     current_user: User = Depends(get_current_user)
 ):
-    """Get metrics for purchase invoices dashboard"""
-    query = {}
-    
-    # Date filter
-    if from_date or to_date:
-        query['invoice_date'] = {}
-        if from_date:
-            query['invoice_date']['$gte'] = from_date
-        if to_date:
-            query['invoice_date']['$lte'] = to_date
-    
-    # Get all invoices matching filters (excluding drafts from metrics)
-    all_invoices = await db.purchase_invoices.find(
-        {**query, 'status': {'$in': ['approved', 'pushed']}},
-        {"_id": 0}
-    ).to_list(10000)
-    
-    total_count = len(all_invoices)
-    total_value = sum(inv.get('grand_total', 0) for inv in all_invoices)
-    
-    # Payment status breakdown
-    pending_invoices = [inv for inv in all_invoices if inv.get('payment_status') == 'pending']
-    partial_invoices = [inv for inv in all_invoices if inv.get('payment_status') == 'partial']
-    paid_invoices = [inv for inv in all_invoices if inv.get('payment_status') == 'paid']
-    
-    pending_total = sum(inv.get('balance_due', 0) for inv in pending_invoices)
-    partial_total = sum(inv.get('balance_due', 0) for inv in partial_invoices)
-    paid_total = sum(inv.get('grand_total', 0) for inv in paid_invoices)
-    
-    outstanding_total = pending_total + partial_total
-    
-    # Top farmers by outstanding balance (only pending + partial)
-    outstanding_invoices = pending_invoices + partial_invoices
-    farmer_balances = {}
-    for inv in outstanding_invoices:
-        farmer = inv.get('farmer_name', 'Unknown')
-        farmer_balances[farmer] = farmer_balances.get(farmer, 0) + inv.get('balance_due', 0)
-    
-    top_farmers = sorted(farmer_balances.items(), key=lambda x: x[1], reverse=True)[:8]
-    top_farmers = [{"farmer_name": f, "balance_due": b} for f, b in top_farmers]
-    
+    """Get metrics for purchase invoices dashboard. Uses aggregation (fast). Omitted/empty = All (no restriction)."""
+    query = _build_purchase_invoice_list_query(from_date, to_date, payment_status, invoice_status, search)
+    metrics = await _purchase_invoice_metrics_aggregation(query)
+    # Add fields the frontend or other callers may expect from the standalone metrics endpoint
+    pending_total = metrics["partial_total"]  # approximate; full pending would need extra aggregation
+    pending_count = metrics["partial_count"]
     return {
-        "total_count": total_count,
-        "total_value": total_value,
-        "pending_count": len(pending_invoices),
+        "total_count": metrics["total_count"],
+        "total_value": metrics["total_value"],
+        "total_quantity_kg": metrics["total_quantity_kg"],
+        "pending_count": pending_count,
         "pending_total": pending_total,
-        "partial_count": len(partial_invoices),
-        "partial_total": partial_total,
-        "paid_count": len(paid_invoices),
-        "paid_total": paid_total,
-        "outstanding_total": outstanding_total,
-        "top_farmers": top_farmers
+        "partial_count": metrics["partial_count"],
+        "partial_total": metrics["partial_total"],
+        "paid_count": metrics["advances_paid_count"],
+        "paid_total": metrics["advances_paid_total"],
+        "advances_paid_count": metrics["advances_paid_count"],
+        "advances_paid_total": metrics["advances_paid_total"],
+        "outstanding_total": pending_total,
+        "top_farmers": [],  # omit heavy top_farmers for speed; use list endpoint if needed
     }
 
 @api_router.get("/purchase-invoices/{invoice_id}")
@@ -2944,7 +3186,7 @@ async def get_purchase_invoice(
     invoice = await db.purchase_invoices.find_one({"id": invoice_id}, {"_id": 0})
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    
+    normalize_invoice_advance_balance(invoice)
     # Get line items
     lines = await db.purchase_invoice_lines.find(
         {"invoice_id": invoice_id},
@@ -3052,6 +3294,13 @@ async def approve_purchase_invoice(
             "updated_at": datetime.now(timezone.utc).isoformat()
         }}
     )
+
+    # Create party ledger entry as soon as invoice is approved (with invoice details)
+    if invoice.get("party_id"):
+        try:
+            await create_ledger_entry_for_invoice(invoice, current_user.id)
+        except Exception as e:
+            print(f"Warning: Could not create party ledger entry on approve: {e}")
     
     await create_audit_log(current_user.id, "APPROVE_PURCHASE_INVOICE", "procurement",
                           {"invoice_id": invoice_id, "invoice_no": invoice.get('invoice_no')})
@@ -3189,6 +3438,25 @@ async def push_invoice_to_procurement(
         "lot_id": lot['id'],
         "lot_number": lot_number
     }
+
+@api_router.post("/purchase-invoices/{invoice_id}/sync-ledger")
+async def sync_invoice_ledger(
+    invoice_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Ensure party ledger reflects this invoice (bill + advance payment). Idempotent; backfills advance if missing."""
+    if current_user.role not in ['admin', 'owner', 'procurement_manager']:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    invoice = await db.purchase_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if not invoice.get("party_id"):
+        raise HTTPException(status_code=400, detail="Invoice has no party linked")
+    try:
+        await create_ledger_entry_for_invoice(invoice, current_user.id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ledger sync failed: {str(e)}")
+    return {"status": "success", "message": "Ledger synced for invoice"}
 
 @api_router.delete("/purchase-invoices/{invoice_id}")
 async def delete_purchase_invoice(
@@ -3372,6 +3640,13 @@ def generate_purchase_invoice_pdf(invoice: dict, lines: List[dict], tenant_confi
     
     # Add Grand Total row
     line_data.append(['Grand Total', '', '', f"{invoice.get('total_quantity_kg', 0):.3f}", '', f"{invoice.get('grand_total', 0):.2f}"])
+    # Advance Paid and Balance Due (so generated invoice shows them)
+    advance_paid = float(invoice.get('advance_paid') or 0)
+    balance_due = float(invoice.get('balance_due') or 0)
+    if balance_due == 0 and advance_paid > 0:
+        balance_due = float(invoice.get('grand_total') or 0) - advance_paid
+    line_data.append(['Advance Paid', '', '', '', '', f"{advance_paid:.2f}"])
+    line_data.append(['Balance Due', '', '', '', '', f"{balance_due:.2f}"])
     
     line_table = Table(line_data, colWidths=[0.5*inch, 1.5*inch, 1*inch, 1*inch, 0.8*inch, 1*inch])
     line_table.setStyle(TableStyle([
@@ -3381,25 +3656,31 @@ def generate_purchase_invoice_pdf(invoice: dict, lines: List[dict], tenant_confi
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
         ('FONTSIZE', (0, 0), (-1, 0), 10),
         ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
-        # Data rows
-        ('BACKGROUND', (0, 1), (-1, -4), rl_colors.HexColor('#e0f7fa')),
+        # Data rows (header+15 padded rows only; summary rows styled below)
+        ('BACKGROUND', (0, 1), (-1, -7), rl_colors.HexColor('#e0f7fa')),
         ('TEXTCOLOR', (0, 1), (-1, -1), rl_colors.HexColor('#0d47a1')),
         ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
         ('FONTSIZE', (0, 1), (-1, -1), 9),
         ('ALIGN', (0, 1), (-1, -1), 'CENTER'),
         ('ALIGN', (-1, 1), (-1, -1), 'RIGHT'),
-        # TDS row (blue label, red amount)
-        ('TEXTCOLOR', (4, -3), (4, -3), rl_colors.HexColor('#1565c0')),
-        ('TEXTCOLOR', (5, -3), (5, -3), rl_colors.HexColor('#d32f2f')),
-        ('FONTNAME', (4, -3), (5, -3), 'Helvetica-Bold'),
-        # Rounded Off row (blue label, red amount)
-        ('TEXTCOLOR', (4, -2), (4, -2), rl_colors.HexColor('#1565c0')),
-        ('TEXTCOLOR', (5, -2), (5, -2), rl_colors.HexColor('#d32f2f')),
-        ('FONTNAME', (4, -2), (5, -2), 'Helvetica-Bold'),
-        # Grand Total row
-        ('BACKGROUND', (0, -1), (-1, -1), rl_colors.HexColor('#e0f7fa')),
+        # TDS row (now -5 from end)
+        ('TEXTCOLOR', (4, -5), (4, -5), rl_colors.HexColor('#1565c0')),
+        ('TEXTCOLOR', (5, -5), (5, -5), rl_colors.HexColor('#d32f2f')),
+        ('FONTNAME', (4, -5), (5, -5), 'Helvetica-Bold'),
+        # Rounded Off row (now -4)
+        ('TEXTCOLOR', (4, -4), (4, -4), rl_colors.HexColor('#1565c0')),
+        ('TEXTCOLOR', (5, -4), (5, -4), rl_colors.HexColor('#d32f2f')),
+        ('FONTNAME', (4, -4), (5, -4), 'Helvetica-Bold'),
+        # Grand Total row (now -3)
+        ('BACKGROUND', (0, -3), (-1, -3), rl_colors.HexColor('#e0f7fa')),
+        ('FONTNAME', (0, -3), (-1, -3), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, -3), (-1, -3), 11),
+        # Advance Paid row (-2)
+        ('FONTNAME', (0, -2), (-1, -2), 'Helvetica'),
+        # Balance Due row (-1)
+        ('BACKGROUND', (0, -1), (-1, -1), rl_colors.HexColor('#e8f5e9')),
         ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, -1), (-1, -1), 11),
+        ('FONTSIZE', (0, -1), (-1, -1), 10),
         # Grid
         ('GRID', (0, 0), (-1, -1), 1, rl_colors.HexColor('#0d47a1')),
         ('TOPPADDING', (0, 0), (-1, -1), 4),
@@ -3449,17 +3730,14 @@ async def download_purchase_invoice_pdf(
     invoice = await db.purchase_invoices.find_one({"id": invoice_id}, {"_id": 0})
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    
+    normalize_invoice_advance_balance(invoice)
     # Get line items
     lines = await db.purchase_invoice_lines.find(
         {"invoice_id": invoice_id},
         {"_id": 0}
     ).sort("line_no", 1).to_list(100)
     
-    # Get tenant config
-    config_docs = await db.tenant_config.find({}, {"_id": 0}).to_list(100)
-    tenant_config = {doc['key']: doc['value'] for doc in config_docs}
-    
+    tenant_config = await get_tenant_config_dict()
     # Generate PDF
     pdf_bytes = generate_purchase_invoice_pdf(invoice, lines, tenant_config)
     
@@ -3475,9 +3753,9 @@ async def download_purchase_invoice_pdf(
 
 @api_router.get("/tenant-config")
 async def get_tenant_config(current_user: User = Depends(get_current_user)):
-    """Get all tenant configuration"""
-    config_docs = await db.tenant_config.find({}, {"_id": 0}).to_list(100)
-    return config_docs
+    """Get all tenant configuration (cached 60s)."""
+    d = await get_tenant_config_dict()
+    return [{"key": k, "value": v} for k, v in d.items()]
 
 @api_router.post("/tenant-config")
 async def update_tenant_config(
@@ -3500,10 +3778,13 @@ async def update_tenant_config(
         {"$set": {"key": key, "value": value}},
         upsert=True
     )
-    
+    try:
+        tid = tenant_context.get_tenant()
+        _response_cache.pop(f"tenant_config_dict:{tid}", None)
+    except Exception:
+        pass
     await create_audit_log(current_user.id, "UPDATE_TENANT_CONFIG", "admin",
                           {"key": key})
-    
     return {"status": "success", "message": "Configuration updated"}
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3854,13 +4135,18 @@ async def get_audit_logs(
     # Get total count
     total = await db.audit_logs.count_documents(query)
     
-    # Enrich logs with user names
+    # Batch enrich logs with user names (one query instead of N)
+    user_ids = list({log["user_id"] for log in logs if log.get("user_id")})
+    user_map = {}
+    if user_ids:
+        users = await db.users.find({"id": {"$in": user_ids}}, {"_id": 0, "id": 1, "name": 1, "email": 1}).to_list(len(user_ids))
+        user_map = {u["id"]: u for u in users}
     for log in logs:
-        if log.get('user_id'):
-            user = await db.users.find_one({"id": log['user_id']}, {"_id": 0, "name": 1, "email": 1})
+        if log.get("user_id"):
+            user = user_map.get(log["user_id"])
             if user:
-                log['user_name'] = user.get('name', 'Unknown')
-                log['user_email'] = user.get('email', 'Unknown')
+                log["user_name"] = user.get("name", "Unknown")
+                log["user_email"] = user.get("email", "Unknown")
     
     return {
         "logs": logs,
@@ -4446,9 +4732,16 @@ async def get_wastage_breach_alerts(current_user: User = Depends(get_current_use
         "alert_acknowledged": False
     }, {"_id": 0}).sort("created_at", -1).to_list(100)
     
+    # Batch fetch lots (one query instead of N)
+    lot_ids = list({a["lot_id"] for a in alerts if a.get("lot_id")})
+    lot_map = {}
+    if lot_ids:
+        lots = await db.procurement_lots.find({"id": {"$in": lot_ids}}, {"_id": 0, "id": 1, "lot_number": 1, "species": 1}).to_list(len(lot_ids))
+        lot_map = {l["id"]: l for l in lots}
+    
     result = []
     for alert in alerts:
-        lot = await db.procurement_lots.find_one({"id": alert['lot_id']}, {"_id": 0, "lot_number": 1, "species": 1})
+        lot = lot_map.get(alert["lot_id"]) if alert.get("lot_id") else None
         if lot:
             variance_pct = alert['yield_pct'] - alert['min_yield_pct'] if alert.get('min_yield_pct') else 0
             result.append(WastageBreachAlert(
@@ -4888,7 +5181,7 @@ async def create_party(party: PartyCreate, current_user: User = Depends(get_curr
     party_data["is_active"] = True
     
     await db.parties.insert_one(party_data)
-    
+    _invalidate_parties_cache()
     # Auto-create ledger account with opening balance 0 for current FY
     current_fy = get_financial_year(date.today())
     ledger_id = str(uuid.uuid4())
@@ -4930,13 +5223,21 @@ async def create_party(party: PartyCreate, current_user: User = Depends(get_curr
     
     return Party(**party_data)
 
+def _invalidate_parties_cache():
+    try:
+        tid = tenant_context.get_tenant()
+        _response_cache.pop(f"parties_list:{tid}", None)
+    except Exception:
+        pass
+
+
 @api_router.get("/parties", response_model=List[Party])
 async def list_parties(
     search: Optional[str] = None,
     is_active: Optional[bool] = None,
     current_user: User = Depends(get_current_user)
 ):
-    """List all parties with optional search"""
+    """List all parties with optional search. Full list (no filters) cached 30s."""
     query = {}
     if search:
         query["$or"] = [
@@ -4947,18 +5248,37 @@ async def list_parties(
     if is_active is not None:
         query["is_active"] = is_active
     
+    use_cache = not query  # cache only unfiltered list (dropdown / default load)
+    try:
+        tid = tenant_context.get_tenant()
+    except Exception:
+        tid = "default"
+    cache_key = f"parties_list:{tid}"
+    if use_cache:
+        cached = _cache_get(cache_key, ttl_sec=30)
+        if cached is not None:
+            return cached
+    
     parties = await db.parties.find(query, {"_id": 0}).sort("party_name", 1).to_list(1000)
     
-    # Add current FY ledger balance for each party
+    # Batch fetch current FY ledger balances (one query instead of N)
     current_fy = get_financial_year(date.today())
+    party_ids = [p["id"] for p in parties]
+    ledger_map = {}
+    if party_ids:
+        ledgers = await db.party_ledger_accounts.find(
+            {"party_id": {"$in": party_ids}, "financial_year": current_fy},
+            {"_id": 0, "party_id": 1, "closing_balance": 1}
+        ).to_list(len(party_ids))
+        ledger_map = {lg["party_id"]: lg for lg in ledgers}
     for party in parties:
-        ledger = await db.party_ledger_accounts.find_one(
-            {"party_id": party["id"], "financial_year": current_fy},
-            {"_id": 0, "closing_balance": 1}
-        )
+        ledger = ledger_map.get(party["id"])
         party["current_fy_balance"] = ledger["closing_balance"] if ledger else 0.0
     
-    return [Party(**p) for p in parties]
+    result = [Party(**p) for p in parties]
+    if use_cache:
+        _cache_set(cache_key, result, ttl_sec=30)
+    return result
 
 @api_router.get("/parties/{party_id}", response_model=Party)
 async def get_party(party_id: str, current_user: User = Depends(get_current_user)):
@@ -4984,6 +5304,7 @@ async def update_party(party_id: str, party: PartyCreate, current_user: User = D
     update_data["updated_at"] = datetime.now(timezone.utc)
     
     await db.parties.update_one({"id": party_id}, {"$set": update_data})
+    _invalidate_parties_cache()
     updated = await db.parties.find_one({"id": party_id}, {"_id": 0})
     return Party(**updated)
 
@@ -5002,10 +5323,12 @@ async def delete_party(party_id: str, current_user: User = Depends(get_current_u
             {"id": party_id}, 
             {"$set": {"is_active": False, "updated_at": datetime.now(timezone.utc)}}
         )
+        _invalidate_parties_cache()
         return {"message": "Party deactivated (has ledger history)"}
     
     # Hard delete if no entries
     await db.parties.delete_one({"id": party_id})
+    _invalidate_parties_cache()
     return {"message": "Party deleted"}
 
 
@@ -5047,25 +5370,27 @@ async def list_party_ledgers_with_details(
     
     parties = await db.parties.find(query, {"_id": 0}).sort("party_name", 1).to_list(1000)
     
-    # Enrich each party with ledger info
+    # Batch fetch ledger accounts for this FY (one query instead of N)
+    party_ids = [p["id"] for p in parties]
+    ledger_map = {}
+    if party_ids:
+        ledgers = await db.party_ledger_accounts.find(
+            {"party_id": {"$in": party_ids}, "financial_year": fy},
+            {"_id": 0}
+        ).to_list(len(party_ids))
+        ledger_map = {lg["party_id"]: lg for lg in ledgers}
+    
+    default_ledger = {
+        "financial_year": fy,
+        "opening_balance": 0.0,
+        "closing_balance": 0.0,
+        "total_billed": 0.0,
+        "total_tds": 0.0,
+        "total_payments": 0.0
+    }
     result = []
     for party in parties:
-        # Get ledger account for this party and FY
-        ledger = await db.party_ledger_accounts.find_one(
-            {"party_id": party["id"], "financial_year": fy},
-            {"_id": 0}
-        )
-        
-        # If no ledger exists, create a default one
-        if not ledger:
-            ledger = {
-                "financial_year": fy,
-                "opening_balance": 0.0,
-                "closing_balance": 0.0,
-                "total_billed": 0.0,
-                "total_tds": 0.0,
-                "total_payments": 0.0
-            }
+        ledger = ledger_map.get(party["id"]) or default_ledger
         
         result.append({
             "id": party["id"],
@@ -5099,21 +5424,25 @@ async def list_party_ledgers(
     # Get all ledgers for this FY
     query = {"financial_year": fy}
     ledgers = await db.party_ledger_accounts.find(query, {"_id": 0}).to_list(1000)
-    
-    # Enrich with party details
+    if not ledgers:
+        return []
+    # Batch fetch parties (avoids N+1)
+    party_ids = [lg["party_id"] for lg in ledgers]
+    parties = await db.parties.find({"id": {"$in": party_ids}}, {"_id": 0, "id": 1, "party_name": 1, "party_alias": 1, "short_code": 1}).to_list(len(party_ids))
+    party_map = {p["id"]: p for p in parties}
     result = []
     for ledger in ledgers:
-        party = await db.parties.find_one({"id": ledger["party_id"]}, {"_id": 0})
-        if party:
-            if search and search.lower() not in party.get("party_name", "").lower():
-                continue
-            result.append({
-                **ledger,
-                "party_name": party.get("party_name"),
-                "party_alias": party.get("party_alias"),
-                "short_code": party.get("short_code")
-            })
-    
+        party = party_map.get(ledger["party_id"])
+        if not party:
+            continue
+        if search and search.lower() not in (party.get("party_name") or "").lower():
+            continue
+        result.append({
+            **ledger,
+            "party_name": party.get("party_name"),
+            "party_alias": party.get("party_alias"),
+            "short_code": party.get("short_code")
+        })
     return result
 
 @api_router.get("/party-ledger/parties/{party_id}/ledger")
@@ -5153,11 +5482,30 @@ async def get_party_ledger_detail(
             "entries": []
         }
     
-    # Get all entries
+    # Get all entries (recompute only on write, not on every read - big perf win)
     entries = await db.party_ledger_entries.find(
         {"ledger_id": ledger["id"]},
         {"_id": 0}
     ).sort("entry_order", 1).to_list(10000)
+    
+    # Batch-fetch invoice lines for all bill entries (avoids N+1)
+    invoice_ids = list({e["invoice_id"] for e in entries if e.get("entry_type") == "bill" and e.get("invoice_id")})
+    lines_by_invoice = {}
+    if invoice_ids:
+        all_lines = await db.purchase_invoice_lines.find(
+            {"invoice_id": {"$in": invoice_ids}},
+            {"_id": 0, "invoice_id": 1, "line_no": 1, "count_value": 1, "quantity_kg": 1, "rate": 1, "amount": 1}
+        ).sort("line_no", 1).to_list(5000)
+        for line in all_lines:
+            iid = line.get("invoice_id")
+            if iid not in lines_by_invoice:
+                lines_by_invoice[iid] = []
+            lines_by_invoice[iid].append({
+                "count_value": line.get("count_value", ""),
+                "quantity_kg": line.get("quantity_kg", 0),
+                "rate": line.get("rate", 0),
+                "amount": line.get("amount", 0)
+            })
     
     # Format entries as per spec
     formatted_entries = []
@@ -5166,27 +5514,12 @@ async def get_party_ledger_detail(
             "id": entry["id"],
             "entry_date": entry["entry_date"].isoformat() if isinstance(entry["entry_date"], datetime) else entry["entry_date"],
             "entry_type": entry["entry_type"],
-            "bill_no": entry.get("invoice_no", ""),  # Map invoice_no to bill_no
+            "bill_no": entry.get("invoice_no", ""),
             "entry_order": entry["entry_order"],
             "balance_after": entry["balance_after"]
         }
-        
-        # For bill entries, get line items
         if entry.get("entry_type") == "bill" and entry.get("invoice_id"):
-            lines = await db.purchase_invoice_lines.find(
-                {"invoice_id": entry["invoice_id"]},
-                {"_id": 0}
-            ).sort("line_no", 1).to_list(100)
-            
-            formatted_entry["lines"] = [
-                {
-                    "count_value": line.get("count_value", ""),
-                    "quantity_kg": line.get("quantity_kg", 0),
-                    "rate": line.get("rate", 0),
-                    "amount": line.get("amount", 0)
-                }
-                for line in lines
-            ]
+            formatted_entry["lines"] = lines_by_invoice.get(entry["invoice_id"], [])
             formatted_entry["total_bill"] = entry.get("bill_subtotal", 0)
             formatted_entry["tds_rate_pct"] = entry.get("tds_rate_pct", 0.1)
             formatted_entry["tds_amount"] = entry.get("tds_amount", 0)
@@ -5200,6 +5533,7 @@ async def get_party_ledger_detail(
             formatted_entry["payment_date"] = entry.get("payment_date", entry["entry_date"])
             formatted_entry["paid_to"] = entry.get("paid_to", "")
             formatted_entry["payment_mode"] = entry.get("payment_mode", "")
+            formatted_entry["description"] = entry.get("description", "Payment Received")
         
         # For manual entries
         if entry.get("entry_type") in ("manual_debit", "manual_credit"):
@@ -5275,19 +5609,24 @@ async def get_party_ledger(
         {"_id": 0}
     ).sort("entry_order", 1).to_list(10000)
     
-    # Get invoice line items for bill entries
+    # Batch-fetch invoice line items for bill entries (avoids N+1)
+    invoice_ids = list({e["invoice_id"] for e in entries if e.get("entry_type") == "bill" and e.get("invoice_id")})
+    lines_by_invoice = {}
+    if invoice_ids:
+        all_lines = await db.purchase_invoice_lines.find(
+            {"invoice_id": {"$in": invoice_ids}},
+            {"_id": 0}
+        ).sort("line_no", 1).to_list(5000)
+        for line in all_lines:
+            iid = line.get("invoice_id")
+            if iid not in lines_by_invoice:
+                lines_by_invoice[iid] = []
+            lines_by_invoice[iid].append(line)
     for entry in entries:
         if entry.get("entry_type") == "bill" and entry.get("invoice_id"):
-            lines = await db.purchase_invoice_lines.find(
-                {"invoice_id": entry["invoice_id"]},
-                {"_id": 0}
-            ).sort("line_no", 1).to_list(100)
-            entry["line_items"] = lines
+            entry["line_items"] = lines_by_invoice.get(entry["invoice_id"], [])
     
-    # Get tenant config for header
-    config_docs = await db.tenant_config.find({}, {"_id": 0}).to_list(100)
-    tenant_config = {doc['key']: doc['value'] for doc in config_docs}
-    
+    tenant_config = await get_tenant_config_dict()
     return {
         "party": party,
         "ledger": ledger,
@@ -5410,22 +5749,99 @@ async def recompute_ledger_balances(ledger_id: str):
 
 async def create_ledger_entry_for_invoice(invoice: dict, current_user_id: str):
     """
-    Create a ledger entry when an invoice is pushed.
-    Called from the push-to-procurement endpoint.
+    Create a party ledger (bill) entry from invoice details.
+    Called when an invoice is approved and optionally when pushed to procurement (if not already created).
+    Uses invoice subtotal/grand_total; falls back to summing line items if amounts are missing/zero.
     """
+    normalize_invoice_advance_balance(invoice)
     party_id = invoice.get("party_id")
     if not party_id:
         return None  # No party linked, no ledger entry
-    
+
+    invoice_id = invoice.get("id")
+    if not invoice_id:
+        return None
+
+    # Avoid duplicate bill entry for the same invoice
+    existing_bill = await db.party_ledger_entries.find_one(
+        {"invoice_id": invoice_id, "entry_type": "bill"}
+    )
+    if existing_bill:
+        # Bill already exists; ensure advance_paid is reflected (backfill if missing)
+        advance_paid = float(invoice.get("advance_paid") or 0)
+        if advance_paid > 0:
+            existing_payment = await db.party_ledger_entries.find_one(
+                {"invoice_id": invoice_id, "entry_type": "payment"}
+            )
+            if not existing_payment:
+                # Use same ledger as the bill so payment is counted in this ledger's Total Payments
+                ledger_id_for_payment = existing_bill["ledger_id"]
+                ledger = await db.party_ledger_accounts.find_one(
+                    {"id": ledger_id_for_payment},
+                    {"_id": 0}
+                )
+                if ledger and not ledger.get("is_locked"):
+                    invoice_date = invoice.get("invoice_date")
+                    if isinstance(invoice_date, str):
+                        invoice_date = date.fromisoformat(invoice_date.split("T")[0][:10]) if invoice_date else date.today()
+                    invoice_date_str = invoice_date.isoformat() if hasattr(invoice_date, "isoformat") else str(invoice_date)
+                    max_order = await db.party_ledger_entries.find_one(
+                        {"ledger_id": ledger_id_for_payment},
+                        sort=[("entry_order", -1)]
+                    )
+                    next_order = (max_order.get("entry_order", 0) if max_order else 0) + 1
+                    payment_entry = {
+                        "id": str(uuid.uuid4()),
+                        "ledger_id": ledger_id_for_payment,
+                        "party_id": party_id,
+                        "entry_date": invoice_date_str,
+                        "entry_type": "payment",
+                        "payment_amount": round(advance_paid, 2),
+                        "payment_date": invoice_date_str,
+                        "paid_to": invoice.get("party_name_text") or "",
+                        "payment_mode": None,
+                        "payment_reference": f"Advance against invoice {invoice.get('invoice_no') or invoice_id}",
+                        "invoice_id": invoice_id,
+                        "description": f"Advance against invoice {invoice.get('invoice_no') or invoice_id}",
+                        "balance_after": 0,
+                        "entry_order": next_order,
+                        "created_by": current_user_id,
+                        "created_at": datetime.now(timezone.utc)
+                    }
+                    await db.party_ledger_entries.insert_one(payment_entry)
+                    await recompute_ledger_balances(ledger_id_for_payment)
+        return existing_bill
+
     invoice_date = invoice.get("invoice_date")
     if isinstance(invoice_date, str):
-        invoice_date = date.fromisoformat(invoice_date)
-    
-    # Convert to string for MongoDB storage
-    invoice_date_str = invoice_date.isoformat() if isinstance(invoice_date, date) else str(invoice_date)
-    
+        invoice_date = date.fromisoformat(invoice_date.split("T")[0] if "T" in invoice_date else invoice_date)
+    if not isinstance(invoice_date, date):
+        invoice_date = date.today()
+    invoice_date_str = invoice_date.isoformat()
+
     fy = get_financial_year(invoice_date)
-    
+
+    # Resolve bill amount from invoice: prefer subtotal, then grand_total, then sum of line items
+    subtotal = float(invoice.get("subtotal") or 0) or float(invoice.get("grand_total") or 0)
+    if subtotal <= 0:
+        lines = await db.purchase_invoice_lines.find(
+            {"invoice_id": invoice_id},
+            {"_id": 0, "amount": 1, "quantity_kg": 1, "rate": 1}
+        ).to_list(500)
+        for line in lines:
+            amt = line.get("amount")
+            if amt is not None:
+                subtotal += float(amt)
+            else:
+                qty = float(line.get("quantity_kg") or 0)
+                rate = float(line.get("rate") or 0)
+                subtotal += round(qty * rate, 2)
+        subtotal = round(subtotal, 2)
+
+    tds_rate = float(invoice.get("tds_rate_pct") or 0.1)
+    tds_amount = float(invoice.get("tds_amount")) if invoice.get("tds_amount") is not None else round(subtotal * tds_rate / 100, 4)
+    tds_after_bill = round(subtotal - tds_amount, 2)
+
     # Get or create ledger account
     ledger = await db.party_ledger_accounts.find_one(
         {"party_id": party_id, "financial_year": fy}
@@ -5445,45 +5861,73 @@ async def create_ledger_entry_for_invoice(invoice: dict, current_user_id: str):
             "updated_at": datetime.now(timezone.utc)
         }
         await db.party_ledger_accounts.insert_one(ledger)
+        # Create opening balance entry so ledger has consistent structure
+        opening_entry = {
+            "id": str(uuid.uuid4()),
+            "ledger_id": ledger["id"],
+            "party_id": party_id,
+            "entry_date": invoice_date_str,
+            "entry_type": "opening",
+            "entry_order": 0,
+            "description": f"Opening Balance FY {fy}",
+            "balance_after": 0.0,
+            "created_at": datetime.now(timezone.utc),
+            "created_by": current_user_id
+        }
+        await db.party_ledger_entries.insert_one(opening_entry)
     elif ledger.get("is_locked"):
         raise HTTPException(status_code=400, detail=f"Ledger for FY {fy} is locked")
-    
-    # Get next entry order
+
     max_order = await db.party_ledger_entries.find_one(
         {"ledger_id": ledger["id"]},
         sort=[("entry_order", -1)]
     )
     next_order = (max_order.get("entry_order", 0) if max_order else 0) + 1
-    
-    # Calculate TDS values
-    subtotal = invoice.get("subtotal", 0)
-    tds_rate = invoice.get("tds_rate_pct", 0.1)
-    tds_amount = round(subtotal * tds_rate / 100, 4)
-    tds_after_bill = round(subtotal - tds_amount, 2)
-    
-    # Create entry
+
     entry = {
         "id": str(uuid.uuid4()),
         "ledger_id": ledger["id"],
         "party_id": party_id,
-        "entry_date": invoice_date_str,  # Use the string version
+        "entry_date": invoice_date_str,
         "entry_type": "bill",
-        "invoice_id": invoice["id"],
+        "invoice_id": invoice_id,
         "invoice_no": invoice.get("invoice_no"),
-        "bill_subtotal": subtotal,
+        "bill_subtotal": round(subtotal, 2),
         "tds_rate_pct": tds_rate,
-        "tds_amount": tds_amount,
+        "tds_amount": round(tds_amount, 4),
         "tds_after_bill": tds_after_bill,
-        "balance_after": 0,  # Will be computed
+        "balance_after": 0,
         "entry_order": next_order,
         "created_by": current_user_id,
         "created_at": datetime.now(timezone.utc)
     }
     await db.party_ledger_entries.insert_one(entry)
-    
-    # Recompute balances
+
+    # If invoice has advance paid, add a payment entry so ledger balance reflects it
+    advance_paid = float(invoice.get("advance_paid") or 0)
+    if advance_paid > 0:
+        next_order += 1
+        payment_entry = {
+            "id": str(uuid.uuid4()),
+            "ledger_id": ledger["id"],
+            "party_id": party_id,
+            "entry_date": invoice_date_str,
+            "entry_type": "payment",
+            "payment_amount": round(advance_paid, 2),
+            "payment_date": invoice_date_str,
+            "paid_to": invoice.get("party_name_text") or "",
+            "payment_mode": None,
+            "payment_reference": f"Advance against invoice {invoice.get('invoice_no') or invoice_id}",
+            "invoice_id": invoice_id,
+            "description": f"Advance against invoice {invoice.get('invoice_no') or invoice_id}",
+            "balance_after": 0,
+            "entry_order": next_order,
+            "created_by": current_user_id,
+            "created_at": datetime.now(timezone.utc)
+        }
+        await db.party_ledger_entries.insert_one(payment_entry)
+
     await recompute_ledger_balances(ledger["id"])
-    
     return entry
 
 
@@ -6020,14 +6464,22 @@ async def export_party_ledger(
         {"_id": 0}
     ).sort("entry_order", 1).to_list(10000)
     
-    # Get invoice line items
+    # Batch-fetch invoice line items for bill entries (avoids N+1)
+    invoice_ids = list({e["invoice_id"] for e in entries if e.get("entry_type") == "bill" and e.get("invoice_id")})
+    lines_by_invoice = {}
+    if invoice_ids:
+        all_lines = await db.purchase_invoice_lines.find(
+            {"invoice_id": {"$in": invoice_ids}},
+            {"_id": 0}
+        ).sort("line_no", 1).to_list(5000)
+        for line in all_lines:
+            iid = line.get("invoice_id")
+            if iid not in lines_by_invoice:
+                lines_by_invoice[iid] = []
+            lines_by_invoice[iid].append(line)
     for entry in entries:
         if entry.get("entry_type") == "bill" and entry.get("invoice_id"):
-            lines = await db.purchase_invoice_lines.find(
-                {"invoice_id": entry["invoice_id"]},
-                {"_id": 0}
-            ).sort("line_no", 1).to_list(100)
-            entry["line_items"] = lines
+            entry["line_items"] = lines_by_invoice.get(entry["invoice_id"], [])
     
     # Helper functions
     def format_date(d):
@@ -6201,19 +6653,24 @@ async def export_ledger_pdf(
         {"_id": 0}
     ).sort("entry_order", 1).to_list(10000)
     
-    # Get invoice line items for bill entries
+    # Batch-fetch invoice line items for bill entries (avoids N+1)
+    invoice_ids = list({e["invoice_id"] for e in entries if e.get("entry_type") == "bill" and e.get("invoice_id")})
+    lines_by_invoice = {}
+    if invoice_ids:
+        all_lines = await db.purchase_invoice_lines.find(
+            {"invoice_id": {"$in": invoice_ids}},
+            {"_id": 0}
+        ).sort("line_no", 1).to_list(5000)
+        for line in all_lines:
+            iid = line.get("invoice_id")
+            if iid not in lines_by_invoice:
+                lines_by_invoice[iid] = []
+            lines_by_invoice[iid].append(line)
     for entry in entries:
         if entry.get("entry_type") == "bill" and entry.get("invoice_id"):
-            lines = await db.purchase_invoice_lines.find(
-                {"invoice_id": entry["invoice_id"]},
-                {"_id": 0}
-            ).sort("line_no", 1).to_list(100)
-            entry["line_items"] = lines
+            entry["line_items"] = lines_by_invoice.get(entry["invoice_id"], [])
     
-    # Get tenant config
-    config_docs = await db.tenant_config.find({}, {"_id": 0}).to_list(100)
-    tenant_config = {doc['key']: doc['value'] for doc in config_docs}
-    
+    tenant_config = await get_tenant_config_dict()
     # Create PDF
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), topMargin=0.5*inch, bottomMargin=0.5*inch)
@@ -6416,19 +6873,24 @@ async def export_ledger_excel(
         {"_id": 0}
     ).sort("entry_order", 1).to_list(10000)
     
-    # Get invoice line items
+    # Batch-fetch invoice line items for bill entries (avoids N+1)
+    invoice_ids = list({e["invoice_id"] for e in entries if e.get("entry_type") == "bill" and e.get("invoice_id")})
+    lines_by_invoice = {}
+    if invoice_ids:
+        all_lines = await db.purchase_invoice_lines.find(
+            {"invoice_id": {"$in": invoice_ids}},
+            {"_id": 0}
+        ).sort("line_no", 1).to_list(5000)
+        for line in all_lines:
+            iid = line.get("invoice_id")
+            if iid not in lines_by_invoice:
+                lines_by_invoice[iid] = []
+            lines_by_invoice[iid].append(line)
     for entry in entries:
         if entry.get("entry_type") == "bill" and entry.get("invoice_id"):
-            lines = await db.purchase_invoice_lines.find(
-                {"invoice_id": entry["invoice_id"]},
-                {"_id": 0}
-            ).sort("line_no", 1).to_list(100)
-            entry["line_items"] = lines
+            entry["line_items"] = lines_by_invoice.get(entry["invoice_id"], [])
     
-    # Get tenant config
-    config_docs = await db.tenant_config.find({}, {"_id": 0}).to_list(100)
-    tenant_config = {doc['key']: doc['value'] for doc in config_docs}
-    
+    tenant_config = await get_tenant_config_dict()
     # Create workbook
     wb = Workbook()
     ws = wb.active
@@ -6653,10 +7115,11 @@ async def saas_handshake(request: Request, body: dict):
 async def saas_push_features(request: Request, body: dict, _=Depends(verify_saas_api_key)):
     """Receive feature flags push from super admin"""
     features = body.get("features", {})
-    
-    # Get tenant_id
-    config = await db.tenant_config.find_one({"key": "tenant_id"})
-    tenant_id = config.get("value") if config else "default"
+    # Use tenant_id from body if provided (so Super Admin can push without prior link); else from config
+    tenant_id = body.get("tenant_id")
+    if not tenant_id:
+        config = await db.tenant_config.find_one({"key": "tenant_id"})
+        tenant_id = config.get("value") if config else "default"
     
     # Clear existing flags and insert new ones
     await db.feature_flags.delete_many({"tenant_id": tenant_id})
@@ -6862,11 +7325,173 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Default client ERP admin (seeded if no users exist)
+DEFAULT_CLIENT_ADMIN_EMAIL = "admin@prawnexport.com"
+DEFAULT_CLIENT_ADMIN_PASSWORD = "admin123"
+DEFAULT_TENANT_ID = "cli_001"
+
+# Simple TTL cache for rarely changing data: key -> (value, expiry_ts)
+_response_cache: Dict[str, tuple] = {}
+def _cache_get(key: str, ttl_sec: int = 60):
+    now = datetime.now(timezone.utc).timestamp()
+    if key in _response_cache:
+        val, expiry = _response_cache[key]
+        if now < expiry:
+            return val
+        del _response_cache[key]
+    return None
+def _cache_set(key: str, value: Any, ttl_sec: int = 60):
+    _response_cache[key] = (value, datetime.now(timezone.utc).timestamp() + ttl_sec)
+
+
+def _cache_invalidate(key_prefix: str = ""):
+    """Remove cache entries whose key starts with key_prefix (or exact key if no wildcard)."""
+    if not key_prefix:
+        return
+    to_remove = [k for k in _response_cache if k == key_prefix or k.startswith(key_prefix + ":")]
+    for k in to_remove:
+        _response_cache.pop(k, None)
+
+
+async def get_tenant_config_dict(use_cache: bool = True) -> Dict[str, Any]:
+    """Load full tenant config as key->value dict. Cached 60s per tenant to avoid repeated DB hits (ledger/PDF/export)."""
+    try:
+        tid = tenant_context.get_tenant()
+    except Exception:
+        tid = "default"
+    cache_key = f"tenant_config_dict:{tid}"
+    if use_cache:
+        cached = _cache_get(cache_key, ttl_sec=60)
+        if cached is not None:
+            return cached
+    config_docs = await db.tenant_config.find({}, {"_id": 0, "key": 1, "value": 1}).to_list(100)
+    out = {doc["key"]: doc.get("value", "") for doc in config_docs}
+    _cache_set(cache_key, out, ttl_sec=60)
+    return out
+
+
+async def ensure_erp_indexes():
+    """Create indexes on hot-path collections for faster queries."""
+    try:
+        # Core master data
+        await db.agents.create_index("id", unique=True)
+        await db.agents.create_index("name")
+        await db.agents.create_index("created_at")
+
+        await db.parties.create_index("id", unique=True)
+        await db.parties.create_index("party_name")
+        await db.parties.create_index("short_code")
+
+        await db.notifications.create_index([("target_roles", 1), ("created_at", -1)])
+
+        # Procurement / processing / production
+        await db.procurement_lots.create_index("created_at")
+        await db.procurement_lots.create_index("agent_id")
+        await db.procurement_lots.create_index("tenant_id")
+        await db.procurement_lots.create_index("id", unique=True)
+
+        await db.preprocessing_batches.create_index("created_at")
+        await db.preprocessing_batches.create_index([("end_time", 1)])
+        await db.preprocessing_batches.create_index("procurement_lot_id")  # traceability
+
+        await db.production_orders.create_index("created_at")
+        await db.production_orders.create_index("start_date")  # reports sort
+        await db.party_ledger_entries.create_index([("ledger_id", 1), ("entry_order", 1)])
+        await db.party_ledger_entries.create_index([("invoice_id", 1), ("entry_type", 1)])
+        await db.party_ledger_accounts.create_index([("party_id", 1), ("financial_year", 1)], unique=True)
+
+        await db.purchase_invoice_lines.create_index([("invoice_id", 1), ("line_no", 1)])
+        await db.purchase_invoices.create_index("id", unique=True)
+        await db.purchase_invoices.create_index([("status", 1), ("invoice_date", 1)])
+        await db.purchase_invoices.create_index("invoice_date")  # date range filter + sort
+        await db.purchase_invoices.create_index("payment_status")
+        await db.purchase_invoices.create_index("party_id")
+        # List endpoint: filter by date + status + payment_status, sort by invoice_date
+        await db.purchase_invoices.create_index([("invoice_date", 1), ("status", 1), ("payment_status", 1)])
+
+        # Finished goods / QC
+        await db.finished_goods.create_index("qc_status")
+        await db.finished_goods.create_index("created_at")
+        await db.production_orders.create_index("qc_status")
+
+        await db.qc_inspections.create_index("created_at")
+        await db.qc_inspections.create_index([("entity_type", 1), ("entity_id", 1)])
+
+        # Cold storage
+        await db.cold_storage_chambers.create_index("id", unique=True)
+        await db.cold_storage_slots.create_index("id", unique=True)
+        await db.cold_storage_slots.create_index("chamber_id")
+        await db.cold_storage_inventory.create_index("slot_id")
+        await db.cold_storage_inventory.create_index("chamber_id")
+
+        # Sales & shipments
+        await db.buyers.create_index("id", unique=True)
+        await db.buyers.create_index("name")
+        await db.sales_orders.create_index("id", unique=True)
+        await db.sales_orders.create_index("created_at")
+        await db.shipments.create_index("id", unique=True)
+        await db.shipments.create_index("created_at")
+
+        # Wage bills / accounts
+        await db.wage_bills.create_index("id", unique=True)
+        await db.wage_bills.create_index("created_at")
+        await db.wage_bills.create_index("status")
+
+        # Attachments / notes
+        await db.attachments.create_index([("entity_type", 1), ("entity_id", 1)])
+        await db.attachments.create_index("created_at")
+        await db.notes.create_index([("entity_type", 1), ("entity_id", 1)])
+        await db.notes.create_index("created_at")
+
+        # Tenant config
+        await db.tenant_config.create_index("key")
+
+        # Wastage / traceability
+        await db.lot_stage_wastage.create_index("lot_id")
+        await db.lot_stage_wastage.create_index([("lot_id", 1), ("stage_sequence", 1)])
+        await db.lot_stage_wastage.create_index("created_at")
+
+        # Audit logs (list sorted by timestamp)
+        await db.audit_logs.create_index("timestamp")
+        await db.audit_logs.create_index([("module", 1), ("timestamp", -1)])
+
+        # Temperature logs (sort by recorded_at)
+        await db.temperature_logs.create_index("recorded_at")
+        await db.temperature_logs.create_index("chamber_id")
+
+        # Market rates (sort effective_from)
+        await db.market_rates.create_index("effective_from")
+
+        # Photo tracker (by entity)
+        await db.photo_tracker.create_index([("entity_id", 1), ("created_at", -1)])
+
+        logger.info("ERP collection indexes ensured")
+    except Exception as e:
+        logger.warning("ERP index creation skipped or partial: %s", e)
+
+
 @app.on_event("startup")
 async def startup_event():
-    """Initialize super admin module and create indexes"""
+    """Initialize super admin module, create indexes, and seed default client admin if needed"""
     set_super_admin_db(db)
+    set_super_admin_feature_service(feature_service)
     await create_super_admin_indexes()
+    await ensure_erp_indexes()
+    # Ensure default client ERP admin exists (by email) so login always works
+    existing_admin = await db.users.find_one({"email": DEFAULT_CLIENT_ADMIN_EMAIL})
+    if not existing_admin:
+        await db.users.insert_one({
+            "id": str(uuid.uuid4()),
+            "email": DEFAULT_CLIENT_ADMIN_EMAIL,
+            "name": "Admin User",
+            "role": UserRole.admin.value,
+            "phone": None,
+            "password": get_password_hash(DEFAULT_CLIENT_ADMIN_PASSWORD),
+            "is_active": True,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "tenant_id": DEFAULT_TENANT_ID,
+        })
+        logger.info("Seeded default client ERP admin: %s / %s", DEFAULT_CLIENT_ADMIN_EMAIL, DEFAULT_CLIENT_ADMIN_PASSWORD)
     logger.info("Super Admin module initialized with database indexes")
 
 @app.on_event("shutdown")

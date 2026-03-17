@@ -84,7 +84,32 @@ A production-ready, full-stack ERP system designed for Indian seafood processing
 
 ## 📦 Installation
 
-### Prerequisites
+### One-command local run (simplest)
+
+From the project root, run everything (MongoDB via Docker, Backend, Super Admin API, Frontend) with one script. Use this after pulling or changing code:
+
+```bash
+./run_all.sh
+```
+
+Then open **http://localhost:3000** (Client ERP) or **http://localhost:3000/super-admin/login** (Super Admin). Press **Ctrl+C** to stop all services. See **[CREDENTIALS.md](CREDENTIALS.md)** for logins.
+
+### Run with Docker (full stack in containers)
+
+To run the full app (MongoDB + Backend + Frontend) in Docker:
+
+```bash
+docker compose up -d --build
+```
+
+Then open **http://localhost:3000** and log in. See **[CREDENTIALS.md](CREDENTIALS.md)** for default login.  
+See **[DOCKER.md](DOCKER.md)** for the full step-by-step guide and troubleshooting.
+
+---
+
+### Manual / local setup
+
+**Prerequisites**
 - Python 3.11+
 - Node.js 18+
 - MongoDB
@@ -103,9 +128,10 @@ yarn install
 
 ### Environment Variables
 
-**Backend (.env)**
+**Backend (.env)**  
+When using Docker MongoDB (`docker compose up -d mongo`), use port 27018:
 ```
-MONGO_URL=mongodb://localhost:27017
+MONGO_URL=mongodb://prawn_erp_user:prawn_erp_dev_password@localhost:27018
 DB_NAME=prawn_erp
 SECRET_KEY=your-secret-key-change-in-production
 CORS_ORIGINS=*

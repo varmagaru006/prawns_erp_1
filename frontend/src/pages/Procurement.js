@@ -8,7 +8,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { toast } from 'sonner';
-import { Plus, Download, Package } from 'lucide-react';
+import { formatLoadErrorMessage } from '../utils/apiError';
+import { Plus, Download, Package, UserPlus } from 'lucide-react';
 
 const Procurement = () => {
   const [lots, setLots] = useState([]);
@@ -18,6 +19,7 @@ const Procurement = () => {
   const [wastageData, setWastageData] = useState({});
   const [viewWastageDialog, setViewWastageDialog] = useState(false);
   const [selectedLotWastage, setSelectedLotWastage] = useState(null);
+  const [wastageLoading, setWastageLoading] = useState(false);
   const [formData, setFormData] = useState({
     agent_id: '',
     vehicle_number: '',
@@ -39,6 +41,10 @@ const Procurement = () => {
   });
   const [photoFile, setPhotoFile] = useState(null);
   const [photoPreview, setPhotoPreview] = useState(null);
+  const [showAgentCreate, setShowAgentCreate] = useState(false);
+  const [newAgentName, setNewAgentName] = useState('');
+  const [newAgentPhone, setNewAgentPhone] = useState('');
+  const [creatingAgent, setCreatingAgent] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -52,21 +58,9 @@ const Procurement = () => {
       ]);
       setLots(lotsRes.data);
       setAgents(agentsRes.data);
-      
-      // Fetch wastage data for each lot
-      const wastagePromises = lotsRes.data.map(lot => 
-        axios.get(`${API}/lot-stage-wastage/${lot.id}`).catch(() => ({ data: [] }))
-      );
-      const wastageResults = await Promise.all(wastagePromises);
-      
-      const wastageMap = {};
-      lotsRes.data.forEach((lot, index) => {
-        wastageMap[lot.id] = wastageResults[index].data;
-      });
-      setWastageData(wastageMap);
-      
+      // Wastage data is now loaded on demand per lot to keep initial load fast
     } catch (error) {
-      toast.error('Failed to load data');
+      toast.error(formatLoadErrorMessage('Failed to load data', error));
     } finally {
       setLoading(false);
     }
@@ -75,7 +69,30 @@ const Procurement = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      const response = await axios.post(`${API}/procurement/lots`, formData);
+      // Build payload with correct types for backend (avoid NaN, ensure ISO datetime)
+      const arrivalTime = formData.arrival_time && formData.arrival_time.length >= 16
+        ? (formData.arrival_time.length === 16 ? formData.arrival_time + ':00' : formData.arrival_time)
+        : new Date().toISOString().slice(0, 19);
+      const payload = {
+        agent_id: formData.agent_id,
+        vehicle_number: String(formData.vehicle_number ?? ''),
+        driver_name: String(formData.driver_name ?? ''),
+        arrival_time: arrivalTime,
+        species: formData.species,
+        count_per_kg: String(formData.count_per_kg ?? ''),
+        boxes_count: Number(formData.boxes_count) || 0,
+        no_of_trays: Number(formData.no_of_trays) || 0,
+        gross_weight_kg: Number(formData.gross_weight_kg) || 0,
+        ice_weight_kg: Number(formData.ice_weight_kg) || 0,
+        rate_per_kg: Number(formData.rate_per_kg) || 0,
+        advance_paid: Number(formData.advance_paid) || 0,
+        ice_ratio_pct: formData.ice_ratio_pct != null ? Number(formData.ice_ratio_pct) : null,
+        freshness_grade: formData.freshness_grade,
+        is_rejected: Boolean(formData.is_rejected),
+        rejection_reason: formData.rejection_reason || null,
+        notes: formData.notes || null,
+      };
+      const response = await axios.post(`${API}/procurement/lots`, payload);
       const lotId = response.data.id;
       
       // Upload photo if provided
@@ -98,9 +115,20 @@ const Procurement = () => {
       setOpen(false);
       setPhotoFile(null);
       setPhotoPreview(null);
-      fetchData();
+      // Show new lot immediately (optimistic update) so it appears even if refetch is slow or fails
+      setLots((prev) => [response.data, ...prev]);
+      // Refetch to keep list in sync with server (e.g. computed fields, sort order)
+      fetchData().catch(() => {
+        // Keep optimistic list on refetch error; user already sees the new lot
+      });
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to add lot');
+      const detail = error.response?.data?.detail;
+      const message = Array.isArray(detail)
+        ? detail.map((e) => e.msg || `${e.loc?.join('.')}: ${e.msg}`).join('; ') || 'Validation failed'
+        : typeof detail === 'string'
+          ? detail
+          : 'Failed to add lot';
+      toast.error(message);
     }
   };
 
@@ -113,6 +141,39 @@ const Procurement = () => {
         setPhotoPreview(reader.result);
       };
       reader.readAsDataURL(file);
+    }
+  };
+
+  const handleCreateAgent = async () => {
+    const name = newAgentName.trim();
+    const phone = newAgentPhone.trim();
+    if (!name) {
+      toast.error('Agent name is required');
+      return;
+    }
+    if (!phone) {
+      toast.error('Agent phone is required');
+      return;
+    }
+    setCreatingAgent(true);
+    try {
+      const agentCode = name.replace(/\s+/g, '').substring(0, 8).toUpperCase() || 'AG' + Date.now().toString(36);
+      const response = await axios.post(`${API}/agents`, {
+        agent_code: agentCode,
+        name,
+        phone,
+      });
+      const newAgent = response.data;
+      setAgents((prev) => [...prev, newAgent]);
+      setFormData((prev) => ({ ...prev, agent_id: newAgent.id }));
+      toast.success(`Agent "${newAgent.name}" created and selected`);
+      setShowAgentCreate(false);
+      setNewAgentName('');
+      setNewAgentPhone('');
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to create agent');
+    } finally {
+      setCreatingAgent(false);
     }
   };
 
@@ -162,9 +223,27 @@ const Procurement = () => {
     );
   };
 
-  const handleViewWastage = (lot) => {
-    setSelectedLotWastage({ lot, wastage: wastageData[lot.id] || [] });
+  const handleViewWastage = async (lot) => {
     setViewWastageDialog(true);
+    setWastageLoading(true);
+
+    try {
+      // Use cached wastage data if we already fetched it for this lot
+      if (wastageData[lot.id]) {
+        setSelectedLotWastage({ lot, wastage: wastageData[lot.id] });
+        return;
+      }
+
+      const res = await axios.get(`${API}/lot-stage-wastage/${lot.id}`);
+      const wastage = res.data || [];
+      setWastageData(prev => ({ ...prev, [lot.id]: wastage }));
+      setSelectedLotWastage({ lot, wastage });
+    } catch (error) {
+      toast.error(formatLoadErrorMessage('Failed to load data', error));
+      setSelectedLotWastage({ lot, wastage: [] });
+    } finally {
+      setWastageLoading(false);
+    }
   };
 
   return (
@@ -189,19 +268,32 @@ const Procurement = () => {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="agent_id">Agent *</Label>
-                  <select
-                    id="agent_id"
-                    value={formData.agent_id}
-                    onChange={(e) => setFormData({ ...formData, agent_id: e.target.value })}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    required
-                    data-testid="lot-agent-select"
-                  >
-                    <option value="">Select Agent</option>
-                    {agents.map(agent => (
-                      <option key={agent.id} value={agent.id}>{agent.name}</option>
-                    ))}
-                  </select>
+                  <div className="flex gap-2">
+                    <select
+                      id="agent_id"
+                      value={formData.agent_id}
+                      onChange={(e) => setFormData({ ...formData, agent_id: e.target.value })}
+                      className="flex-1 px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                      data-testid="lot-agent-select"
+                    >
+                      <option value="">Select Agent</option>
+                      {agents.map(agent => (
+                        <option key={agent.id} value={agent.id}>{agent.name}</option>
+                      ))}
+                    </select>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="shrink-0 gap-1"
+                      onClick={() => setShowAgentCreate(true)}
+                      title="Add new agent"
+                    >
+                      <UserPlus size={16} />
+                      Add agent
+                    </Button>
+                  </div>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="species">Species *</Label>
@@ -285,7 +377,7 @@ const Procurement = () => {
                     id="boxes_count"
                     type="number"
                     value={formData.boxes_count}
-                    onChange={(e) => setFormData({ ...formData, boxes_count: parseInt(e.target.value) })}
+                    onChange={(e) => setFormData({ ...formData, boxes_count: parseInt(e.target.value, 10) || 0 })}
                     required
                     data-testid="lot-boxes-input"
                   />
@@ -434,6 +526,59 @@ const Procurement = () => {
             </form>
           </DialogContent>
         </Dialog>
+
+        {/* Create New Agent Dialog (same pattern as Party creation in Purchase Invoice) */}
+        <Dialog open={showAgentCreate} onOpenChange={setShowAgentCreate}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Create New Agent</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="new_agent_name">Agent Name *</Label>
+                <Input
+                  id="new_agent_name"
+                  value={newAgentName}
+                  onChange={(e) => setNewAgentName(e.target.value)}
+                  placeholder="Enter agent name"
+                  autoFocus
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="new_agent_phone">Phone *</Label>
+                <Input
+                  id="new_agent_phone"
+                  value={newAgentPhone}
+                  onChange={(e) => setNewAgentPhone(e.target.value)}
+                  placeholder="Enter phone number"
+                />
+              </div>
+              <p className="text-xs text-slate-500">
+                You can add GST, PAN, bank details, etc. later from the Agents page.
+              </p>
+            </div>
+            <div className="flex gap-3 mt-4">
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={() => {
+                  setShowAgentCreate(false);
+                  setNewAgentName('');
+                  setNewAgentPhone('');
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                className="flex-1"
+                onClick={handleCreateAgent}
+                disabled={!newAgentName.trim() || !newAgentPhone.trim() || creatingAgent}
+              >
+                {creatingAgent ? 'Creating…' : 'Create Agent'}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
 
       {loading ? (
@@ -571,7 +716,12 @@ const Procurement = () => {
           <DialogHeader>
             <DialogTitle>Wastage Details - {selectedLotWastage?.lot?.lot_number}</DialogTitle>
           </DialogHeader>
-          {selectedLotWastage && (
+          {wastageLoading && (
+            <div className="flex items-center justify-center py-10">
+              <div className="animate-spin rounded-full h-8 w-8 border-2 border-slate-300 border-t-blue-600" />
+            </div>
+          )}
+          {!wastageLoading && selectedLotWastage && (
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>

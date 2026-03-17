@@ -933,7 +933,12 @@ const babelMetadataPlugin = ({ types: t }) => {
           if (!localName) return;
 
           // Search for usages of this component
-          importPath.parentPath.parentPath.traverse({
+          const searchRoot =
+            importPath.parentPath && importPath.parentPath.parentPath;
+          if (!searchRoot || typeof searchRoot.traverse !== "function") {
+            return;
+          }
+          searchRoot.traverse({
             JSXOpeningElement(jsxPath) {
               if (result) return;
 

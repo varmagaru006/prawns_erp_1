@@ -50,7 +50,8 @@ const Login = () => {
       if (isLogin) {
         await login(email, password);
         toast.success('Welcome back! 🎉');
-        navigate('/');
+        // Defer navigation so feature flags from login response are applied before Layout renders (tabs show immediately)
+        setTimeout(() => navigate('/'), 0);
       } else {
         await register({ email, password, name, phone, role });
         toast.success('Account created! Please login.');
