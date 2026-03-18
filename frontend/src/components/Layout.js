@@ -87,7 +87,7 @@ const Layout = () => {
     { name: 'Finished Goods', path: '/finished-goods', icon: 'Box', moduleKey: 'finishedGoods', featureCode: 'finishedGoods' },
     { name: 'Sales & Dispatch', path: '/sales', icon: 'Ship', moduleKey: 'sales', featureCode: 'sales' },
     { name: 'Accounts', path: '/accounts', icon: 'Receipt', moduleKey: 'accounts', featureCode: 'accounts' },
-    { name: 'Purchase Invoices', path: '/purchase-invoices', icon: 'FileText', moduleKey: 'procurement', featureCode: 'purchaseInvoiceDashboard' },
+    { name: 'Material Purchase', path: '/purchase-invoices', icon: 'FileText', moduleKey: 'procurement', featureCode: 'purchaseInvoiceDashboard' },
     { name: 'Party Master', path: '/parties', icon: 'Users', moduleKey: 'procurement', featureCode: 'parties' },
     { name: 'Party Ledger', path: '/party-ledger', icon: 'BookOpen', moduleKey: 'partyLedger', featureCode: 'partyLedger' },
     { name: 'Wastage Dashboard', path: '/admin/wastage-dashboard', icon: 'TrendingDown', moduleKey: 'wastageDashboard', featureCode: 'wastageDashboard' },

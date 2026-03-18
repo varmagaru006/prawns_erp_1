@@ -2916,7 +2916,7 @@ def _build_purchase_invoice_list_query(
     return query
 
 
-def _purchase_invoice_metrics_aggregation(query: dict):
+async def _purchase_invoice_metrics_aggregation(query: dict):
     """Run aggregation to get count + metrics. Total kg = sum of line item quantity_kg (source of truth)."""
     pipeline = [
         {"$match": query},

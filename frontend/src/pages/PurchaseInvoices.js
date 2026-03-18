@@ -345,8 +345,8 @@ const PurchaseInvoices = () => {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-3xl font-bold text-gray-800">Purchase Invoices</h1>
-          <p className="text-gray-600">Manage procurement invoices and push to lots</p>
+          <h1 className="text-3xl font-bold text-gray-800">Material Purchase</h1>
+          <p className="text-gray-600">Manage purchase records and push to lots</p>
         </div>
         <div className="flex gap-2">
           {isDashboardEnabled && (
@@ -363,7 +363,7 @@ const PurchaseInvoices = () => {
           )}
           <Button onClick={() => navigate('/purchase-invoices/create')} data-testid="create-invoice-btn">
             <Plus className="h-4 w-4 mr-2" />
-            Create Invoice
+            Create Purchase
           </Button>
         </div>
       </div>

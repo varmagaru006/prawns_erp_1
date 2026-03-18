@@ -50,6 +50,11 @@ const Procurement = () => {
     fetchData();
   }, []);
 
+  const toNum = (v, fallback = 0) => {
+    const n = typeof v === 'number' ? v : Number(v);
+    return Number.isFinite(n) ? n : fallback;
+  };
+
   const fetchData = async () => {
     try {
       const [lotsRes, agentsRes] = await Promise.all([
@@ -616,8 +621,13 @@ const Procurement = () => {
                   <TableBody>
                     {lots.map((lot) => {
                       const gateWastage = wastageData[lot.id]?.find(w => w.process_type === 'gate_ice');
-                      const icePercent = lot.gross_weight_kg > 0 
-                        ? ((lot.ice_weight_kg / lot.gross_weight_kg) * 100).toFixed(1) 
+                      const grossKg = toNum(lot.gross_weight_kg, 0);
+                      const iceKg = toNum(lot.ice_weight_kg, 0);
+                      const netKg = toNum(lot.net_weight_kg, 0);
+                      const totalAmt = toNum(lot.total_amount, 0);
+                      const balDue = toNum(lot.balance_due, 0);
+                      const icePercent = grossKg > 0 
+                        ? ((iceKg / grossKg) * 100).toFixed(1) 
                         : 0;
                       
                       return (
@@ -634,7 +644,7 @@ const Procurement = () => {
                         <TableCell>{lot.species}</TableCell>
                         <TableCell>{lot.count_per_kg || 'N/A'}</TableCell>
                         <TableCell>{lot.no_of_trays || 0}</TableCell>
-                        <TableCell>{lot.net_weight_kg.toFixed(2)}</TableCell>
+                        <TableCell>{netKg.toFixed(2)}</TableCell>
                         <TableCell>
                           <span className={`px-2 py-1 rounded text-xs font-semibold ${
                             icePercent < 15 ? 'bg-green-100 text-green-800' :
@@ -647,8 +657,8 @@ const Procurement = () => {
                         <TableCell>
                           {gateWastage ? getYieldBadge(gateWastage.yield_pct, gateWastage.threshold_status) : '-'}
                         </TableCell>
-                        <TableCell>₹{lot.total_amount.toFixed(2)}</TableCell>
-                        <TableCell>₹{lot.balance_due.toFixed(2)}</TableCell>
+                        <TableCell>₹{totalAmt.toFixed(2)}</TableCell>
+                        <TableCell>₹{balDue.toFixed(2)}</TableCell>
                         <TableCell>{getStatusBadge(lot.payment_status)}</TableCell>
                         <TableCell>
                           <span className={`px-2 py-1 rounded text-xs font-medium ${
