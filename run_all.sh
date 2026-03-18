@@ -23,6 +23,31 @@ trap cleanup INT TERM
 
 echo "=== Prawn ERP – starting full stack ==="
 
+# --- Pick a Python version with good wheel support ---
+# grpcio/protobuf and several deps often lag on newest Python betas.
+# Prefer stable 3.11/3.12 if available.
+PY_BIN=""
+for cand in python3.11 python3.12 python3.13 python3; do
+  if command -v "$cand" >/dev/null 2>&1; then
+    PY_BIN="$cand"
+    break
+  fi
+done
+if [ -z "$PY_BIN" ]; then
+  echo "Error: Python 3 not found. Install Python 3.11+ and re-run."
+  exit 1
+fi
+PY_VERSION="$($PY_BIN -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")')"
+echo "Using Python: $PY_BIN ($PY_VERSION)"
+PY_MINOR="$($PY_BIN -c 'import sys; print(sys.version_info.minor)')"
+if [ "$PY_MINOR" -ge 14 ]; then
+  echo ""
+  echo "Warning: Detected Python >= 3.14 ($PY_VERSION). Some third-party packages may"
+  echo "         still be catching up with wheel support, so installs could be slower"
+  echo "         or require local builds, but the script will continue."
+  echo ""
+fi
+
 # --- Env files (create if missing) ---
 if [ ! -f "$ROOT/backend/.env" ]; then
   echo "Creating backend/.env..."
@@ -80,7 +105,7 @@ fi
 # --- 2. Backend ---
 echo "[2/4] Starting Backend (port 8000)..."
 if [ ! -d "$ROOT/backend/.venv" ]; then
-  python3 -m venv "$ROOT/backend/.venv"
+  "$PY_BIN" -m venv "$ROOT/backend/.venv"
 fi
 "$ROOT/backend/.venv/bin/pip" install -q -r "$ROOT/backend/requirements.txt"
 (cd "$ROOT/backend" && "$ROOT/backend/.venv/bin/uvicorn" server:app --reload --host 0.0.0.0 --port 8000) &
