@@ -131,12 +131,12 @@ export default function CreateWageBill() {
   return (
     <div className="space-y-6 max-w-6xl mx-auto">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h1 className="text-2xl lg:text-3xl font-bold text-slate-800">Create Wage Bill</h1>
           <p className="text-slate-600 mt-1">Step {step} of 3</p>
         </div>
-        <Button variant="outline" onClick={() => navigate('/accounts')}>
+        <Button variant="outline" onClick={() => navigate('/accounts')} className="w-full sm:w-auto">
           <ArrowLeft className="h-4 w-4 mr-2" />
           Back to Accounts
         </Button>

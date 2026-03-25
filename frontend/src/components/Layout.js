@@ -230,7 +230,7 @@ const Layout = () => {
         </div>
       </div>
 
-      <div className="flex">
+      <div className="flex min-w-0">
         {/* Sidebar */}
         <aside
           className={`
@@ -278,7 +278,7 @@ const Layout = () => {
         )}
 
         {/* Main Content */}
-        <main className="flex-1 p-4 lg:p-6">
+        <main className="min-w-0 flex-1 p-4 lg:p-6">
           <Suspense fallback={
             <div className="flex items-center justify-center min-h-[200px]">
               <div className="animate-spin rounded-full h-10 w-10 border-2 border-slate-300 border-t-blue-600" />

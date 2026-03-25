@@ -62,7 +62,18 @@ export const AuthProvider = ({ children }) => {
       (response) => response,
       (error) => {
         if (error.response?.status === 401) {
-          // Token expired or invalid
+          const url = error.config?.url || '';
+          // Don't reset session on failed login attempt or while already on login screen
+          if (url.includes('/auth/login')) {
+            return Promise.reject(error);
+          }
+          try {
+            if (window.location.pathname === '/login' || window.location.pathname.endsWith('/login')) {
+              return Promise.reject(error);
+            }
+          } catch {
+            /* ignore */
+          }
           logout();
           window.location.href = '/login';
         }

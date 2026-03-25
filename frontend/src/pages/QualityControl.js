@@ -99,14 +99,14 @@ const QualityControl = () => {
 
   return (
     <div className="space-y-6" data-testid="qc-page">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h1 className="text-2xl lg:text-3xl font-bold text-slate-800">Quality Control</h1>
           <p className="text-slate-600 mt-1">Inspection and quality assurance tracking</p>
         </div>
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
-            <Button className="gap-2" data-testid="add-inspection-button">
+            <Button className="w-full gap-2 sm:w-auto" data-testid="add-inspection-button">
               <Plus size={18} />
               New Inspection
             </Button>

@@ -247,16 +247,16 @@ const PurchaseInvoiceForm = () => {
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
+      <div className="mb-6 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h1 className="text-3xl font-bold text-gray-800">
             {isEdit ? 'Edit' : 'Create'} Purchase Invoice
           </h1>
           <p className="text-gray-600">Fill in invoice details and line items</p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={() => navigate('/purchase-invoices')}>Cancel</Button>
-          <Button onClick={handleSubmit}>
+        <div className="flex w-full flex-wrap gap-2 lg:w-auto lg:justify-end">
+          <Button variant="outline" onClick={() => navigate('/purchase-invoices')} className="w-full sm:w-auto">Cancel</Button>
+          <Button onClick={handleSubmit} className="w-full sm:w-auto">
             <Save className="h-4 w-4 mr-2" />
             Save Draft
           </Button>

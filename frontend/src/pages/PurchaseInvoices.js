@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { API } from '../context/AuthContext';
+import { API, useAuth } from '../context/AuthContext';
 import { useFeatureFlags } from '../context/FeatureFlagContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
+import { Label } from '../components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { toast } from 'sonner';
 import { Plus, Download, Eye, Check, Trash2, Send, FileText, X, FileSpreadsheet, Lock } from 'lucide-react';
@@ -14,16 +16,21 @@ import SortableTableHead from '../components/SortableTableHead';
 
 const PurchaseInvoices = () => {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const { isEnabled, loading: featureLoading } = useFeatureFlags();
   
   const [invoices, setInvoices] = useState([]);
   const [metrics, setMetrics] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [agentOptions, setAgentOptions] = useState([]);
+  const [partyOptions, setPartyOptions] = useState([]);
   const [filters, setFilters] = useState({
     from_date: '',
     to_date: '',
     payment_status: '',
     invoice_status: '',
+    agent_name: '',
+    party_name: '',
     search: ''
   });
   const [pagination, setPagination] = useState({
@@ -35,6 +42,10 @@ const PurchaseInvoices = () => {
   const [previewInvoice, setPreviewInvoice] = useState(null);
   const [showPreview, setShowPreview] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [showPushModal, setShowPushModal] = useState(false);
+  const [pushInvoiceId, setPushInvoiceId] = useState(null);
+  const [applyDigitalSignature, setApplyDigitalSignature] = useState(false);
+  const [pushing, setPushing] = useState(false);
 
   // Sortable table hook
   const { sortedData: sortedInvoices, requestSort, getSortIcon } = useSortableTable(invoices, {
@@ -50,6 +61,21 @@ const PurchaseInvoices = () => {
     fetchInvoices();
   }, [filters, pagination.page, pagination.per_page, isDashboardEnabled]);
 
+  useEffect(() => {
+    fetchFilterOptions();
+  }, []);
+
+  const fetchFilterOptions = async () => {
+    try {
+      const res = await axios.get(`${API}/purchase-invoices/filter-options`);
+      setAgentOptions(Array.isArray(res.data?.agents) ? res.data.agents : []);
+      setPartyOptions(Array.isArray(res.data?.parties) ? res.data.parties : []);
+    } catch (error) {
+      setAgentOptions([]);
+      setPartyOptions([]);
+    }
+  };
+
   const fetchInvoices = async () => {
     setLoading(true);
     setMetrics(null); // Clear so stats cards don't show stale numbers while refetching with new filters
@@ -63,6 +89,8 @@ const PurchaseInvoices = () => {
       if (filters.to_date) params.append('to_date', filters.to_date);
       if (filters.payment_status) params.append('payment_status', filters.payment_status);
       if (filters.invoice_status) params.append('invoice_status', filters.invoice_status);
+      if (filters.agent_name) params.append('agent_name', filters.agent_name.trim());
+      if (filters.party_name) params.append('party_name', filters.party_name.trim());
       if (filters.search && filters.search.trim()) params.append('search', filters.search.trim());
 
       const response = await axios.get(`${API}/purchase-invoices?${params}`);
@@ -135,15 +163,30 @@ const PurchaseInvoices = () => {
     }
   };
 
-  const handlePush = async (invoiceId) => {
-    if (!window.confirm('Push this invoice to procurement?')) return;
-    
+  const openPushModal = (invoiceId) => {
+    setPushInvoiceId(invoiceId);
+    setApplyDigitalSignature(false);
+    setShowPushModal(true);
+  };
+
+  const handlePush = async () => {
+    if (!pushInvoiceId) return;
+    setPushing(true);
     try {
-      const response = await axios.post(`${API}/purchase-invoices/${invoiceId}/push-to-procurement`);
-      toast.success(`Pushed! Lot ${response.data.lot_number} created`);
+      const response = await axios.post(
+        `${API}/purchase-invoices/${pushInvoiceId}/push-to-procurement`,
+        { apply_digital_signature: user?.role === 'admin' ? applyDigitalSignature : false }
+      );
+      toast.success(
+        `Pushed! Lot ${response.data.lot_number} created${applyDigitalSignature ? ' (digitally signed)' : ''}`
+      );
+      setShowPushModal(false);
+      setPushInvoiceId(null);
       fetchInvoices();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to push invoice');
+    } finally {
+      setPushing(false);
     }
   };
 
@@ -200,6 +243,8 @@ const PurchaseInvoices = () => {
       if (filters.to_date) params.append('to_date', filters.to_date);
       if (filters.payment_status) params.append('payment_status', filters.payment_status);
       if (filters.invoice_status) params.append('invoice_status', filters.invoice_status);
+      if (filters.agent_name) params.append('agent_name', filters.agent_name.trim());
+      if (filters.party_name) params.append('party_name', filters.party_name.trim());
       if (filters.search) params.append('search', filters.search);
       params.append('per_page', '10000'); // Get all
 
@@ -254,6 +299,8 @@ const PurchaseInvoices = () => {
       if (filters.to_date) params.append('to_date', filters.to_date);
       if (filters.payment_status) params.append('payment_status', filters.payment_status);
       if (filters.invoice_status) params.append('invoice_status', filters.invoice_status);
+      if (filters.agent_name) params.append('agent_name', filters.agent_name.trim());
+      if (filters.party_name) params.append('party_name', filters.party_name.trim());
       if (filters.search) params.append('search', filters.search);
       params.append('per_page', '10000');
 
@@ -340,28 +387,60 @@ const PurchaseInvoices = () => {
     );
   };
 
+  const getSignatureChip = (invoice) => {
+    const hasSignature = !!invoice?.digital_signature_value_b64;
+    if (!hasSignature) {
+      return (
+        <span className="px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
+          Unsigned
+        </span>
+      );
+    }
+    return (
+      <span className="px-2 py-1 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800">
+        Digitally Signed
+      </span>
+    );
+  };
+
   return (
-    <div className="p-6">
+    <div className="w-full min-w-0 max-w-full px-2 py-4 sm:p-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="mb-6 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h1 className="text-3xl font-bold text-gray-800">Material Purchase</h1>
           <p className="text-gray-600">Manage purchase records and push to lots</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex w-full flex-wrap gap-2 lg:w-auto lg:justify-end">
           {isDashboardEnabled && (
             <>
-              <Button variant="outline" onClick={exportToCSV} disabled={exporting} data-testid="export-csv-btn">
+              <Button
+                variant="outline"
+                onClick={exportToCSV}
+                disabled={exporting}
+                data-testid="export-csv-btn"
+                className="w-full sm:w-auto"
+              >
                 <Download className="h-4 w-4 mr-2" />
                 CSV
               </Button>
-              <Button variant="outline" onClick={exportToExcel} disabled={exporting} data-testid="export-excel-btn">
+              <Button
+                variant="outline"
+                onClick={exportToExcel}
+                disabled={exporting}
+                data-testid="export-excel-btn"
+                className="w-full sm:w-auto"
+              >
                 <FileSpreadsheet className="h-4 w-4 mr-2" />
                 Excel
               </Button>
             </>
           )}
-          <Button onClick={() => navigate('/purchase-invoices/create')} data-testid="create-invoice-btn">
+          <Button
+            onClick={() => navigate('/purchase-invoices/create')}
+            data-testid="create-invoice-btn"
+            className="w-full sm:w-auto"
+          >
             <Plus className="h-4 w-4 mr-2" />
             Create Purchase
           </Button>
@@ -409,7 +488,27 @@ const PurchaseInvoices = () => {
               onChange={(e) => setFilters({ ...filters, search: e.target.value })}
             />
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
+            <select
+              value={filters.agent_name}
+              onChange={(e) => setFilters({ ...filters, agent_name: e.target.value })}
+              className="h-9 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm"
+            >
+              <option value="">All Agents</option>
+              {agentOptions.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+            <select
+              value={filters.party_name}
+              onChange={(e) => setFilters({ ...filters, party_name: e.target.value })}
+              className="h-9 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm"
+            >
+              <option value="">All Parties</option>
+              {partyOptions.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
             <select
               value={filters.payment_status}
               onChange={(e) => setFilters({ ...filters, payment_status: e.target.value })}
@@ -439,7 +538,7 @@ const PurchaseInvoices = () => {
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-gray-600">Total Invoices</CardTitle>
+              <CardTitle className="text-sm font-medium text-gray-600">Filtered Invoices</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-blue-600">{metrics.total_count}</div>
@@ -448,17 +547,17 @@ const PurchaseInvoices = () => {
 
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-gray-600">Total Kg Purchased</CardTitle>
+              <CardTitle className="text-sm font-medium text-gray-600">Filtered Kg Purchased</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-slate-700">{(metrics.total_quantity_kg_all ?? metrics.total_quantity_kg ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 3 })} kg</div>
-              <div className="text-xs text-gray-500">All invoices</div>
+              <div className="text-2xl font-bold text-slate-700">{(metrics.total_quantity_kg ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 3 })} kg</div>
+              <div className="text-xs text-gray-500">As per current filters</div>
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-gray-600">Total Value</CardTitle>
+              <CardTitle className="text-sm font-medium text-gray-600">Filtered Value</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-green-600">₹{metrics.total_value.toLocaleString('en-IN')}</div>
@@ -467,7 +566,7 @@ const PurchaseInvoices = () => {
 
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-gray-600">Pending</CardTitle>
+              <CardTitle className="text-sm font-medium text-gray-600">Filtered Pending</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-amber-600">₹{(metrics.partial_total ?? 0).toLocaleString('en-IN')}</div>
@@ -477,7 +576,7 @@ const PurchaseInvoices = () => {
 
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-gray-600">Advances paid</CardTitle>
+              <CardTitle className="text-sm font-medium text-gray-600">Filtered Advances Paid</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-green-600">₹{(metrics.advances_paid_total ?? metrics.paid_total ?? 0).toLocaleString('en-IN')}</div>
@@ -488,11 +587,11 @@ const PurchaseInvoices = () => {
       )}
 
       {/* Invoices Table */}
-      <Card>
+      <Card className="min-w-0">
         <CardHeader>
           <CardTitle>Invoices</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="min-w-0">
           <Table>
             <TableHeader>
               <TableRow>
@@ -508,6 +607,7 @@ const PurchaseInvoices = () => {
                 <SortableTableHead label="Advance Paid" sortKey="advance_paid" onSort={requestSort} getSortIcon={getSortIcon} className="text-right" />
                 <SortableTableHead label="Balance Due" sortKey="balance_due" onSort={requestSort} getSortIcon={getSortIcon} className="text-right" />
                 <SortableTableHead label="Status" sortKey="status" onSort={requestSort} getSortIcon={getSortIcon} />
+                <TableHead>Signature</TableHead>
                 <TableHead>Audit Book</TableHead>
                 <TableHead>Actions</TableHead>
               </TableRow>
@@ -515,11 +615,11 @@ const PurchaseInvoices = () => {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={14} className="text-center">Loading...</TableCell>
+                  <TableCell colSpan={15} className="text-center">Loading...</TableCell>
                 </TableRow>
               ) : sortedInvoices.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={14} className="text-center text-gray-500">No invoices found</TableCell>
+                  <TableCell colSpan={15} className="text-center text-gray-500">No invoices found</TableCell>
                 </TableRow>
               ) : (
                 sortedInvoices.map((invoice) => (
@@ -552,6 +652,7 @@ const PurchaseInvoices = () => {
                       ₹{invoice.balance_due?.toLocaleString('en-IN')}
                     </TableCell>
                     <TableCell>{getStatusChip(invoice.status)}</TableCell>
+                    <TableCell>{getSignatureChip(invoice)}</TableCell>
                     <TableCell>
                       <button
                         onClick={() => handleManualAuditToggle(invoice.id, !invoice.is_manually_recorded)}
@@ -585,7 +686,7 @@ const PurchaseInvoices = () => {
                           </>
                         )}
                         {invoice.status === 'approved' && (
-                          <Button size="sm" variant="outline" onClick={() => handlePush(invoice.id)}>
+                          <Button size="sm" variant="outline" onClick={() => openPushModal(invoice.id)}>
                             <Send className="h-3 w-3 mr-1" />
                             Push
                           </Button>
@@ -603,7 +704,7 @@ const PurchaseInvoices = () => {
 
           {/* Pagination */}
           {pagination.pages > 1 && (
-            <div className="flex items-center justify-between mt-4 pt-4 border-t">
+            <div className="mt-4 flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="text-sm text-gray-600">
                 Showing {((pagination.page - 1) * pagination.per_page) + 1} to {Math.min(pagination.page * pagination.per_page, pagination.total)} of {pagination.total} invoices
               </div>
@@ -654,6 +755,7 @@ const PurchaseInvoices = () => {
                 <div className="flex gap-3">
                   {getStatusChip(previewInvoice.status)}
                   {getPaymentChip(previewInvoice.payment_status)}
+                  {getSignatureChip(previewInvoice)}
                   {previewInvoice.is_manually_recorded && (
                     <span className="px-2 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
                       ✅ Audit Recorded
@@ -773,6 +875,19 @@ const PurchaseInvoices = () => {
                     <p className="text-sm text-gray-600">{previewInvoice.notes}</p>
                   </div>
                 )}
+
+                {/* Digital Signature */}
+                {previewInvoice.digital_signature_value_b64 && (
+                  <div className="bg-emerald-50 rounded-lg p-4">
+                    <h3 className="font-semibold text-emerald-800 mb-2">Digital Signature</h3>
+                    <div className="text-sm text-emerald-900 space-y-1">
+                      <p><span className="font-medium">Algorithm:</span> {previewInvoice.digital_signature_algo || 'N/A'}</p>
+                      <p><span className="font-medium">Signed By:</span> {previewInvoice.digital_signature_signed_by || 'N/A'}</p>
+                      <p><span className="font-medium">Signed At:</span> {previewInvoice.digital_signature_signed_at || 'N/A'}</p>
+                      <p className="break-all"><span className="font-medium">Payload Hash:</span> {previewInvoice.digital_signature_payload_hash_sha256 || 'N/A'}</p>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Footer Actions */}
@@ -791,6 +906,66 @@ const PurchaseInvoices = () => {
           </div>
         </div>
       )}
+
+      {/* Push Confirmation Modal */}
+      <Dialog open={showPushModal} onOpenChange={(open) => {
+        if (!pushing) {
+          setShowPushModal(open);
+          if (!open) {
+            setPushInvoiceId(null);
+            setApplyDigitalSignature(false);
+          }
+        }
+      }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Push Invoice to Procurement</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <p className="text-sm text-gray-700">
+              This will lock workflow for this invoice and create the procurement lot.
+            </p>
+
+            {user?.role === 'admin' && (
+              <div className="flex items-start gap-3 rounded-md border p-3 bg-gray-50">
+                <input
+                  id="apply-digital-signature"
+                  type="checkbox"
+                  checked={applyDigitalSignature}
+                  onChange={(e) => setApplyDigitalSignature(e.target.checked)}
+                  className="mt-1 h-4 w-4"
+                />
+                <div>
+                  <Label htmlFor="apply-digital-signature" className="font-medium">
+                    Apply digital signature to invoice PDF
+                  </Label>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Optional. If unchecked, signature area remains empty.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                disabled={pushing}
+                onClick={() => {
+                  setShowPushModal(false);
+                  setPushInvoiceId(null);
+                  setApplyDigitalSignature(false);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button disabled={pushing} onClick={handlePush}>
+                {pushing ? 'Pushing...' : 'Confirm Push'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

@@ -1,0 +1,1 @@
+{"indexes":[{"v":{"$numberInt":"2"},"key":{"_id":{"$numberInt":"1"}},"name":"_id_"},{"v":{"$numberInt":"2"},"key":{"invoice_id":{"$numberInt":"1"},"line_no":{"$numberInt":"1"}},"name":"invoice_id_1_line_no_1"}],"uuid":"73cc31a0d1104b9b9c3049f8a628b47d","collectionName":"purchase_invoice_lines","type":"collection"}

@@ -65,14 +65,14 @@ const Agents = () => {
 
   return (
     <div className="space-y-6" data-testid="agents-page">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h1 className="text-2xl lg:text-3xl font-bold text-slate-800">Agents</h1>
           <p className="text-slate-600 mt-1">Manage procurement agents and vendors</p>
         </div>
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
-            <Button className="gap-2" data-testid="add-agent-button">
+            <Button className="w-full gap-2 sm:w-auto" data-testid="add-agent-button">
               <Plus size={18} />
               Add Agent
             </Button>

@@ -1,0 +1,1 @@
+{"indexes":[{"v":{"$numberInt":"2"},"key":{"_id":{"$numberInt":"1"}},"name":"_id_"},{"v":{"$numberInt":"2"},"key":{"tenant_id":{"$numberInt":"1"},"feature_code":{"$numberInt":"1"}},"name":"tenant_id_1_feature_code_1","unique":true}],"uuid":"205361d420b5497b9c30ee4c34954670","collectionName":"feature_flags","type":"collection"}

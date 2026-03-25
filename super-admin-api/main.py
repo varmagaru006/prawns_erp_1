@@ -20,6 +20,15 @@ import hashlib
 
 load_dotenv()
 
+# Reuse backend Mongo TLS helper (certifi CA bundle for Atlas on macOS)
+import sys
+from pathlib import Path as _Path
+
+_backend_dir = _Path(__file__).resolve().parent.parent / "backend"
+if _backend_dir.is_dir() and str(_backend_dir) not in sys.path:
+    sys.path.insert(0, str(_backend_dir))
+from mongo_utils import motor_client_kwargs  # noqa: E402
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Feature registry (keep in sync with backend/feature_registry.py)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -98,7 +107,7 @@ async def _push_features_to_client_erp(tenant_id: str, client: dict) -> None:
 
 # MongoDB connection
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
-mongo_client = AsyncIOMotorClient(MONGO_URL)
+mongo_client = AsyncIOMotorClient(MONGO_URL, **motor_client_kwargs(MONGO_URL))
 
 # Super Admin DB - separate database for SaaS control
 db = mongo_client["prawn_erp_super_admin"]

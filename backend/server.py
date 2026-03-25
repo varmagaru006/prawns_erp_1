@@ -25,6 +25,11 @@ import io
 from enum import Enum
 import asyncio
 import time
+import json
+import hmac
+import base64
+import hashlib
+import re
 
 # Multi-tenant services
 from services.multi_tenant import tenant_context, FeatureFlagService, tenant_middleware
@@ -35,9 +40,11 @@ from super_admin import super_admin_router, set_database as set_super_admin_db, 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# MongoDB connection
+# MongoDB connection (Atlas TLS: use certifi CA bundle — avoids SSL handshake errors on macOS)
+from mongo_utils import motor_client_kwargs
+
 mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
+client = AsyncIOMotorClient(mongo_url, **motor_client_kwargs(mongo_url))
 db = client[os.environ['DB_NAME']]
 
 # Feature Flag Service
@@ -796,6 +803,10 @@ class PurchaseInvoiceCreate(BaseModel):
     same_as_farmer: bool = False
 
 
+class PushInvoiceRequest(BaseModel):
+    apply_digital_signature: bool = False
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Amendment A5: Party Ledger Models
 # ══════════════════════════════════════════════════════════════════════════════
@@ -961,7 +972,8 @@ def get_password_hash(password: str) -> str:
 def create_access_token(data: dict) -> str:
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
+    # Integer exp is the most compatible across PyJWT versions and decoders
+    to_encode.update({"exp": int(expire.timestamp())})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
@@ -1225,14 +1237,31 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         raise HTTPException(status_code=401, detail="Invalid authentication credentials")
     
     # Regular token flow
-    user_doc = await db.users.find_one({"email": email}, {"_id": 0})
+    email_lookup = (email or "").strip().lower()
+    user_doc = await db.users.find_one({"email": email_lookup}, {"_id": 0})
+    if not user_doc:
+        user_doc = await db.users.find_one(
+            {"email": {"$regex": f"^{re.escape((email or '').strip())}$", "$options": "i"}},
+            {"_id": 0},
+        )
     if user_doc is None:
         raise HTTPException(status_code=401, detail="User not found")
     
     if isinstance(user_doc.get('created_at'), str):
         user_doc['created_at'] = datetime.fromisoformat(user_doc['created_at'])
-    
-    return User(**user_doc)
+    # Same defensiveness as login() for legacy / migrated user documents
+    if not user_doc.get('name') or str(user_doc.get('name')).strip() == "":
+        user_doc['name'] = (user_doc.get('email') or email_lookup or "user").split("@")[0] or "User"
+    role_raw = user_doc.get('role', UserRole.worker.value)
+    if isinstance(role_raw, str):
+        try:
+            user_doc['role'] = UserRole(role_raw)
+        except ValueError:
+            user_doc['role'] = UserRole.worker
+    try:
+        return User(**{k: v for k, v in user_doc.items() if k not in ('password', 'password_hash')})
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid user profile")
 
 def generate_lot_number() -> str:
     """Generate unique lot number with configurable prefix per tenant"""
@@ -1775,13 +1804,19 @@ def generate_wage_bill_pdf(bill: WageBill) -> bytes:
 # Auth endpoints
 @api_router.post("/auth/register", response_model=User)
 async def register(user_data: UserCreate):
-    existing = await db.users.find_one({"email": user_data.email}, {"_id": 0})
+    email_reg = user_data.email.strip().lower()
+    existing = await db.users.find_one({"email": email_reg}, {"_id": 0})
+    if not existing:
+        existing = await db.users.find_one(
+            {"email": {"$regex": f"^{re.escape(user_data.email.strip())}$", "$options": "i"}},
+            {"_id": 0},
+        )
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     
     hashed_password = get_password_hash(user_data.password)
     user = User(
-        email=user_data.email,
+        email=email_reg,
         name=user_data.name,
         role=user_data.role,
         phone=user_data.phone
@@ -1796,27 +1831,60 @@ async def register(user_data: UserCreate):
 
 @api_router.post("/auth/login", response_model=Token)
 async def login(credentials: UserLogin):
-    user_doc = await db.users.find_one({"email": credentials.email}, {"_id": 0})
+    email_key = credentials.email.strip().lower()
+    user_doc = await db.users.find_one({"email": email_key}, {"_id": 0})
+    if not user_doc:
+        # Legacy rows may use different email casing
+        user_doc = await db.users.find_one(
+            {"email": {"$regex": f"^{re.escape(credentials.email.strip())}$", "$options": "i"}},
+            {"_id": 0},
+        )
     if not user_doc:
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    
+
     # Support both 'password' and 'password_hash' fields for compatibility
     stored_password = user_doc.get('password') or user_doc.get('password_hash')
     if not stored_password or not verify_password(credentials.password, stored_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    
+
+    if user_doc.get("is_active") is False:
+        raise HTTPException(status_code=403, detail="Account is disabled")
+
     if isinstance(user_doc.get('created_at'), str):
         user_doc['created_at'] = datetime.fromisoformat(user_doc['created_at'])
-    
+
     # Remove both password fields before creating user object
     user_data = {k: v for k, v in user_doc.items() if k not in ['password', 'password_hash']}
-    user = User(**user_data)
-    
+    # Defensive defaults for migrated / partial user documents
+    if not user_data.get('name') or str(user_data.get('name')).strip() == "":
+        user_data['name'] = (user_data.get('email') or email_key or "user").split("@")[0] or "User"
+    role_raw = user_data.get('role', UserRole.worker.value)
+    if isinstance(role_raw, str):
+        try:
+            user_data['role'] = UserRole(role_raw)
+        except ValueError:
+            user_data['role'] = UserRole.worker
+
+    try:
+        user = User(**user_data)
+    except Exception as e:
+        logger.warning("Login: invalid user profile for %s: %s", email_key, e)
+        raise HTTPException(
+            status_code=500,
+            detail="User account data is invalid. Ask an administrator to fix the user record.",
+        )
+
     # Include tenant_id in JWT token for proper multi-tenant support
     tenant_id = user_doc.get('tenant_id', 'cli_001')
-    access_token = create_access_token(data={"sub": user.email, "tenant_id": tenant_id})
+    access_token = create_access_token(
+        data={"sub": str(user.email), "tenant_id": tenant_id}
+    )
     # Return features in login response so client can skip /auth/me (faster load)
-    features = await feature_service.get_all_flags(tenant_id)
+    try:
+        features = await feature_service.get_all_flags(tenant_id)
+    except Exception as e:
+        logger.warning("get_all_flags failed during login for tenant %s: %s", tenant_id, e)
+        features = {}
     return Token(
         access_token=access_token,
         token_type="bearer",
@@ -1829,7 +1897,10 @@ async def login(credentials: UserLogin):
 @api_router.get("/auth/me")
 async def get_me(current_user: User = Depends(get_current_user)):
     # Add tenant info and feature flags to user response
-    tenant_id = tenant_context.get_tenant()
+    try:
+        tenant_id = tenant_context.get_tenant()
+    except Exception:
+        tenant_id = getattr(current_user, "tenant_id", None) or "cli_001"
     features = await feature_service.get_all_flags(tenant_id)
     
     response = {
@@ -2054,6 +2125,79 @@ async def get_procurement_lots(current_user: User = Depends(get_current_user)):
                 payment['payment_date'] = datetime.fromisoformat(payment['payment_date'])
     _cache_set(cache_key, lots, ttl_sec=30)
     return lots
+
+
+@api_router.get("/procurement/lots/agent-wise-count")
+async def procurement_lots_agent_wise_count(
+    limit: int = 10,
+    current_user: User = Depends(get_current_user),
+):
+    """Return number of procurement lots grouped by agent."""
+    limit = max(1, min(int(limit), 100))
+    rows = await db.procurement_lots.aggregate([
+        {
+            "$group": {
+                "_id": {"agent_id": "$agent_id", "agent_name": "$agent_name"},
+                "lot_count": {"$sum": 1},
+            }
+        },
+        {"$sort": {"lot_count": -1}},
+        {"$limit": limit},
+        {
+            "$project": {
+                "_id": 0,
+                "agent_id": "$_id.agent_id",
+                "agent_name": "$_id.agent_name",
+                "lot_count": 1,
+            }
+        },
+    ]).to_list(limit)
+    return rows
+
+
+@api_router.get("/procurement/lots/party-wise-count")
+async def procurement_lots_party_wise_count(
+    limit: int = 10,
+    current_user: User = Depends(get_current_user),
+):
+    """Return number of procurement lots grouped by party (via purchase invoice)."""
+    limit = max(1, min(int(limit), 100))
+    rows = await db.procurement_lots.aggregate([
+        {
+            "$match": {
+                "purchase_invoice_id": {"$exists": True, "$ne": None, "$ne": ""},
+            }
+        },
+        {
+            "$lookup": {
+                "from": "purchase_invoices",
+                "localField": "purchase_invoice_id",
+                "foreignField": "id",
+                "as": "invoice",
+            }
+        },
+        {"$unwind": {"path": "$invoice", "preserveNullAndEmptyArrays": False}},
+        {
+            "$group": {
+                "_id": {
+                    "party_id": {"$ifNull": ["$invoice.party_id", ""]},
+                    "party_name_text": {"$ifNull": ["$invoice.party_name_text", "Unknown"]},
+                },
+                "lot_count": {"$sum": 1},
+            }
+        },
+        {"$sort": {"lot_count": -1}},
+        {"$limit": limit},
+        {
+            "$project": {
+                "_id": 0,
+                "party_id": "$_id.party_id",
+                "party_name_text": "$_id.party_name_text",
+                "lot_count": 1,
+            }
+        },
+    ]).to_list(limit)
+    return rows
 
 @api_router.get("/procurement/lots/{lot_id}", response_model=ProcurementLot)
 async def get_procurement_lot(lot_id: str, current_user: User = Depends(get_current_user)):
@@ -2887,9 +3031,13 @@ def _build_purchase_invoice_list_query(
     to_date: Optional[str] = None,
     payment_status: Optional[str] = None,
     invoice_status: Optional[str] = None,
+    agent_name: Optional[str] = None,
+    party_name: Optional[str] = None,
     search: Optional[str] = None,
 ) -> dict:
-    """Build MongoDB query for purchase invoice list/metrics. Same logic for both so stats cards match filters (date, search, payment status, invoice status)."""
+    """Build MongoDB query for purchase invoice list/metrics.
+    Same logic for both so stats cards match filters.
+    """
     query: dict = {}
     if from_date or to_date:
         query["invoice_date"] = {}
@@ -2905,6 +3053,15 @@ def _build_purchase_invoice_list_query(
         statuses = [s.strip() for s in invoice_status.split(",") if s.strip()]
         if statuses:
             query["status"] = {"$in": statuses}
+
+    if agent_name and agent_name.strip():
+        agent_term = agent_name.strip()
+        query["agent_ref_name"] = {"$regex": agent_term, "$options": "i"}
+
+    if party_name and party_name.strip():
+        party_term = party_name.strip()
+        query["party_name_text"] = {"$regex": party_term, "$options": "i"}
+
     if search and search.strip():
         search_term = search.strip()
         query["$or"] = [
@@ -3085,6 +3242,8 @@ async def get_purchase_invoices(
     to_date: Optional[str] = None,
     payment_status: Optional[str] = None,
     invoice_status: Optional[str] = None,
+    agent_name: Optional[str] = None,
+    party_name: Optional[str] = None,
     search: Optional[str] = None,
     page: int = 1,
     per_page: int = 25,
@@ -3093,7 +3252,15 @@ async def get_purchase_invoices(
     current_user: User = Depends(get_current_user)
 ):
     """Get purchase invoices with filters and pagination. Omitted or empty filters mean no restriction. Uses aggregation for metrics (fast) and paginated find for list. Use debug_timing=1 to get timing breakdown in response."""
-    query = _build_purchase_invoice_list_query(from_date, to_date, payment_status, invoice_status, search)
+    query = _build_purchase_invoice_list_query(
+        from_date,
+        to_date,
+        payment_status,
+        invoice_status,
+        agent_name=agent_name,
+        party_name=party_name,
+        search=search,
+    )
     sort_field, sort_dir = sort.split(':')
     sort_direction = -1 if sort_dir == 'desc' else 1
     skip = (page - 1) * per_page
@@ -3152,11 +3319,21 @@ async def get_purchase_invoice_metrics(
     to_date: Optional[str] = None,
     payment_status: Optional[str] = None,
     invoice_status: Optional[str] = None,
+    agent_name: Optional[str] = None,
+    party_name: Optional[str] = None,
     search: Optional[str] = None,
     current_user: User = Depends(get_current_user)
 ):
     """Get metrics for purchase invoices dashboard. Uses aggregation (fast). Omitted/empty = All (no restriction)."""
-    query = _build_purchase_invoice_list_query(from_date, to_date, payment_status, invoice_status, search)
+    query = _build_purchase_invoice_list_query(
+        from_date,
+        to_date,
+        payment_status,
+        invoice_status,
+        agent_name=agent_name,
+        party_name=party_name,
+        search=search,
+    )
     metrics = await _purchase_invoice_metrics_aggregation(query)
     # Add fields the frontend or other callers may expect from the standalone metrics endpoint
     pending_total = metrics["partial_total"]  # approximate; full pending would need extra aggregation
@@ -3175,6 +3352,27 @@ async def get_purchase_invoice_metrics(
         "advances_paid_total": metrics["advances_paid_total"],
         "outstanding_total": pending_total,
         "top_farmers": [],  # omit heavy top_farmers for speed; use list endpoint if needed
+    }
+
+
+@api_router.get("/purchase-invoices/filter-options")
+async def get_purchase_invoice_filter_options(current_user: User = Depends(get_current_user)):
+    """Get distinct dropdown options for purchase invoice filters."""
+    agent_rows = await db.purchase_invoices.aggregate([
+        {"$match": {"agent_ref_name": {"$exists": True, "$ne": None, "$ne": ""}}},
+        {"$group": {"_id": "$agent_ref_name"}},
+        {"$sort": {"_id": 1}},
+        {"$project": {"_id": 0, "name": "$_id"}},
+    ]).to_list(1000)
+    party_rows = await db.purchase_invoices.aggregate([
+        {"$match": {"party_name_text": {"$exists": True, "$ne": None, "$ne": ""}}},
+        {"$group": {"_id": "$party_name_text"}},
+        {"$sort": {"_id": 1}},
+        {"$project": {"_id": 0, "name": "$_id"}},
+    ]).to_list(1000)
+    return {
+        "agents": [r["name"] for r in agent_rows if r.get("name")],
+        "parties": [r["name"] for r in party_rows if r.get("name")],
     }
 
 @api_router.get("/purchase-invoices/{invoice_id}")
@@ -3310,6 +3508,7 @@ async def approve_purchase_invoice(
 @api_router.post("/purchase-invoices/{invoice_id}/push-to-procurement")
 async def push_invoice_to_procurement(
     invoice_id: str,
+    payload: Optional[PushInvoiceRequest] = None,
     current_user: User = Depends(get_current_user)
 ):
     """Push approved invoice to procurement (creates procurement lot)"""
@@ -3326,6 +3525,10 @@ async def push_invoice_to_procurement(
     
     if invoice.get('lot_id'):
         raise HTTPException(status_code=400, detail="Invoice already pushed")
+
+    apply_digital_signature = bool(payload.apply_digital_signature) if payload else False
+    if apply_digital_signature and current_user.role != UserRole.admin:
+        raise HTTPException(status_code=403, detail="Only admin can apply digital signature")
     
     # Get line items to determine species
     lines = await db.purchase_invoice_lines.find(
@@ -3417,9 +3620,43 @@ async def push_invoice_to_procurement(
             "lot_id": lot['id'],
             "pushed_at": datetime.now(timezone.utc).isoformat(),
             "pushed_by": current_user.id,
+            "apply_digital_signature": apply_digital_signature,
             "updated_at": datetime.now(timezone.utc).isoformat()
         }}
     )
+
+    # Create digital signature metadata only when explicitly requested by admin.
+    if apply_digital_signature:
+        # Default to SECRET_KEY if INVOICE_SIGNING_SECRET is not set (dev convenience).
+        # For production, set INVOICE_SIGNING_SECRET to a dedicated secret.
+        invoice_signing_secret = os.environ.get("INVOICE_SIGNING_SECRET") or SECRET_KEY
+        if invoice_signing_secret:
+            pushed_invoice = await db.purchase_invoices.find_one({"id": invoice_id}, {"_id": 0})
+            if pushed_invoice:
+                payload_bytes = _canonical_purchase_invoice_payload(pushed_invoice, lines)
+                sig_meta = _hmac_sign_purchase_invoice_payload(payload_bytes, invoice_signing_secret)
+                await db.purchase_invoices.update_one(
+                    {"id": invoice_id},
+                    {"$set": {
+                        "digital_signature_algo": sig_meta.get("signature_algo"),
+                        "digital_signature_payload_hash_sha256": sig_meta.get("payload_hash_sha256"),
+                        "digital_signature_value_b64": sig_meta.get("signature_value_b64"),
+                        "digital_signature_signed_by": current_user.id,
+                        "digital_signature_signed_at": datetime.now(timezone.utc).isoformat(),
+                    }}
+                )
+    else:
+        # Explicitly clear signature fields so the invoice sign area remains empty.
+        await db.purchase_invoices.update_one(
+            {"id": invoice_id},
+            {"$set": {
+                "digital_signature_algo": None,
+                "digital_signature_payload_hash_sha256": None,
+                "digital_signature_value_b64": None,
+                "digital_signature_signed_by": None,
+                "digital_signature_signed_at": None,
+            }}
+        )
     
     # A5: Create ledger entry if party is linked
     if invoice.get("party_id"):
@@ -3525,13 +3762,204 @@ async def toggle_manual_audit(
     
     return {"status": "success", "message": f"Manual audit status updated"}
 
-def generate_purchase_invoice_pdf(invoice: dict, lines: List[dict], tenant_config: dict) -> bytes:
+# Digitally sign purchase invoices on "push to procurement".
+# We sign an HMAC over a canonical JSON payload (invoice + line items),
+# and then embed the signature metadata into the PDF.
+def _canonical_purchase_invoice_payload(invoice: dict, lines: List[dict]) -> bytes:
+    payload = {"invoice": invoice, "lines": lines}
+    payload_json = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
+    return payload_json.encode("utf-8")
+
+
+def _hmac_sign_purchase_invoice_payload(payload_bytes: bytes, secret: str) -> dict:
+    """
+    Returns signature metadata.
+    Uses HMAC-SHA256 so we only need a shared secret (no certificate/keypair).
+    """
+    signature_algo = "HMAC-SHA256"
+    payload_hash_sha256 = hashlib.sha256(payload_bytes).hexdigest()
+    sig_bytes = hmac.new(secret.encode("utf-8"), payload_bytes, hashlib.sha256).digest()
+    sig_b64 = base64.b64encode(sig_bytes).decode("ascii")
+    return {
+        "signature_algo": signature_algo,
+        "payload_hash_sha256": payload_hash_sha256,
+        "signature_value_b64": sig_b64,
+    }
+
+
+def _ende_canonical_signing_date(iso_dt: Optional[str]) -> str:
+    """
+    Formats datetime for endesive's signingdate field.
+    endesive expects: YYYYmmddHHMMSS+00'00'
+    """
+    if not iso_dt:
+        iso_dt = datetime.now(timezone.utc).isoformat()
+    try:
+        dt = datetime.fromisoformat(iso_dt.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.astimezone(timezone.utc)
+    except Exception:
+        dt = datetime.now(timezone.utc)
+    return dt.strftime("%Y%m%d%H%M%S") + "+00'00'"
+
+
+def _parse_signature_box_env(value: Optional[str]) -> tuple:
+    """
+    Parses INVOICE_PDF_SIGNATURE_BOX like "350,50,550,150".
+    Coordinates are page-user-space units (points).
+    """
+    # Keep default visible signature appearance inside footer right area.
+    # Format: (x1, y1, x2, y2) in PDF points.
+    default_box = (440, 66, 555, 88)
+    if not value:
+        return default_box
+    try:
+        parts = [float(x.strip()) for x in value.split(",") if x.strip()]
+        if len(parts) >= 4:
+            return tuple(parts[:4])
+    except Exception:
+        pass
+    return default_box
+
+
+def _maybe_sign_purchase_invoice_pdf(pdf_bytes: bytes, invoice: dict) -> bytes:
+    """
+    If certificate env vars are configured, apply a real cryptographic PDF signature
+    (CMS/PKCS#7) using the provided PFX (PKCS#12) file.
+    Otherwise returns the original PDF bytes unchanged.
+    """
+    pfx_path = os.environ.get("INVOICE_PDF_SIGNING_PFX_PATH")
+    if not pfx_path:
+        return pdf_bytes
+
+    # Only apply cryptographic signature for pushed invoices (admin action).
+    if invoice.get("status") != "pushed":
+        return pdf_bytes
+    if not invoice.get("apply_digital_signature"):
+        return pdf_bytes
+
+    pfx_password = os.environ.get("INVOICE_PDF_SIGNING_PFX_PASSWORD", "")
+    sig_box = _parse_signature_box_env(os.environ.get("INVOICE_PDF_SIGNATURE_BOX"))
+
+    try:
+        from cryptography.hazmat import backends
+        from cryptography.hazmat.primitives.serialization import pkcs12
+        from endesive import pdf as endesive_pdf
+    except Exception as e:
+        # If endesive isn't installed in environment, keep PDF usable.
+        print(f"PDF signing disabled (missing library): {e}")
+        return pdf_bytes
+
+    try:
+        with open(pfx_path, "rb") as f:
+            pfx_data = f.read()
+        p12pk, p12pc, p12oc = pkcs12.load_key_and_certificates(
+            pfx_data, (pfx_password or "").encode("utf-8"), backends.default_backend()
+        )
+        if not p12pk or not p12pc:
+            print("PDF signing disabled: PFX did not contain key/certificate")
+            return pdf_bytes
+    except Exception as e:
+        print(f"PDF signing disabled (PFX load failed): {e}")
+        return pdf_bytes
+
+    # Extract CN/C (if available) for signature metadata
+    def _get_rdn_names(x509_name):
+        # Best-effort extraction of DN components used by endesive example.
+        names = {"CN": "", "C": ""}
+        try:
+            for rdn in x509_name.rdns:
+                for attr in rdn:
+                    if getattr(attr.oid, "dotted_string", "") == "2.5.4.3":  # commonName
+                        names["CN"] = str(attr.value)
+                    if getattr(attr.oid, "dotted_string", "") == "2.5.4.6":  # countryName
+                        names["C"] = str(attr.value)
+        except Exception:
+            pass
+        return names
+
+    names = _get_rdn_names(p12pc.subject)
+    signing_date = _ende_canonical_signing_date(invoice.get("digital_signature_signed_at"))
+
+    reason = os.environ.get("INVOICE_PDF_SIGNING_REASON", "Signed by Prawn ERP")
+    contact = os.environ.get("INVOICE_PDF_SIGNING_CONTACT", "")
+    location = os.environ.get("INVOICE_PDF_SIGNING_LOCATION", "")
+    if not contact:
+        contact = "noreply@example.com"
+    # Keep visual signature text compact so it stays inside the box.
+    signature = "Digitally Signed"
+
+    dct = {
+        "sigflags": 3,
+        "sigpage": 0,
+        "contact": contact,
+        "location": location or "—",
+        "signingdate": signing_date,
+        "reason": reason,
+        "signature": signature,
+        "signaturebox": sig_box,
+    }
+
+    # endesive signs by generating a signature block and appending it to the PDF.
+    # Returning pdf_bytes + datas matches the official example's write(datau); write(datas).
+    datas = endesive_pdf.cms.sign(pdf_bytes, dct, p12pk, p12pc, p12oc, "sha256")
+    return pdf_bytes + datas
+
+
+def _signature_path_from_config_value(raw: Optional[Any]) -> Optional[Path]:
+    """
+    Resolve tenant_config invoice_signature_image to a file under UPLOADS_DIR.
+    Accepts '/uploads/name.ext' or a full URL containing '/uploads/...'.
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    # Normalize separators so we accept values stored with backslashes too.
+    s = s.replace("\\", "/")
+    # Remove query/fragment early so basename is clean.
+    s = s.split("?")[0].split("#")[0]
+
+    # Accept any string that contains "/uploads/" (including full URLs),
+    # or a value stored as "uploads/..." (no leading slash).
+    low = s.lower()
+    uploads_idx = low.find("/uploads/")
+    if uploads_idx != -1:
+        s = s[uploads_idx:]  # now starts with "/uploads/..."
+    elif low.startswith("uploads/"):
+        s = "/" + s  # "uploads/..." -> "/uploads/..."
+    else:
+        return None
+
+    base_name = os.path.basename(s)
+    if not base_name or base_name in (".", "..") or ".." in s:
+        return None
+    try:
+        uploads_root = UPLOADS_DIR.resolve()
+        full = (UPLOADS_DIR / base_name).resolve()
+        full.relative_to(uploads_root)
+    except (OSError, ValueError):
+        return None
+    if not full.is_file():
+        return None
+    return full
+
+
+def generate_purchase_invoice_pdf(
+    invoice: dict,
+    lines: List[dict],
+    tenant_config: dict,
+    signature: Optional[dict] = None,
+    pdf_generated_at: Optional[datetime] = None,
+) -> bytes:
     """Generate PDF matching exact format from reference images"""
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors as rl_colors
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage
     from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
     
     buffer = io.BytesIO()
@@ -3611,7 +4039,7 @@ def generate_purchase_invoice_pdf(invoice: dict, lines: List[dict], tenant_confi
     inner_content.append(meta_table)
     inner_content.append(Spacer(1, 0.05*inch))
     
-    # Line items table (pad to 15 rows minimum)
+    # Line items table (pad to fixed rows for stable template layout)
     line_data = [['S.NO', 'Variety', 'Count', 'Quantity\nKgs/Gms', 'Rate', 'Amount']]
     
     for idx, line in enumerate(lines, 1):
@@ -3624,8 +4052,8 @@ def generate_purchase_invoice_pdf(invoice: dict, lines: List[dict], tenant_confi
             f"{line.get('amount', 0):.2f}"
         ])
     
-    # Pad to 15 rows
-    while len(line_data) < 16:  # 15 data rows + 1 header
+    # Pad to 12 rows to avoid crowding totals/footer area
+    while len(line_data) < 13:  # 12 data rows + 1 header
         line_data.append(['', '', '', '', '', '0.00'])
     
     # Add subtotal row
@@ -3638,7 +4066,7 @@ def generate_purchase_invoice_pdf(invoice: dict, lines: List[dict], tenant_confi
     # Add Rounded Off row
     line_data.append(['', '', '', '', 'Rounded Off', f"{invoice.get('rounded_off', 0):.2f}"])
     
-    # Add Grand Total row
+    # Add Grand Total row (label spans first 3 cols so it fits; qty col 3; amount col 5)
     line_data.append(['Grand Total', '', '', f"{invoice.get('total_quantity_kg', 0):.3f}", '', f"{invoice.get('grand_total', 0):.2f}"])
     # Advance Paid and Balance Due (so generated invoice shows them)
     advance_paid = float(invoice.get('advance_paid') or 0)
@@ -3647,8 +4075,19 @@ def generate_purchase_invoice_pdf(invoice: dict, lines: List[dict], tenant_confi
         balance_due = float(invoice.get('grand_total') or 0) - advance_paid
     line_data.append(['Advance Paid', '', '', '', '', f"{advance_paid:.2f}"])
     line_data.append(['Balance Due', '', '', '', '', f"{balance_due:.2f}"])
-    
-    line_table = Table(line_data, colWidths=[0.5*inch, 1.5*inch, 1*inch, 1*inch, 0.8*inch, 1*inch])
+
+    # Column widths fill printable width; col 0 stays narrow for S.No. — wide labels use SPAN below
+    _lcw0 = 0.48 * inch
+    _lcw1 = 1.42 * inch
+    _lcw2 = 0.92 * inch
+    _lcw3 = 1.05 * inch
+    _lcw4 = 0.82 * inch
+    _lcw5 = page_width - (_lcw0 + _lcw1 + _lcw2 + _lcw3 + _lcw4)
+    if _lcw5 < 0.85 * inch:
+        _lcw5 = 0.85 * inch
+    line_col_widths = [_lcw0, _lcw1, _lcw2, _lcw3, _lcw4, _lcw5]
+
+    line_table = Table(line_data, colWidths=line_col_widths)
     line_table.setStyle(TableStyle([
         # Header row
         ('BACKGROUND', (0, 0), (-1, 0), rl_colors.HexColor('#e0f7fa')),
@@ -3656,60 +4095,267 @@ def generate_purchase_invoice_pdf(invoice: dict, lines: List[dict], tenant_confi
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
         ('FONTSIZE', (0, 0), (-1, 0), 10),
         ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
-        # Data rows (header+15 padded rows only; summary rows styled below)
+        # Body lines + padded rows: center; numeric amount column right-align on col 5 only
         ('BACKGROUND', (0, 1), (-1, -7), rl_colors.HexColor('#e0f7fa')),
-        ('TEXTCOLOR', (0, 1), (-1, -1), rl_colors.HexColor('#0d47a1')),
-        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 1), (-1, -1), 9),
-        ('ALIGN', (0, 1), (-1, -1), 'CENTER'),
-        ('ALIGN', (-1, 1), (-1, -1), 'RIGHT'),
-        # TDS row (now -5 from end)
+        ('TEXTCOLOR', (0, 1), (-1, -7), rl_colors.HexColor('#0d47a1')),
+        ('FONTNAME', (0, 1), (-1, -7), 'Helvetica'),
+        ('FONTSIZE', (0, 1), (-1, -7), 9),
+        ('ALIGN', (0, 1), (-1, -7), 'CENTER'),
+        ('ALIGN', (5, 1), (5, -7), 'RIGHT'),
+        # Subtotal row (-6)
+        ('ALIGN', (5, -6), (5, -6), 'RIGHT'),
+        ('FONTNAME', (5, -6), (5, -6), 'Helvetica-Bold'),
+        # TDS row (-5)
         ('TEXTCOLOR', (4, -5), (4, -5), rl_colors.HexColor('#1565c0')),
         ('TEXTCOLOR', (5, -5), (5, -5), rl_colors.HexColor('#d32f2f')),
         ('FONTNAME', (4, -5), (5, -5), 'Helvetica-Bold'),
-        # Rounded Off row (now -4)
+        ('ALIGN', (4, -5), (4, -5), 'RIGHT'),
+        ('ALIGN', (5, -5), (5, -5), 'RIGHT'),
+        # Rounded Off row (-4)
         ('TEXTCOLOR', (4, -4), (4, -4), rl_colors.HexColor('#1565c0')),
         ('TEXTCOLOR', (5, -4), (5, -4), rl_colors.HexColor('#d32f2f')),
         ('FONTNAME', (4, -4), (5, -4), 'Helvetica-Bold'),
-        # Grand Total row (now -3)
+        ('ALIGN', (4, -4), (4, -4), 'RIGHT'),
+        ('ALIGN', (5, -4), (5, -4), 'RIGHT'),
+        # Grand Total (-3): merge label across cols 0–2 so text stays inside grid
+        ('SPAN', (0, -3), (2, -3)),
         ('BACKGROUND', (0, -3), (-1, -3), rl_colors.HexColor('#e0f7fa')),
         ('FONTNAME', (0, -3), (-1, -3), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, -3), (-1, -3), 11),
-        # Advance Paid row (-2)
+        ('FONTSIZE', (0, -3), (-1, -3), 9.5),
+        ('ALIGN', (0, -3), (2, -3), 'LEFT'),
+        ('LEFTPADDING', (0, -3), (2, -3), 4),
+        ('ALIGN', (3, -3), (3, -3), 'RIGHT'),
+        ('ALIGN', (5, -3), (5, -3), 'RIGHT'),
+        # Advance Paid (-2): label spans cols 0–4
+        ('SPAN', (0, -2), (4, -2)),
         ('FONTNAME', (0, -2), (-1, -2), 'Helvetica'),
-        # Balance Due row (-1)
+        ('ALIGN', (0, -2), (4, -2), 'LEFT'),
+        ('LEFTPADDING', (0, -2), (4, -2), 4),
+        ('ALIGN', (5, -2), (5, -2), 'RIGHT'),
+        # Balance Due (-1)
+        ('SPAN', (0, -1), (4, -1)),
         ('BACKGROUND', (0, -1), (-1, -1), rl_colors.HexColor('#e8f5e9')),
         ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
         ('FONTSIZE', (0, -1), (-1, -1), 10),
+        ('ALIGN', (0, -1), (4, -1), 'LEFT'),
+        ('LEFTPADDING', (0, -1), (4, -1), 4),
+        ('ALIGN', (5, -1), (5, -1), 'RIGHT'),
         # Grid
         ('GRID', (0, 0), (-1, -1), 1, rl_colors.HexColor('#0d47a1')),
-        ('TOPPADDING', (0, 0), (-1, -1), 4),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 2),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+        ('TOPPADDING', (0, -3), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, -3), (-1, -1), 4),
     ]))
     inner_content.append(line_table)
     inner_content.append(Spacer(1, 0.1*inch))
     
-    # Bottom section
+    # Bottom section (wrapped Paragraphs so long "amount in words" stays inside the box)
     amount_words = amount_to_words_indian(invoice.get('grand_total', 0))
-    bottom_data = [
-        [f"Total Amount In Words: {amount_words}", f"For {tenant_config.get('company_name', 'COMPANY NAME')}"],
-        ['', ''],
-        ['', 'Authorised Signatory']
+    _co_raw = tenant_config.get('company_name') or 'COMPANY NAME'
+    _co_name = _co_raw.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    _words_safe = str(amount_words).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    words_in_cell_style = ParagraphStyle(
+        'AmountWords',
+        parent=styles['Normal'],
+        fontName='Helvetica',
+        fontSize=9,
+        leading=11,
+        textColor=rl_colors.HexColor('#0d47a1'),
+        alignment=TA_LEFT,
+        spaceBefore=0,
+        spaceAfter=2,
+    )
+    for_company_style = ParagraphStyle(
+        'ForCompany',
+        parent=styles['Normal'],
+        fontName='Helvetica-Bold',
+        fontSize=10,
+        leading=12,
+        textColor=rl_colors.HexColor('#0d47a1'),
+        alignment=TA_RIGHT,
+    )
+    signature_style = ParagraphStyle(
+        'SignatureStyle',
+        parent=styles['Normal'],
+        fontName='Helvetica',
+        fontSize=8.5,
+        leading=11,
+        textColor=rl_colors.HexColor('#1565c0'),
+        alignment=TA_RIGHT,
+    )
+    auth_sig_style = ParagraphStyle(
+        'AuthSignatory',
+        parent=styles['Normal'],
+        fontName='Helvetica',
+        fontSize=8.5,
+        leading=10,
+        textColor=rl_colors.HexColor('#0d47a1'),
+        alignment=TA_RIGHT,
+    )
+
+    _bottom_left_w = page_width * 0.58
+    _bottom_right_w = page_width * 0.42
+    words_para = Paragraph(
+        f"<b>Total Amount In Words:</b> {_words_safe}",
+        words_in_cell_style,
+    )
+    for_para = Paragraph(f"For {_co_name}", for_company_style)
+
+    _gen_at = pdf_generated_at or datetime.now(timezone.utc)
+    printed_ts_style = ParagraphStyle(
+        'PrintedTs',
+        parent=styles['Normal'],
+        fontName='Helvetica',
+        fontSize=8,
+        leading=10,
+        textColor=rl_colors.HexColor('#455a64'),
+        alignment=TA_RIGHT,
+    )
+    printed_ts_para = Paragraph(
+        f"Printed: {_gen_at.strftime('%d-%m-%Y %H:%M:%S')} UTC",
+        printed_ts_style,
+    )
+
+    # Optional scanned / uploaded owner signature image (Company Settings)
+    sig_image_holder = None
+    _sig_raw = tenant_config.get("invoice_signature_image")
+    _sig_path = _signature_path_from_config_value(_sig_raw)
+    if _sig_raw and _sig_path is None:
+        logging.getLogger(__name__).warning(
+            "Purchase invoice PDF: invoice_signature_image is set (%r) but no matching file under %s. "
+            "Re-upload from Company Settings or ensure backend/uploads is persisted (Docker volume).",
+            _sig_raw,
+            UPLOADS_DIR,
+        )
+    if _sig_path is not None:
+        try:
+            with open(_sig_path, "rb") as _sig_f:
+                _sig_bytes = _sig_f.read()
+            rl_sig = RLImage(io.BytesIO(_sig_bytes))
+            _max_w = 1.45 * inch
+            if rl_sig.drawWidth > _max_w:
+                _sc = _max_w / rl_sig.drawWidth
+                rl_sig.drawWidth = _max_w
+                rl_sig.drawHeight = rl_sig.drawHeight * _sc
+            _sig_inner_w2 = max(float(_bottom_right_w) - 24, 120)
+            sig_image_holder = Table(
+                [[rl_sig], [printed_ts_para]],
+                colWidths=[_sig_inner_w2],
+            )
+            sig_image_holder.setStyle(TableStyle([
+                ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
+                ('VALIGN', (0, 0), (0, 0), 'BOTTOM'),
+                # Keep this compact so the rest of the footer doesn't get clipped
+                ('TOPPADDING', (0, 0), (-1, -1), 2),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
+                ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+            ]))
+        except Exception as _sig_err:
+            # Some image formats can fail ReportLab decoding even if Pillow supports them.
+            # Try converting to PNG in-memory as a robust fallback.
+            try:
+                from PIL import Image as PILImage
+
+                pil_img = PILImage.open(_sig_path)
+                bio = io.BytesIO()
+                pil_img.save(bio, format="PNG")
+                bio.seek(0)
+                rl_sig = RLImage(bio)
+
+                _max_w = 1.45 * inch
+                if rl_sig.drawWidth > _max_w:
+                    _sc = _max_w / rl_sig.drawWidth
+                    rl_sig.drawWidth = _max_w
+                    rl_sig.drawHeight = rl_sig.drawHeight * _sc
+                _sig_inner_w2 = max(float(_bottom_right_w) - 24, 120)
+                sig_image_holder = Table(
+                    [[rl_sig], [printed_ts_para]],
+                    colWidths=[_sig_inner_w2],
+                )
+                sig_image_holder.setStyle(TableStyle([
+                    ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
+                    ('VALIGN', (0, 0), (0, 0), 'BOTTOM'),
+                ('TOPPADDING', (0, 0), (-1, -1), 2),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                ]))
+            except Exception as _sig_pil_err:
+                logging.getLogger(__name__).warning(
+                    "Purchase invoice PDF: could not embed signature image from %s. "
+                    "ReportLab error=%s, Pillow fallback error=%s",
+                    _sig_path,
+                    _sig_err,
+                    _sig_pil_err,
+                )
+                sig_image_holder = None
+
+    # Visual signature block (always): line + "Authorized Signatory". When pushed with HMAC, add digital note.
+    _sig_inner_w = max(float(_bottom_right_w) - 24, 120)
+    sig_line_row = Table(
+        [['', '']],
+        colWidths=[_sig_inner_w * 0.36, _sig_inner_w * 0.64],
+    )
+    sig_line_row.setStyle(TableStyle([
+        ('LINEBELOW', (1, 0), (1, 0), 0.75, rl_colors.HexColor('#0d47a1')),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (1, 0), (1, 0), 4),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+    ]))
+
+    digital_lines = ""
+    if signature and signature.get("signature_value_b64"):
+        digital_lines = "Digitally Signed"
+        _sat = signature.get("signed_at")
+        if _sat:
+            try:
+                _iso = str(_sat).replace("Z", "+00:00")
+                _dt = datetime.fromisoformat(_iso)
+                if _dt.tzinfo is None:
+                    _dt = _dt.replace(tzinfo=timezone.utc)
+                digital_lines += f"<br/><font size=\"8\" color=\"#455a64\">{_dt.strftime('%d-%m-%Y %H:%M')} UTC</font>"
+            except Exception:
+                pass
+
+    right_col_flowables = [
+        for_para,
+        sig_line_row,
+        Spacer(1, 0.04 * inch),
     ]
-    
-    bottom_table = Table(bottom_data, colWidths=[page_width*0.6, page_width*0.4], rowHeights=[0.3*inch, 0.5*inch, 0.2*inch])
+    if sig_image_holder is not None:
+        right_col_flowables.append(sig_image_holder)
+        right_col_flowables.append(Spacer(1, 0.02 * inch))
+    right_col_flowables.append(Paragraph("Authorized Signatory", auth_sig_style))
+    if digital_lines:
+        # Smaller spacer to avoid pushing scanned signature out of page when clipping occurs.
+        right_col_flowables.extend([Spacer(1, 0.02 * inch), Paragraph(digital_lines, signature_style)])
+
+    bottom_data = [[words_para, right_col_flowables]]
+
+    bottom_table = Table(
+        bottom_data,
+        colWidths=[_bottom_left_w, _bottom_right_w],
+    )
+    # If the "Digitally Signed" block is present, tighten outer padding to keep everything visible.
+    _outer_pad = 4 if digital_lines else 6
     bottom_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, -1), rl_colors.HexColor('#e0f7fa')),
         ('TEXTCOLOR', (0, 0), (-1, -1), rl_colors.HexColor('#0d47a1')),
         ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 0), (0, 0), 9),
-        ('FONTSIZE', (1, 0), (1, 0), 10),
-        ('FONTSIZE', (1, 2), (1, 2), 9),
-        ('ALIGN', (0, 0), (0, -1), 'LEFT'),
-        ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+        ('ALIGN', (0, 0), (0, 0), 'LEFT'),
+        ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ('GRID', (0, 0), (-1, -1), 1, rl_colors.HexColor('#0d47a1')),
-        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('TOPPADDING', (0, 0), (-1, -1), _outer_pad),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), _outer_pad),
+        ('LEFTPADDING', (0, 0), (0, 0), 6),
+        ('RIGHTPADDING', (0, 0), (0, 0), 6),
+        ('LEFTPADDING', (1, 0), (1, 0), 6),
+        ('RIGHTPADDING', (1, 0), (1, 0), 6),
     ]))
     inner_content.append(bottom_table)
     
@@ -3737,9 +4383,25 @@ async def download_purchase_invoice_pdf(
         {"_id": 0}
     ).sort("line_no", 1).to_list(100)
     
-    tenant_config = await get_tenant_config_dict()
+    # Fresh config so newly uploaded signature image is always picked up (avoid 60s cache miss).
+    tenant_config = await get_tenant_config_dict(use_cache=False)
     # Generate PDF
-    pdf_bytes = generate_purchase_invoice_pdf(invoice, lines, tenant_config)
+    signature_context = None
+    if invoice.get("status") == "pushed" and invoice.get("digital_signature_value_b64"):
+        signature_context = {
+            "signature_value_b64": invoice.get("digital_signature_value_b64"),
+            "signed_by": invoice.get("digital_signature_signed_by"),
+            "signed_at": invoice.get("digital_signature_signed_at"),
+        }
+    pdf_bytes = generate_purchase_invoice_pdf(
+        invoice,
+        lines,
+        tenant_config,
+        signature_context,
+        pdf_generated_at=datetime.now(timezone.utc),
+    )
+    # If signing is configured, apply the cryptographic PDF signature.
+    pdf_bytes = _maybe_sign_purchase_invoice_pdf(pdf_bytes, invoice)
     
     # Return as downloadable file
     from fastapi.responses import Response
@@ -3786,6 +4448,78 @@ async def update_tenant_config(
     await create_audit_log(current_user.id, "UPDATE_TENANT_CONFIG", "admin",
                           {"key": key})
     return {"status": "success", "message": "Configuration updated"}
+
+
+@api_router.post("/tenant-config/signature-image")
+async def upload_invoice_signature_image(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
+    """Upload PNG/JPEG/WebP/GIF used on purchase invoice PDFs (admin or owner only)."""
+    if current_user.role not in ['admin', 'owner']:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    raw_name = file.filename or ""
+    ext = raw_name.rsplit(".", 1)[-1].lower() if "." in raw_name else ""
+    if ext not in ("png", "jpg", "jpeg", "gif", "webp"):
+        raise HTTPException(status_code=400, detail="Use PNG, JPG, JPEG, GIF, or WebP")
+    content = await file.read()
+    if len(content) > 2_000_000:
+        raise HTTPException(status_code=400, detail="Image too large (max 2 MB)")
+    fname = f"invoice_signature_{uuid.uuid4().hex[:16]}.{ext}"
+    dest = UPLOADS_DIR / fname
+    with open(dest, "wb") as out:
+        out.write(content)
+    public_url = f"/uploads/{fname}"
+    await db.tenant_config.update_one(
+        {"key": "invoice_signature_image"},
+        {"$set": {"key": "invoice_signature_image", "value": public_url}},
+        upsert=True,
+    )
+    try:
+        tid = tenant_context.get_tenant()
+        _response_cache.pop(f"tenant_config_dict:{tid}", None)
+    except Exception:
+        pass
+    await create_audit_log(
+        current_user.id,
+        "UPDATE_TENANT_CONFIG",
+        "admin",
+        {"key": "invoice_signature_image", "action": "upload"},
+    )
+    return {"url": public_url, "message": "Signature image saved"}
+
+
+@api_router.delete("/tenant-config/signature-image")
+async def delete_invoice_signature_image(current_user: User = Depends(get_current_user)):
+    """Remove uploaded invoice signature image from config and delete file from disk."""
+    if current_user.role not in ['admin', 'owner']:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    doc = await db.tenant_config.find_one({"key": "invoice_signature_image"}, {"_id": 0})
+    old_val = (doc or {}).get("value") or ""
+    old_path = _signature_path_from_config_value(old_val)
+    if old_path and old_path.is_file():
+        try:
+            old_path.unlink()
+        except OSError:
+            pass
+    await db.tenant_config.update_one(
+        {"key": "invoice_signature_image"},
+        {"$set": {"key": "invoice_signature_image", "value": ""}},
+        upsert=True,
+    )
+    try:
+        tid = tenant_context.get_tenant()
+        _response_cache.pop(f"tenant_config_dict:{tid}", None)
+    except Exception:
+        pass
+    await create_audit_log(
+        current_user.id,
+        "UPDATE_TENANT_CONFIG",
+        "admin",
+        {"key": "invoice_signature_image", "action": "delete"},
+    )
+    return {"status": "success", "message": "Signature image removed"}
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Comprehensive Reports - PDF & Excel Generation
@@ -7026,6 +7760,23 @@ async def export_ledger_excel(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
+
+
+@api_router.get("/health", tags=["Health"])
+async def api_health():
+    """Public health check: process up and MongoDB reachable (use this when login fails unexpectedly)."""
+    try:
+        ping = await db.command("ping")
+        if ping.get("ok") != 1:
+            raise RuntimeError(f"unexpected ping reply: {ping}")
+        return {
+            "status": "ok",
+            "database": "connected",
+            "db_name": os.environ.get("DB_NAME", ""),
+        }
+    except Exception as e:
+        logging.getLogger(__name__).exception("GET /api/health failed")
+        raise HTTPException(status_code=503, detail=f"Database unavailable: {str(e)}")
 
 
 app.include_router(api_router)

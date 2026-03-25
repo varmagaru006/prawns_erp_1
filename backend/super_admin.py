@@ -140,10 +140,11 @@ async def super_admin_login(credentials: dict):
         raise HTTPException(status_code=403, detail="Account is disabled")
 
     # Generate JWT token (same as main auth system)
+    exp = datetime.now(timezone.utc) + timedelta(days=7)
     token_data = {
         "sub": user["email"],
         "tenant_id": user.get("tenant_id"),
-        "exp": datetime.now(timezone.utc) + timedelta(days=7)
+        "exp": int(exp.timestamp()),
     }
     access_token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -708,12 +709,13 @@ async def legacy_impersonate_client(client_id: str, data: dict, current_admin = 
         raise HTTPException(status_code=404, detail="No admin user found for this client")
 
     duration_mins = data.get("duration_mins", 60)
+    exp = datetime.now(timezone.utc) + timedelta(minutes=duration_mins)
     token_data = {
         "sub": admin_user["email"],
         "tenant_id": client_id,
         "is_impersonation": True,
         "impersonator": current_admin.get("email"),
-        "exp": datetime.now(timezone.utc) + timedelta(minutes=duration_mins)
+        "exp": int(exp.timestamp()),
     }
     impersonation_token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
     session_id = str(uuid.uuid4())

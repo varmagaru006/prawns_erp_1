@@ -132,14 +132,14 @@ const YieldBenchmarks = () => {
 
   return (
     <div className="space-y-6" data-testid="yield-benchmarks-page">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h1 className="text-2xl lg:text-3xl font-bold text-slate-800">Yield Benchmarks</h1>
           <p className="text-slate-600 mt-1">Configure threshold standards for wastage tracking</p>
         </div>
         <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setEditingId(null); resetForm(); } }}>
           <DialogTrigger asChild>
-            <Button className="gap-2">
+            <Button className="w-full gap-2 sm:w-auto">
               <Plus size={18} />
               Add Benchmark
             </Button>

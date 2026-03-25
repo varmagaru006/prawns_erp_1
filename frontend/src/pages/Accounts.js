@@ -120,12 +120,12 @@ const Accounts = () => {
 
   return (
     <div className="space-y-6" data-testid="accounts-page">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h1 className="text-2xl lg:text-3xl font-bold text-slate-800">Accounts & Billing</h1>
           <p className="text-slate-600 mt-1">Manage wage bills and payments</p>
         </div>
-        <Button onClick={() => navigate('/accounts/create')}>
+        <Button onClick={() => navigate('/accounts/create')} className="w-full sm:w-auto">
           <Plus className="h-4 w-4 mr-2" />
           Create Wage Bill
         </Button>

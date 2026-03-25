@@ -195,7 +195,7 @@ const SuperAdminPanel = () => {
   return (
     <div className="p-6 space-y-6" data-testid="super-admin-panel">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex items-center gap-3">
           <div className="p-2 bg-purple-100 rounded-lg">
             <Shield className="h-6 w-6 text-purple-600" />
@@ -205,7 +205,7 @@ const SuperAdminPanel = () => {
             <p className="text-gray-500">Manage tenants, features, and platform settings</p>
           </div>
         </div>
-        <Button onClick={() => setShowWizard(true)} className="bg-purple-600 hover:bg-purple-700" data-testid="new-client-btn">
+        <Button onClick={() => setShowWizard(true)} className="w-full bg-purple-600 hover:bg-purple-700 sm:w-auto" data-testid="new-client-btn">
           <Plus className="h-4 w-4 mr-2" />
           New Client
         </Button>

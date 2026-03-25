@@ -4,7 +4,7 @@ Handles tenant context and feature flag resolution with Redis caching
 """
 from typing import Optional, Dict
 from fastapi import HTTPException, Request
-from jose import jwt, JWTError
+import jwt
 import os
 import redis
 import json
@@ -58,15 +58,16 @@ def get_tenant_from_token(token: str) -> tuple[str, str]:
     """
     try:
         SECRET_KEY = os.environ.get('SECRET_KEY', 'your-secret-key-change-in-production')
+        # Use PyJWT — same library as server.py token creation (avoids jose/PyJWT edge mismatches)
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        
+
         # For now, all users belong to cli_001
         # In production, this would be stored in the user record
         tenant_id = payload.get("tenant_id", "cli_001")
         lot_prefix = payload.get("lot_prefix", "PRW")
-        
+
         return tenant_id, lot_prefix
-    except JWTError:
+    except jwt.PyJWTError:
         return "cli_001", "PRW"  # Default tenant
 
 
@@ -152,11 +153,11 @@ async def tenant_middleware(request: Request, call_next):
     """
     Middleware to extract tenant_id from JWT and set context
     """
-    # Try to get token from Authorization header
-    auth_header = request.headers.get("Authorization", "")
-    
-    if auth_header.startswith("Bearer "):
-        token = auth_header.split(" ")[1]
+    # Try to get token from Authorization header (scheme is case-insensitive per RFC 7235)
+    auth_header = (request.headers.get("Authorization") or "").strip()
+    parts = auth_header.split(None, 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        token = parts[1]
         tenant_id, lot_prefix = get_tenant_from_token(token)
         tenant_context.set_tenant(tenant_id, lot_prefix)
     else:

@@ -14,6 +14,8 @@ import { Plus, Download, Package, UserPlus } from 'lucide-react';
 const Procurement = () => {
   const [lots, setLots] = useState([]);
   const [agents, setAgents] = useState([]);
+  const [agentLotCounts, setAgentLotCounts] = useState([]);
+  const [partyLotCounts, setPartyLotCounts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [wastageData, setWastageData] = useState({});
@@ -57,12 +59,16 @@ const Procurement = () => {
 
   const fetchData = async () => {
     try {
-      const [lotsRes, agentsRes] = await Promise.all([
+      const [lotsRes, agentsRes, agentCountRes, partyCountRes] = await Promise.all([
         axios.get(`${API}/procurement/lots`),
-        axios.get(`${API}/agents`)
+        axios.get(`${API}/agents`),
+        axios.get(`${API}/procurement/lots/agent-wise-count?limit=10`),
+        axios.get(`${API}/procurement/lots/party-wise-count?limit=10`),
       ]);
       setLots(lotsRes.data);
       setAgents(agentsRes.data);
+      setAgentLotCounts(agentCountRes.data);
+      setPartyLotCounts(partyCountRes.data);
       // Wastage data is now loaded on demand per lot to keep initial load fast
     } catch (error) {
       toast.error(formatLoadErrorMessage('Failed to load data', error));
@@ -253,14 +259,14 @@ const Procurement = () => {
 
   return (
     <div className="space-y-6" data-testid="procurement-page">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h1 className="text-2xl lg:text-3xl font-bold text-slate-800">Procurement</h1>
           <p className="text-slate-600 mt-1">Manage incoming prawn lots</p>
         </div>
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
-            <Button className="gap-2" data-testid="add-lot-button">
+            <Button className="w-full gap-2 sm:w-auto" data-testid="add-lot-button">
               <Plus size={18} />
               Add Lot
             </Button>
@@ -591,6 +597,73 @@ const Procurement = () => {
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
         </div>
       ) : (
+        <>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Lots by Agent</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {agentLotCounts.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Agent</TableHead>
+                          <TableHead className="text-right">Lots</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {agentLotCounts.map((row) => (
+                          <TableRow key={`${row.agent_id}-${row.agent_name}`}>
+                            <TableCell>{row.agent_name || row.agent_id || 'Unknown'}</TableCell>
+                            <TableCell className="text-right font-medium">
+                              {row.lot_count ?? 0}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-500">No agent-wise data found.</p>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Lots by Party</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {partyLotCounts.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Party</TableHead>
+                          <TableHead className="text-right">Lots</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {partyLotCounts.map((row) => (
+                          <TableRow key={`${row.party_id}-${row.party_name_text}`}>
+                            <TableCell>{row.party_name_text || row.party_id || 'Unknown'}</TableCell>
+                            <TableCell className="text-right font-medium">
+                              {row.lot_count ?? 0}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-500">No party-wise data found.</p>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
         <Card>
           <CardHeader>
             <CardTitle>Procurement Lots</CardTitle>
@@ -718,6 +791,7 @@ const Procurement = () => {
             )}
           </CardContent>
         </Card>
+        </>
       )}
 
       {/* View Wastage Dialog */}

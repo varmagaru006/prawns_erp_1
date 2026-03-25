@@ -1,0 +1,1 @@
+{"indexes":[{"v":{"$numberInt":"2"},"key":{"_id":{"$numberInt":"1"}},"name":"_id_"},{"v":{"$numberInt":"2"},"key":{"entity_id":{"$numberInt":"1"},"created_at":{"$numberInt":"-1"}},"name":"entity_id_1_created_at_-1"}],"uuid":"272cb2b981c84f0f8879839c30e73501","collectionName":"photo_tracker","type":"collection"}

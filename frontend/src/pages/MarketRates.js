@@ -105,14 +105,14 @@ const MarketRates = () => {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h1 className="text-2xl lg:text-3xl font-bold text-slate-800">Market Rates</h1>
           <p className="text-slate-600 mt-1">Manage pricing for revenue loss calculations</p>
         </div>
         <Dialog open={open} onOpenChange={handleDialogClose}>
           <DialogTrigger asChild>
-            <Button className="gap-2" onClick={() => { setEditMode(false); setOpen(true); }}>
+            <Button className="w-full gap-2 sm:w-auto" onClick={() => { setEditMode(false); setOpen(true); }}>
               <Plus size={18} />
               Add Market Rate
             </Button>

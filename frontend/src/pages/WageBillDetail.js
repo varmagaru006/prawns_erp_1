@@ -103,7 +103,7 @@ export default function WageBillDetail() {
   return (
     <div className="space-y-6 max-w-6xl mx-auto">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <div className="flex items-center gap-3">
             <h1 className="text-2xl lg:text-3xl font-bold text-slate-800">{bill.bill_number}</h1>
@@ -113,7 +113,7 @@ export default function WageBillDetail() {
             {new Date(bill.period_from).toLocaleDateString()} - {new Date(bill.period_to).toLocaleDateString()}
           </p>
         </div>
-        <Button variant="outline" onClick={() => navigate('/accounts')}>
+        <Button variant="outline" onClick={() => navigate('/accounts')} className="w-full sm:w-auto">
           <ArrowLeft className="h-4 w-4 mr-2" />
           Back to Accounts
         </Button>

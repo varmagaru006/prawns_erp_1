@@ -142,12 +142,12 @@ const Parties = () => {
   return (
     <div className="p-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="mb-6 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h1 className="text-3xl font-bold text-gray-800">Party Master</h1>
           <p className="text-gray-600">Manage suppliers and farmer parties</p>
         </div>
-        <Button onClick={() => openDrawer()} data-testid="add-party-btn">
+        <Button onClick={() => openDrawer()} data-testid="add-party-btn" className="w-full sm:w-auto">
           <Plus className="h-4 w-4 mr-2" />
           Add Party
         </Button>

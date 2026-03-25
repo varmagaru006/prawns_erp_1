@@ -9,6 +9,30 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../co
 import { toast } from 'sonner';
 import { Loader2, Fish, Waves, TrendingUp, Package, ShieldCheck } from 'lucide-react';
 
+/** Turn FastAPI / axios errors into a string for toasts */
+function formatAuthError(error, fallback = 'Authentication failed') {
+  if (!error?.response) {
+    const msg = error?.message || '';
+    if (/network error/i.test(msg) || error?.code === 'ERR_NETWORK') {
+      return 'Cannot reach server. Is the API running? Check REACT_APP_BACKEND_URL matches your backend (e.g. http://localhost:8000).';
+    }
+    return msg || fallback;
+  }
+  const detail = error.response.data?.detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((x) => (typeof x === 'string' ? x : x?.msg || JSON.stringify(x)))
+      .join('; ');
+  }
+  if (detail != null && typeof detail === 'object') {
+    return JSON.stringify(detail);
+  }
+  if (typeof detail === 'string') {
+    return detail;
+  }
+  return fallback;
+}
+
 const Login = () => {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
@@ -58,7 +82,7 @@ const Login = () => {
         setIsLogin(true);
       }
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Authentication failed');
+      toast.error(formatAuthError(error));
     } finally {
       setLoading(false);
     }

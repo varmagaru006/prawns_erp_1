@@ -115,14 +115,14 @@ const Production = () => {
 
   return (
     <div className="space-y-6" data-testid="production-page">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h1 className="text-2xl lg:text-3xl font-bold text-slate-800">Production</h1>
           <p className="text-slate-600 mt-1">Manage production orders and finished goods</p>
         </div>
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
-            <Button className="gap-2" data-testid="add-production-order-button">
+            <Button className="w-full gap-2 sm:w-auto" data-testid="add-production-order-button">
               <Plus size={18} />
               Add Order
             </Button>
