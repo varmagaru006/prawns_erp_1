@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 import os
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import OperationFailure
 import uuid
@@ -95,10 +95,15 @@ async def _push_features_to_client_erp(tenant_id: str, client: dict) -> None:
     """
     try:
         import httpx
-        cursor = client_db.feature_flags.find({"tenant_id": tenant_id}, {"_id": 0, "feature_code": 1, "is_enabled": 1})
+        target_db = _get_client_erp_db(client)
+        cursor = target_db.feature_flags.find({"tenant_id": tenant_id}, {"_id": 0, "feature_code": 1, "is_enabled": 1})
         db_flags = {doc["feature_code"]: doc["is_enabled"] for doc in await cursor.to_list(length=1000)}
         features = _merge_flags_with_registry(db_flags)
-        base_url = (client.get("webhook_url") or "").split("/internal")[0].rstrip("/") or CLIENT_ERP_URL
+        base_url = (
+            (client.get("client_api_url") or "").rstrip("/")
+            or (client.get("webhook_url") or "").split("/internal")[0].rstrip("/")
+            or CLIENT_ERP_URL
+        )
         push_url = f"{base_url}/internal/saas-hook/features"
         async with httpx.AsyncClient(timeout=10.0) as http:
             await http.post(push_url, json={"tenant_id": tenant_id, "features": features})
@@ -114,11 +119,29 @@ db = mongo_client["prawn_erp_super_admin"]
 
 # Client ERP DB - for syncing feature flags
 client_db = mongo_client[os.getenv("MONGO_DB_NAME", "prawn_erp")]
+ENABLE_MULTI_DB_ROUTING = os.getenv("ENABLE_MULTI_DB_ROUTING", "false").lower() in ("1", "true", "yes", "on")
+
+
+def _default_client_db_name(tenant_id: str) -> str:
+    safe = "".join(ch for ch in tenant_id if ch.isalnum() or ch in ("_", "-")).strip() or "client"
+    return f"prawn_erp_{safe}"
+
+
+def _get_client_erp_db(client_doc: dict):
+    if not ENABLE_MULTI_DB_ROUTING:
+        # Backward-compatible mode: keep all tenant data in one shared DB.
+        return client_db
+    db_name = (
+        client_doc.get("client_db_name")
+        or _default_client_db_name(client_doc.get("tenant_id", "client"))
+    )
+    return mongo_client[db_name]
 
 # Security
 SECRET_KEY = os.getenv("SECRET_KEY", "super-admin-secret-key-change-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 480
+_backend_env_secret = dotenv_values(str(_backend_dir / ".env")).get("SECRET_KEY") if _backend_dir.is_dir() else None
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
 
@@ -153,11 +176,20 @@ class ClientCreate(BaseModel):
     owner_name: str
     plan_id: Optional[str] = "free"
     subscription_months: int = 1
+    client_ui_url: Optional[str] = None
+    client_api_url: Optional[str] = None
+    client_db_name: Optional[str] = None
 
 class ClientUpdate(BaseModel):
+    tenant_id: Optional[str] = None
     business_name: Optional[str] = None
+    owner_name: Optional[str] = None
+    owner_email: Optional[EmailStr] = None
     subscription_status: Optional[str] = None
     is_active: Optional[bool] = None
+    client_ui_url: Optional[str] = None
+    client_api_url: Optional[str] = None
+    client_db_name: Optional[str] = None
 
 class ClientSummary(BaseModel):
     id: str
@@ -167,12 +199,18 @@ class ClientSummary(BaseModel):
     subscription_status: str
     subscription_to: Optional[str] = None
     is_active: bool
+    client_ui_url: Optional[str] = None
+    client_api_url: Optional[str] = None
+    client_db_name: Optional[str] = None
 
 class BrandingUpdate(BaseModel):
     primary_color: Optional[str] = None
     secondary_color: Optional[str] = None
     company_name: Optional[str] = None
+    sidebar_label: Optional[str] = None
+    login_bg_color: Optional[str] = None
     logo_url: Optional[str] = None
+    favicon_url: Optional[str] = None
 
 class FeatureToggle(BaseModel):
     feature_code: str
@@ -188,9 +226,28 @@ class LinkRequest(BaseModel):
 
 class ProvisionUserRequest(BaseModel):
     email: EmailStr
-    name: str
+    # Frontend sends `full_name`; keep `name` for backward compatibility.
+    name: Optional[str] = None
+    full_name: Optional[str] = None
     role: str = "worker"
-    password: str
+    # Frontend does not send password; generate temporary password when missing.
+    password: Optional[str] = None
+
+
+class UpdateUserRequest(BaseModel):
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+    new_password: Optional[str] = None
+
+
+class ResetPasswordRequest(BaseModel):
+    new_password: Optional[str] = None  # if None, auto-generate
+
+
+class TenantBootstrapRequest(BaseModel):
+    admin_email: Optional[EmailStr] = None
+    admin_name: Optional[str] = None
+    admin_password: Optional[str] = None
 
 class AnnouncementCreate(BaseModel):
     title: str
@@ -271,6 +328,9 @@ async def startup():
             "business_name": "Prawn Export Company",
             "owner_email": "admin@prawnexport.com",
             "owner_name": "Admin User",
+            "client_ui_url": "http://localhost:3000",
+            "client_api_url": CLIENT_ERP_URL,
+            "client_db_name": _default_client_db_name("cli_001"),
             "plan_id": plan_id,
             "subscription_status": "active",
             "subscription_to": subscription_to.isoformat(),
@@ -384,6 +444,7 @@ async def create_client(client_data: ClientCreate, current_admin = Depends(get_c
     
     # Calculate subscription end date
     subscription_to = datetime.now(timezone.utc) + timedelta(days=30 * client_data.subscription_months)
+    target_db_name = client_data.client_db_name or _default_client_db_name(client_data.tenant_id)
     
     client = {
         "id": str(uuid.uuid4()),
@@ -391,6 +452,9 @@ async def create_client(client_data: ClientCreate, current_admin = Depends(get_c
         "business_name": client_data.business_name,
         "owner_email": client_data.owner_email,
         "owner_name": client_data.owner_name,
+        "client_ui_url": (client_data.client_ui_url or "").strip() or "http://localhost:3000",
+        "client_api_url": (client_data.client_api_url or "").strip() or CLIENT_ERP_URL,
+        "client_db_name": target_db_name,
         "plan_id": client_data.plan_id,
         "subscription_status": "active",
         "subscription_to": subscription_to.isoformat(),
@@ -407,6 +471,7 @@ async def create_client(client_data: ClientCreate, current_admin = Depends(get_c
 
     # Seed feature flags (registry defaults) so client ERP and Super Admin UI have full set
     tenant_id = client_data.tenant_id
+    target_db = _get_client_erp_db(client)
     now_ts = datetime.now(timezone.utc).isoformat()
     for code, is_enabled in _get_default_flags().items():
         await db.feature_flags.update_one(
@@ -414,7 +479,7 @@ async def create_client(client_data: ClientCreate, current_admin = Depends(get_c
             {"$set": {"is_enabled": is_enabled, "updated_at": now_ts}},
             upsert=True,
         )
-        await client_db.feature_flags.update_one(
+        await target_db.feature_flags.update_one(
             {"tenant_id": tenant_id, "feature_code": code},
             {"$set": {"is_enabled": is_enabled, "updated_at": now_ts}},
             upsert=True,
@@ -515,6 +580,41 @@ async def activate_client(client_id: str, current_admin = Depends(get_current_su
     
     return {"status": "success", "message": "Client activated"}
 
+
+@app.post("/clients/{client_id}/launch")
+async def launch_client(client_id: str, current_admin = Depends(get_current_super_admin)):
+    """Return launch URL and tenant/db details for a client."""
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    ui_url = (client.get("client_ui_url") or "").strip() or "http://localhost:3000"
+    return {
+        "status": "success",
+        "launch_url": ui_url,
+        "tenant_id": client.get("tenant_id"),
+        "client_db_name": client.get("client_db_name") or _default_client_db_name(client.get("tenant_id", "client")),
+    }
+
+
+@app.get("/clients/{client_id}/health")
+async def client_health(client_id: str, current_admin = Depends(get_current_super_admin)):
+    """Compatibility endpoint used by super-admin frontend."""
+    client_doc = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not client_doc:
+        raise HTTPException(status_code=404, detail="Client not found")
+    tenant_id = client_doc.get("tenant_id")
+    target_db = _get_client_erp_db(client_doc)
+    users_count = await target_db.users.count_documents({"tenant_id": tenant_id})
+    return {
+        "status": "ok",
+        "client_id": client_id,
+        "tenant_id": tenant_id,
+        "client_db_name": client_doc.get("client_db_name") or _default_client_db_name(tenant_id or "client"),
+        "link_status": client_doc.get("link_status"),
+        "users_count": users_count,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Branding Management
 # ══════════════════════════════════════════════════════════════════════════════
@@ -526,22 +626,23 @@ async def update_client_branding(client_id: str, branding: BrandingUpdate, curre
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
     
-    if client.get("link_status") != "linked":
-        raise HTTPException(status_code=400, detail="Client must be linked before updating branding")
-    
     # Update branding in super admin DB
     branding_data = {k: v for k, v in branding.dict().items() if v is not None}
     await db.clients.update_one(
         {"id": client_id},
         {"$set": {"branding": branding_data, "updated_at": datetime.now(timezone.utc).isoformat()}}
     )
-    
-    # Push to client ERP MongoDB
-    await client_db.tenant_config.update_one(
-        {"tenant_id": client["tenant_id"]},
-        {"$set": {"branding": branding_data, "updated_at": datetime.now(timezone.utc).isoformat()}},
-        upsert=True
-    )
+
+    pushed_to_erp = False
+    if client.get("link_status") == "linked":
+        target_db = _get_client_erp_db(client)
+        # Push to client ERP MongoDB only if linked.
+        await target_db.tenant_config.update_one(
+            {"tenant_id": client["tenant_id"]},
+            {"$set": {"branding": branding_data, "updated_at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True
+        )
+        pushed_to_erp = True
     
     # Log activity
     await db.activity_logs.insert_one({
@@ -553,7 +654,19 @@ async def update_client_branding(client_id: str, branding: BrandingUpdate, curre
         "timestamp": datetime.now(timezone.utc).isoformat()
     })
     
-    return {"status": "success", "message": "Branding updated and pushed to client ERP"}
+    if pushed_to_erp:
+        return {"status": "success", "message": "Branding updated and pushed to client ERP"}
+    return {"status": "success", "message": "Branding saved. Link client to push to ERP."}
+
+
+@app.post("/clients/{client_id}/push-branding")
+async def push_branding_now(
+    client_id: str,
+    branding: BrandingUpdate,
+    current_admin = Depends(get_current_super_admin)
+):
+    """Compatibility endpoint used by super-admin frontend."""
+    return await update_client_branding(client_id, branding, current_admin)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Feature Flag Management
@@ -600,8 +713,9 @@ async def toggle_feature(client_id: str, toggle: FeatureToggle, current_admin = 
         upsert=True
     )
     
+    target_db = _get_client_erp_db(client)
     # Push to client ERP database for this client's tenant_id
-    await client_db.feature_flags.update_one(
+    await target_db.feature_flags.update_one(
         {"tenant_id": tenant_id, "feature_code": toggle.feature_code},
         {"$set": {
             "is_enabled": toggle.is_enabled,
@@ -651,8 +765,9 @@ async def bulk_toggle_features(
             upsert=True
         )
         
+        target_db = _get_client_erp_db(client)
         # Push to client ERP database for this client's tenant_id only
-        await client_db.feature_flags.update_one(
+        await target_db.feature_flags.update_one(
             {"tenant_id": tenant_id, "feature_code": feature.feature_code},
             {"$set": {
                 "is_enabled": feature.is_enabled,
@@ -667,6 +782,17 @@ async def bulk_toggle_features(
     await _push_features_to_client_erp(tenant_id, client)
     
     return {"status": "success", "message": f"Updated {len(features)} features for tenant {tenant_id}"}
+
+
+@app.post("/clients/{client_id}/push-features")
+async def push_features_now(client_id: str, current_admin = Depends(get_current_super_admin)):
+    """Compatibility endpoint used by super-admin frontend."""
+    client_doc = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not client_doc:
+        raise HTTPException(status_code=404, detail="Client not found")
+    tenant_id = client_doc.get("tenant_id")
+    await _push_features_to_client_erp(tenant_id, client_doc)
+    return {"status": "success", "message": "Features pushed", "tenant_id": tenant_id}
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Client Linking
@@ -704,7 +830,8 @@ async def link_client(client_id: str, request: LinkRequest, current_admin = Depe
         plan_code = plan.get("plan_name", "free").lower() if plan else "free"
     
     # Determine webhook URL
-    webhook_url = request.webhook_url or "http://localhost:8001/internal/saas-hook/handshake"
+    api_base = (client.get("client_api_url") or CLIENT_ERP_URL).rstrip("/")
+    webhook_url = request.webhook_url or f"{api_base}/internal/saas-hook/handshake"
     
     # Update client with new API key hash, webhook URL and set status to 'linking'
     await db.clients.update_one(
@@ -795,9 +922,47 @@ async def link_client(client_id: str, request: LinkRequest, current_admin = Depe
 
 @app.get("/clients/{client_id}/users")
 async def get_provisioned_users(client_id: str, current_admin = Depends(get_current_super_admin)):
-    """Get all provisioned users for a client"""
-    users = await db.provisioned_users.find({"client_id": client_id}, {"_id": 0, "password_hash": 0}).to_list(1000)
-    return users
+    """Get all client users (from client ERP DB), enriched with provisioning metadata."""
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    target_db = _get_client_erp_db(client)
+    tenant_id = client.get("tenant_id")
+
+    # Pull all users from client ERP DB for this tenant.
+    users = await target_db.users.find(
+        {"tenant_id": tenant_id},
+        {"_id": 0, "password_hash": 0, "password": 0}
+    ).to_list(5000)
+
+    # Pull provisioning records from super-admin DB and index by user id / email.
+    provisioned = await db.provisioned_users.find(
+        {"client_id": client_id},
+        {"_id": 0, "password_hash": 0}
+    ).to_list(5000)
+    by_user_id = {u.get("id"): u for u in provisioned if u.get("id")}
+    by_email = {str(u.get("email") or "").lower(): u for u in provisioned if u.get("email")}
+
+    normalized = []
+    for user in users:
+        email = str(user.get("email") or "").lower()
+        pmeta = by_user_id.get(user.get("id")) or by_email.get(email) or {}
+        normalized.append({
+            "user_id": user.get("id"),
+            "id": user.get("id"),
+            "email": user.get("email"),
+            "full_name": user.get("name") or user.get("full_name"),
+            "name": user.get("name") or user.get("full_name"),
+            "role": user.get("role"),
+            "is_active": bool(user.get("is_active", True)),
+            "provisioned_at": pmeta.get("created_at") or user.get("created_at"),
+            "push_status": pmeta.get("push_status", "success"),
+            "source": "provisioned" if pmeta else "client_db",
+        })
+
+    normalized.sort(key=lambda u: (not u.get("is_active", True), (u.get("email") or "").lower()))
+    return normalized
 
 @app.post("/clients/{client_id}/users")
 async def provision_user(
@@ -813,34 +978,47 @@ async def provision_user(
     if client.get("link_status") != "linked":
         raise HTTPException(status_code=400, detail="Client must be linked before provisioning users")
     
+    display_name = (user_data.name or user_data.full_name or "").strip()
+    if not display_name:
+        raise HTTPException(status_code=422, detail="name/full_name is required")
+    normalized_email = str(user_data.email).strip().lower()
+
+    # Generate temporary password when not explicitly provided.
+    chosen_password = (user_data.password or "").strip()
+    temp_password = chosen_password or f"Tmp@{uuid.uuid4().hex[:8]}"
+
     # Check if user already exists
-    existing = await db.provisioned_users.find_one({"client_id": client_id, "email": user_data.email})
+    existing = await db.provisioned_users.find_one({"client_id": client_id, "email": normalized_email})
     if existing:
         raise HTTPException(status_code=400, detail="User already exists for this client")
     
     # Hash password
-    password_hash = pwd_context.hash(user_data.password)
+    password_hash = pwd_context.hash(temp_password)
     
     # Create user record in super admin DB
     user_record = {
         "id": str(uuid.uuid4()),
         "client_id": client_id,
         "tenant_id": client["tenant_id"],
-        "email": user_data.email,
-        "name": user_data.name,
+        "email": normalized_email,
+        "name": display_name,
         "role": user_data.role,
         "password_hash": password_hash,
+        "is_active": True,
+        "push_status": "success",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "created_by": current_admin["email"]
     }
     await db.provisioned_users.insert_one(user_record)
     
+    target_db = _get_client_erp_db(client)
     # Push to client ERP MongoDB
-    await client_db.users.insert_one({
+    await target_db.users.insert_one({
         "id": user_record["id"],
-        "email": user_data.email,
-        "name": user_data.name,
+        "email": normalized_email,
+        "name": display_name,
         "role": user_data.role,
+        "tenant_id": client["tenant_id"],
         "password_hash": password_hash,
         "phone": None,
         "is_active": True,
@@ -854,19 +1032,348 @@ async def provision_user(
         "admin_id": current_admin["id"],
         "action": "PROVISION_USER",
         "entity_id": client_id,
-        "details": {"email": user_data.email, "name": user_data.name},
+        "details": {"email": normalized_email, "name": display_name},
         "timestamp": datetime.now(timezone.utc).isoformat()
     })
     
     return {
         "status": "success",
         "message": "User provisioned successfully",
+        "user_id": user_record["id"],
+        "temp_password": temp_password,
         "user": {
             "id": user_record["id"],
-            "email": user_data.email,
-            "name": user_data.name,
+            "email": normalized_email,
+            "name": display_name,
             "role": user_data.role
         }
+    }
+
+
+@app.patch("/clients/{client_id}/users/{user_id}")
+async def update_client_user(
+    client_id: str,
+    user_id: str,
+    updates: UpdateUserRequest,
+    current_admin = Depends(get_current_super_admin)
+):
+    """Update client-side persona user: role, active/inactive, and/or reset password."""
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    target_db = _get_client_erp_db(client)
+    user_doc = await target_db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    set_data: Dict[str, Any] = {"updated_at": now_iso}
+    reset_temp_password = None
+
+    if updates.role is not None:
+        set_data["role"] = updates.role
+    if updates.is_active is not None:
+        set_data["is_active"] = bool(updates.is_active)
+    if updates.new_password is not None:
+        reset_temp_password = updates.new_password.strip() or f"Tmp@{uuid.uuid4().hex[:8]}"
+        set_data["password_hash"] = pwd_context.hash(reset_temp_password)
+        set_data["password_changed_at"] = now_iso
+
+    await target_db.users.update_one({"id": user_id}, {"$set": set_data})
+
+    # Mirror selected fields to provisioned_users; upsert for legacy tenant-only users.
+    mirror_set: Dict[str, Any] = {
+        "tenant_id": client["tenant_id"],
+        "email": user_doc.get("email"),
+        "updated_at": now_iso,
+    }
+    if updates.role is not None:
+        mirror_set["role"] = updates.role
+    if updates.is_active is not None:
+        mirror_set["is_active"] = bool(updates.is_active)
+    if updates.new_password is not None:
+        mirror_set["password_hash"] = set_data["password_hash"]
+    await db.provisioned_users.update_one(
+        {"client_id": client_id, "id": user_id},
+        {"$set": mirror_set},
+        upsert=True,
+    )
+
+    await db.activity_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "admin_id": current_admin["id"],
+        "action": "UPDATE_CLIENT_USER",
+        "entity_id": client_id,
+        "details": {"user_id": user_id, "email": user_doc.get("email"), "fields": list(set_data.keys()), "force_logout": bool(updates.new_password is not None)},
+        "timestamp": now_iso
+    })
+
+    return {
+        "status": "success",
+        "message": "User updated successfully",
+        "user_id": user_id,
+        "temp_password": reset_temp_password,
+    }
+
+
+@app.delete("/clients/{client_id}/users/{user_id}")
+async def deactivate_client_user(
+    client_id: str,
+    user_id: str,
+    current_admin = Depends(get_current_super_admin)
+):
+    """Deactivate a client user (soft disable)."""
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    target_db = _get_client_erp_db(client)
+    result = await target_db.users.update_one(
+        {"id": user_id},
+        {"$set": {"is_active": False, "updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    await db.provisioned_users.update_one(
+        {"client_id": client_id, "id": user_id},
+        {"$set": {"is_active": False, "updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    await db.activity_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "admin_id": current_admin["id"],
+        "action": "UPDATE_CLIENT_USER",
+        "entity_id": client_id,
+        "details": {"user_id": user_id, "fields": ["is_active"], "is_active": False},
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    return {"status": "success", "message": "User deactivated"}
+
+
+@app.patch("/clients/{client_id}/users/{user_id}/reset-password")
+async def reset_user_password(
+    client_id: str,
+    user_id: str,
+    req: ResetPasswordRequest,
+    current_admin = Depends(get_current_super_admin),
+):
+    """Reset client user password and return one-time plain password."""
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    tenant_db = _get_client_erp_db(client)
+
+    # Prefer super-admin record, but support legacy users that only exist in tenant DB.
+    user = await db.provisioned_users.find_one({"client_id": client_id, "id": user_id}, {"_id": 0})
+    tenant_user = await tenant_db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user and not tenant_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # 2. Generate or use provided password
+    new_pw = (req.new_password or "").strip() or f"Temp@{uuid.uuid4().hex[:8]}"
+    pw_hash = pwd_context.hash(new_pw)
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # 3. Update super admin DB
+    await db.provisioned_users.update_one(
+        {"client_id": client_id, "id": user_id},
+        {"$set": {"password_hash": pw_hash, "updated_at": now_iso}}
+    )
+
+    # 4. Dual-write -> tenant DB
+    tenant_update = await tenant_db.users.update_one(
+        {"id": user_id},
+        {"$set": {"password_hash": pw_hash, "password_changed_at": now_iso, "updated_at": now_iso}}
+    )
+    if tenant_update.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Mirror to super-admin DB when record exists; upsert for tenant-only legacy users.
+    effective_email = (user or tenant_user or {}).get("email")
+    await db.provisioned_users.update_one(
+        {"client_id": client_id, "id": user_id},
+        {"$set": {
+            "tenant_id": client["tenant_id"],
+            "email": effective_email,
+            "password_hash": pw_hash,
+            "updated_at": now_iso,
+        }},
+        upsert=True,
+    )
+
+    # 5. Log
+    await db.activity_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "admin_id": current_admin["id"],
+        "action": "RESET_PASSWORD",
+        "entity_id": client_id,
+        "details": {"user_id": user_id, "email": effective_email},
+        "timestamp": now_iso,
+    })
+
+    return {"status": "success", "email": effective_email, "new_password": new_pw}
+
+
+@app.patch("/clients/{client_id}/users/{user_id}/toggle-active")
+async def toggle_user_active(
+    client_id: str,
+    user_id: str,
+    current_admin = Depends(get_current_super_admin),
+):
+    """Disable/Enable user with dual-write."""
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    tenant_db = _get_client_erp_db(client)
+    user = await db.provisioned_users.find_one({"client_id": client_id, "id": user_id}, {"_id": 0})
+    tenant_user = await tenant_db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user and not tenant_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    current_is_active = bool((user or tenant_user or {}).get("is_active", True))
+    new_state = not current_is_active
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Update super admin DB
+    effective_email = (user or tenant_user or {}).get("email")
+    await db.provisioned_users.update_one(
+        {"client_id": client_id, "id": user_id},
+        {"$set": {
+            "tenant_id": client["tenant_id"],
+            "email": effective_email,
+            "is_active": new_state,
+            "updated_at": now_iso,
+        }},
+        upsert=True,
+    )
+
+    # Dual-write -> tenant DB
+    tenant_update = await tenant_db.users.update_one(
+        {"id": user_id},
+        {"$set": {"is_active": new_state, "updated_at": now_iso}}
+    )
+    if tenant_update.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Log
+    await db.activity_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "admin_id": current_admin["id"],
+        "action": "ENABLE_USER" if new_state else "DISABLE_USER",
+        "entity_id": client_id,
+        "details": {"user_id": user_id, "email": effective_email, "is_active": new_state},
+        "timestamp": now_iso,
+    })
+
+    return {
+        "status": "success",
+        "is_active": new_state,
+        "message": f"User {'enabled' if new_state else 'disabled'} successfully",
+    }
+
+
+@app.post("/clients/{client_id}/bootstrap")
+async def bootstrap_tenant(
+    client_id: str,
+    payload: TenantBootstrapRequest = TenantBootstrapRequest(),
+    current_admin = Depends(get_current_super_admin)
+):
+    """
+    Initialize tenant database: indexes, base config, feature flags, and default admin user.
+    Idempotent: safe to run multiple times.
+    """
+    client_doc = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not client_doc:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    tenant_id = client_doc["tenant_id"]
+    target_db = _get_client_erp_db(client_doc)
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # 1) Core indexes
+    await target_db.users.create_index("id", unique=True)
+    await target_db.users.create_index("email")
+    await target_db.users.create_index([("tenant_id", 1), ("email", 1)])
+    await target_db.feature_flags.create_index([("tenant_id", 1), ("feature_code", 1)], unique=True)
+    await target_db.tenant_config.create_index("key", unique=True)
+    await target_db.purchase_invoices.create_index("id", unique=True)
+    await target_db.procurement_lots.create_index("id", unique=True)
+
+    # 2) Seed tenant config basics
+    await target_db.tenant_config.update_one(
+        {"key": "tenant_id"},
+        {"$set": {"key": "tenant_id", "value": tenant_id}},
+        upsert=True,
+    )
+    await target_db.tenant_config.update_one(
+        {"key": "company_name"},
+        {"$set": {"key": "company_name", "value": client_doc.get("business_name") or tenant_id}},
+        upsert=True,
+    )
+
+    # 3) Seed/refresh default feature flags for this tenant in tenant DB
+    for code, is_enabled in _get_default_flags().items():
+        await target_db.feature_flags.update_one(
+            {"tenant_id": tenant_id, "feature_code": code},
+            {"$set": {"is_enabled": is_enabled, "updated_at": now_iso}},
+            upsert=True,
+        )
+
+    # 4) Ensure at least one admin user exists
+    existing_admin = await target_db.users.find_one(
+        {"tenant_id": tenant_id, "role": "admin", "is_active": True},
+        {"_id": 0},
+    )
+    created_admin = None
+    if not existing_admin:
+        admin_email = (payload.admin_email or client_doc.get("owner_email") or f"admin@{tenant_id}.local").lower()
+        admin_name = payload.admin_name or client_doc.get("owner_name") or "Tenant Admin"
+        admin_password = payload.admin_password or "admin123"
+        created_admin = {
+            "id": str(uuid.uuid4()),
+            "email": admin_email,
+            "name": admin_name,
+            "role": "admin",
+            "tenant_id": tenant_id,
+            "password_hash": pwd_context.hash(admin_password),
+            "phone": None,
+            "is_active": True,
+            "created_at": now_iso,
+            "provisioned_by_super_admin": True,
+        }
+        await target_db.users.insert_one(created_admin)
+
+    # 5) Mark client as linked-ready and log action
+    await db.clients.update_one(
+        {"id": client_id},
+        {"$set": {"link_status": "linked", "updated_at": now_iso, "linked_at": client_doc.get("linked_at") or now_iso}},
+    )
+    await db.activity_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "admin_id": current_admin["id"],
+        "admin_email": current_admin["email"],
+        "action": "BOOTSTRAP_TENANT",
+        "entity_type": "client",
+        "entity_id": client_id,
+        "details": {
+            "tenant_id": tenant_id,
+            "client_db_name": client_doc.get("client_db_name") or _default_client_db_name(tenant_id),
+            "admin_created": bool(created_admin),
+            "admin_email": created_admin.get("email") if created_admin else None,
+        },
+        "timestamp": now_iso,
+    })
+
+    return {
+        "status": "success",
+        "message": "Tenant bootstrap completed",
+        "tenant_id": tenant_id,
+        "client_db_name": client_doc.get("client_db_name") or _default_client_db_name(tenant_id),
+        "admin_created": bool(created_admin),
+        "admin_email": created_admin.get("email") if created_admin else existing_admin.get("email"),
     }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -898,14 +1405,15 @@ async def impersonate_client(
     tenant_id = client["tenant_id"]
     
     # Find the admin user for this client in the client ERP database
-    admin_user = await client_db.users.find_one(
+    target_db = _get_client_erp_db(client)
+    admin_user = await target_db.users.find_one(
         {"tenant_id": tenant_id, "role": "admin", "is_active": True},
         {"_id": 0}
     )
     
     if not admin_user:
         # If no admin user found, try to find any active user
-        admin_user = await client_db.users.find_one(
+        admin_user = await target_db.users.find_one(
             {"tenant_id": tenant_id, "is_active": True},
             {"_id": 0}
         )
@@ -931,8 +1439,15 @@ async def impersonate_client(
         "exp": expires_at
     }
     
-    SECRET_KEY = os.getenv("JWT_SECRET_KEY", os.getenv("SECRET_KEY", "your-secret-key-change-in-production"))
-    token = jwt.encode(token_data, SECRET_KEY, algorithm="HS256")
+    # Sign with client-ERP JWT key (must match backend API verification key).
+    client_jwt_secret = (
+        os.getenv("CLIENT_ERP_JWT_SECRET")
+        or os.getenv("BACKEND_SECRET_KEY")
+        or _backend_env_secret
+        or os.getenv("JWT_SECRET_KEY")
+        or "your-secret-key-change-in-production"
+    )
+    token = jwt.encode(token_data, client_jwt_secret, algorithm="HS256")
     
     # Store impersonation session
     session_doc = {
@@ -1076,13 +1591,20 @@ async def create_announcement(
     
     # Push to client ERPs based on target
     if announcement.target_type == "all":
-        await client_db.announcements.insert_one({**announcement_doc})
+        clients = await db.clients.find({"is_active": True}, {"_id": 0}).to_list(1000)
+        for client in clients:
+            target_db = _get_client_erp_db(client)
+            await target_db.announcements.insert_one({
+                **announcement_doc,
+                "tenant_id": client.get("tenant_id"),
+            })
     elif announcement.target_type == "specific_clients" and announcement.target_ids:
         # Push to specific clients only
         for client_id in announcement.target_ids:
             client = await db.clients.find_one({"id": client_id})
             if client:
-                await client_db.announcements.insert_one({
+                target_db = _get_client_erp_db(client)
+                await target_db.announcements.insert_one({
                     **announcement_doc,
                     "tenant_id": client["tenant_id"]
                 })
@@ -1099,6 +1621,8 @@ async def get_activity_logs(
     skip: int = 0,
     action: Optional[str] = None,
     entity_id: Optional[str] = None,
+    from_ts: Optional[str] = None,
+    to_ts: Optional[str] = None,
     current_admin = Depends(get_current_super_admin)
 ):
     """Get activity logs"""
@@ -1107,6 +1631,12 @@ async def get_activity_logs(
         query["action"] = action
     if entity_id:
         query["entity_id"] = entity_id
+    if from_ts or to_ts:
+        query["timestamp"] = {}
+        if from_ts:
+            query["timestamp"]["$gte"] = from_ts
+        if to_ts:
+            query["timestamp"]["$lte"] = to_ts
     
     logs = await db.activity_logs.find(query, {"_id": 0}).sort("timestamp", -1).skip(skip).limit(limit).to_list(limit)
     total = await db.activity_logs.count_documents(query)

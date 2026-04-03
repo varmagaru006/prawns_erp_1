@@ -56,19 +56,22 @@ def get_tenant_from_token(token: str) -> tuple[str, str]:
     Extract tenant_id from JWT token
     Returns: (tenant_id, lot_number_prefix)
     """
-    try:
-        SECRET_KEY = os.environ.get('SECRET_KEY', 'your-secret-key-change-in-production')
-        # Use PyJWT — same library as server.py token creation (avoids jose/PyJWT edge mismatches)
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-
-        # For now, all users belong to cli_001
-        # In production, this would be stored in the user record
-        tenant_id = payload.get("tenant_id", "cli_001")
-        lot_prefix = payload.get("lot_prefix", "PRW")
-
-        return tenant_id, lot_prefix
-    except jwt.PyJWTError:
-        return "cli_001", "PRW"  # Default tenant
+    keys = [
+        os.environ.get("SECRET_KEY", "your-secret-key-change-in-production"),
+        os.environ.get("JWT_SECRET_KEY"),
+    ]
+    for key in keys:
+        if not key:
+            continue
+        try:
+            # Use PyJWT — same library as server.py token creation.
+            payload = jwt.decode(token, key, algorithms=["HS256"])
+            tenant_id = payload.get("tenant_id", "cli_001")
+            lot_prefix = payload.get("lot_prefix", "PRW")
+            return tenant_id, lot_prefix
+        except jwt.PyJWTError:
+            continue
+    return "cli_001", "PRW"
 
 
 class FeatureFlagService:
@@ -161,8 +164,13 @@ async def tenant_middleware(request: Request, call_next):
         tenant_id, lot_prefix = get_tenant_from_token(token)
         tenant_context.set_tenant(tenant_id, lot_prefix)
     else:
-        # Default to cli_001 for non-authenticated requests
-        tenant_context.set_tenant("cli_001", "PRW")
+        # Allow pre-auth tenant routing from header/query (useful for login on tenant-specific URLs).
+        hinted_tenant = (
+            request.headers.get("X-Tenant-ID")
+            or request.query_params.get("tenant_id")
+            or "cli_001"
+        )
+        tenant_context.set_tenant(hinted_tenant, "PRW")
     
     response = await call_next(request)
     return response

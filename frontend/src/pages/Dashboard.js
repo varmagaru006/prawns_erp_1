@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import { API } from '../context/AuthContext';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
@@ -31,6 +31,11 @@ const Dashboard = () => {
       if (typeof window !== 'undefined' && window.__dashboardPrefetch) {
         res = { data: window.__dashboardPrefetch };
         window.__dashboardPrefetch = null;
+      } else if (typeof window !== 'undefined' && window.__dashboardPrefetchPromise) {
+        const prefetched = await window.__dashboardPrefetchPromise;
+        if (prefetched) {
+          res = { data: prefetched };
+        }
       } else {
         try {
           res = await axios.get(`${API}/dashboard/overview`);
@@ -65,32 +70,34 @@ const Dashboard = () => {
   const showSkeleton = loading;
 
   // Prepare chart data (safe when stats/lots/batches empty)
-  const speciesData = lots.reduce((acc, lot) => {
-    const existing = acc.find(item => item.name === lot.species);
-    if (existing) {
-      existing.value += lot.net_weight_kg;
-    } else {
-      acc.push({ name: lot.species, value: lot.net_weight_kg });
+  const speciesData = useMemo(() => {
+    const bucket = new Map();
+    for (const lot of lots) {
+      const key = lot?.species || 'Unknown';
+      bucket.set(key, (bucket.get(key) || 0) + (lot?.net_weight_kg || 0));
     }
-    return acc;
-  }, []);
+    return Array.from(bucket.entries()).map(([name, value]) => ({ name, value }));
+  }, [lots]);
 
-  const paymentStatusData = lots.reduce((acc, lot) => {
-    const existing = acc.find(item => item.name === lot.payment_status);
-    if (existing) {
+  const paymentStatusData = useMemo(() => {
+    const bucket = new Map();
+    for (const lot of lots) {
+      const key = lot?.payment_status || 'unknown';
+      const existing = bucket.get(key) || { value: 0, amount: 0 };
       existing.value += 1;
-      existing.amount += lot.total_amount;
-    } else {
-      acc.push({ name: lot.payment_status, value: 1, amount: lot.total_amount });
+      existing.amount += lot?.total_amount || 0;
+      bucket.set(key, existing);
     }
-    return acc;
-  }, []);
+    return Array.from(bucket.entries()).map(([name, agg]) => ({ name, ...agg }));
+  }, [lots]);
 
-  const yieldTrendData = batches.map((batch, index) => ({
-    name: `Batch ${index + 1}`,
-    yield: batch.yield_pct,
-    target: 80
-  }));
+  const yieldTrendData = useMemo(() => (
+    batches.map((batch, index) => ({
+      name: `Batch ${index + 1}`,
+      yield: batch.yield_pct,
+      target: 80
+    }))
+  ), [batches]);
 
   const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
 

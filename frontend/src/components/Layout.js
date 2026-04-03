@@ -40,6 +40,7 @@ const Layout = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const currentTenantId = user?.tenant_id || 'unknown';
 
   const handleLogout = () => {
     logout();
@@ -212,6 +213,9 @@ const Layout = () => {
             >
               Refresh features
             </button>
+            <div className="hidden md:inline-flex items-center rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700">
+              Current Tenant: {currentTenantId}
+            </div>
             <div className="text-right hidden sm:block">
               <p className="text-sm font-medium text-slate-800" data-testid="user-name">{user?.name}</p>
               <p className="text-xs text-slate-500 capitalize" data-testid="user-role">{user?.role?.replace('_', ' ')}</p>

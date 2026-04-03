@@ -55,8 +55,11 @@ const LoginFallback = () => (
 );
 
 const PrivateRoute = ({ children }) => {
-  const { user } = useAuth();
-  return user ? children : <Navigate to="/login" />;
+  const { user, loading } = useAuth();
+  if (loading) {
+    return <LoadingFallback />;
+  }
+  return user ? children : <Navigate to="/login" replace />;
 };
 
 const DashboardRoute = () => {

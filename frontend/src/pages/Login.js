@@ -204,6 +204,17 @@ const Login = () => {
               </CardDescription>
             </CardHeader>
             <CardContent>
+              {isLogin && (
+                <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm">
+                  <p className="font-semibold text-blue-900">Client Login Credentials</p>
+                  <p className="mt-1 text-blue-800">
+                    Username: <span className="font-mono">admin@prawnexport.com</span>
+                  </p>
+                  <p className="text-blue-800">
+                    Password: <span className="font-mono">admin123</span>
+                  </p>
+                </div>
+              )}
               <form onSubmit={handleSubmit} className="space-y-4">
                 {!isLogin && (
                   <>

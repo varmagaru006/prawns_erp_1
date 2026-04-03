@@ -23,6 +23,10 @@ export const AuthProvider = ({ children }) => {
     // Check for impersonation token in URL
     const urlParams = new URLSearchParams(window.location.search);
     const impersonationToken = urlParams.get('impersonation_token');
+    const tenantHintFromUrl = urlParams.get('tenant_id');
+    if (tenantHintFromUrl) {
+      localStorage.setItem('tenant_id_hint', tenantHintFromUrl);
+    }
     
     if (impersonationToken) {
       handleImpersonationLogin(impersonationToken);
@@ -49,6 +53,13 @@ export const AuthProvider = ({ children }) => {
         const token = localStorage.getItem('token');
         if (token) {
           config.headers.Authorization = `Bearer ${token}`;
+        }
+        // Ensure login gets tenant routing hint before token exists.
+        if ((config.url || '').includes('/auth/login')) {
+          const hintedTenant = localStorage.getItem('tenant_id_hint');
+          if (hintedTenant) {
+            config.headers['X-Tenant-ID'] = hintedTenant;
+          }
         }
         return config;
       },
@@ -101,6 +112,7 @@ export const AuthProvider = ({ children }) => {
       const userData = {
         ...response.data,
         token: token,
+        tenant_id: response.data.tenant_id || localStorage.getItem('tenant_id_hint') || null,
         is_impersonated: response.data.is_impersonated || true
       };
       
@@ -134,6 +146,7 @@ export const AuthProvider = ({ children }) => {
       const userData = {
         ...response.data,
         token: token,
+        tenant_id: response.data.tenant_id || localStorage.getItem('tenant_id_hint') || null,
         is_impersonated: response.data.is_impersonated || true
       };
       
@@ -155,23 +168,40 @@ export const AuthProvider = ({ children }) => {
   };
 
   const login = async (email, password) => {
-    const response = await axios.post(`${API}/auth/login`, { email, password });
+    const tenantHint = localStorage.getItem('tenant_id_hint');
+    const response = await axios.post(
+      `${API}/auth/login`,
+      { email, password },
+      tenantHint ? { headers: { 'X-Tenant-ID': tenantHint } } : undefined
+    );
     const { access_token, user: userData, features, tenant_id, lot_number_prefix } = response.data;
+    const normalizedUser = { ...userData, tenant_id: userData?.tenant_id || tenant_id || null };
     
     localStorage.setItem('token', access_token);
-    localStorage.setItem('user', JSON.stringify(userData));
+    localStorage.setItem('user', JSON.stringify(normalizedUser));
+    localStorage.removeItem('tenant_id_hint');
     localStorage.removeItem('isImpersonation');
     axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
-    setUser(userData);
+    setUser(normalizedUser);
     setIsImpersonating(false);
     
     // Pass features in event so FeatureFlagProvider can skip /auth/me (faster load)
     window.dispatchEvent(new CustomEvent('tokenChanged', { detail: { features, tenant_id, lot_number_prefix } }));
 
-    // Prefetch dashboard so it can be ready when user lands on /
-    axios.get(`${API}/dashboard/overview`).then((r) => {
-      window.__dashboardPrefetch = r.data;
-    }).catch(() => {});
+    // Prefetch dashboard so it can be ready when user lands on /.
+    // Keep a shared in-flight promise to dedupe immediate duplicate fetches.
+    if (typeof window !== 'undefined' && !window.__dashboardPrefetchPromise) {
+      window.__dashboardPrefetchPromise = axios
+        .get(`${API}/dashboard/overview`)
+        .then((r) => {
+          window.__dashboardPrefetch = r.data;
+          return r.data;
+        })
+        .catch(() => null)
+        .finally(() => {
+          window.__dashboardPrefetchPromise = null;
+        });
+    }
 
     return userData;
   };
@@ -222,4 +252,4 @@ export const useAuth = () => {
   return context;
 };
 
-export { API };
+export { API, BACKEND_URL };

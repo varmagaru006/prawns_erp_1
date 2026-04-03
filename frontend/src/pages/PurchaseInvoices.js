@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { API, useAuth } from '../context/AuthContext';
+import { API, BACKEND_URL, useAuth } from '../context/AuthContext';
 import { useFeatureFlags } from '../context/FeatureFlagContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -9,10 +9,43 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { toast } from 'sonner';
-import { Plus, Download, Eye, Check, Trash2, Send, FileText, X, FileSpreadsheet, Lock } from 'lucide-react';
+import { Plus, Download, Eye, Check, Trash2, Send, FileText, X, FileSpreadsheet, Lock, RotateCcw } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useSortableTable } from '../hooks/useSortableTable';
 import SortableTableHead from '../components/SortableTableHead';
+
+function formatFastApiDetail(detail) {
+  if (detail == null) return null;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((x) => (typeof x === 'string' ? x : x?.msg || JSON.stringify(x)))
+      .join('; ');
+  }
+  if (typeof detail === 'object') return JSON.stringify(detail);
+  return String(detail);
+}
+
+async function parseAxiosBlobError(data) {
+  if (!(data instanceof Blob)) return null;
+  const text = await data.text();
+  try {
+    const parsed = JSON.parse(text);
+    return formatFastApiDetail(parsed.detail) || text.slice(0, 300);
+  } catch {
+    return text.slice(0, 300) || null;
+  }
+}
+
+const DEFAULT_PURCHASE_INVOICE_FILTERS = {
+  from_date: '',
+  to_date: '',
+  payment_status: '',
+  invoice_status: '',
+  agent_name: '',
+  party_name: '',
+  search: ''
+};
 
 const PurchaseInvoices = () => {
   const navigate = useNavigate();
@@ -24,15 +57,7 @@ const PurchaseInvoices = () => {
   const [loading, setLoading] = useState(true);
   const [agentOptions, setAgentOptions] = useState([]);
   const [partyOptions, setPartyOptions] = useState([]);
-  const [filters, setFilters] = useState({
-    from_date: '',
-    to_date: '',
-    payment_status: '',
-    invoice_status: '',
-    agent_name: '',
-    party_name: '',
-    search: ''
-  });
+  const [filters, setFilters] = useState(() => ({ ...DEFAULT_PURCHASE_INVOICE_FILTERS }));
   const [pagination, setPagination] = useState({
     page: 1,
     per_page: 25,
@@ -41,11 +66,13 @@ const PurchaseInvoices = () => {
   });
   const [previewInvoice, setPreviewInvoice] = useState(null);
   const [showPreview, setShowPreview] = useState(false);
+  const [weighmentLightboxOpen, setWeighmentLightboxOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [showPushModal, setShowPushModal] = useState(false);
   const [pushInvoiceId, setPushInvoiceId] = useState(null);
   const [applyDigitalSignature, setApplyDigitalSignature] = useState(false);
   const [pushing, setPushing] = useState(false);
+  const [activeInvoiceSubTab, setActiveInvoiceSubTab] = useState('pending');
 
   // Sortable table hook
   const { sortedData: sortedInvoices, requestSort, getSortIcon } = useSortableTable(invoices, {
@@ -53,17 +80,27 @@ const PurchaseInvoices = () => {
     direction: 'desc'
   });
 
+  const subTabCounts = metrics?.sub_tab_counts;
+  const pendingTabCount = subTabCounts?.pending ?? 0;
+  const pushedTabCount = subTabCounts?.pushed ?? 0;
+  const auditTabCount = subTabCounts?.audit ?? 0;
+
   // Compute isDashboardEnabled directly from isEnabled to ensure reactivity
   // If features are still loading, default to showing features enabled
   const isDashboardEnabled = featureLoading ? true : isEnabled('purchaseInvoiceDashboard');
 
   useEffect(() => {
     fetchInvoices();
-  }, [filters, pagination.page, pagination.per_page, isDashboardEnabled]);
+  }, [filters, pagination.page, pagination.per_page, isDashboardEnabled, activeInvoiceSubTab]);
 
   useEffect(() => {
     fetchFilterOptions();
   }, []);
+
+  const goToInvoiceSubTab = (tab) => {
+    setPagination((prev) => ({ ...prev, page: 1 }));
+    setActiveInvoiceSubTab(tab);
+  };
 
   const fetchFilterOptions = async () => {
     try {
@@ -92,6 +129,7 @@ const PurchaseInvoices = () => {
       if (filters.agent_name) params.append('agent_name', filters.agent_name.trim());
       if (filters.party_name) params.append('party_name', filters.party_name.trim());
       if (filters.search && filters.search.trim()) params.append('search', filters.search.trim());
+      params.append('list_sub_tab', activeInvoiceSubTab);
 
       const response = await axios.get(`${API}/purchase-invoices?${params}`);
       setInvoices(response.data.data);
@@ -119,6 +157,11 @@ const PurchaseInvoices = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const clearAllFilters = () => {
+    setFilters({ ...DEFAULT_PURCHASE_INVOICE_FILTERS });
+    setPagination((prev) => ({ ...prev, page: 1 }));
   };
 
   const setQuickFilter = (type) => {
@@ -203,19 +246,49 @@ const PurchaseInvoices = () => {
   };
 
   const downloadPDF = async (invoiceId, invoiceNo) => {
+    if (!invoiceId) {
+      toast.error('Missing invoice id — cannot download.');
+      return;
+    }
     try {
-      const response = await axios.get(`${API}/purchase-invoices/${invoiceId}/pdf`, {
-        responseType: 'blob'
-      });
-      const url = window.URL.createObjectURL(new Blob([response.data]));
+      // Keep download simple (same as earlier working behavior): blob on 2xx only.
+      // Strict PDF sniffing caused false failures for some browsers / encodings / proxies.
+      const response = await axios.get(
+        `${API}/purchase-invoices/${encodeURIComponent(String(invoiceId))}/pdf`,
+        { responseType: 'blob' }
+      );
+      const blob =
+        response.data instanceof Blob ? response.data : new Blob([response.data]);
+      const ct = (response.headers['content-type'] || '').toLowerCase();
+      // Rare: server returns JSON body with 200 — treat as error instead of downloading garbage.
+      if (ct.includes('application/json') && blob.size < 65536) {
+        const msg = await parseAxiosBlobError(blob);
+        toast.error(msg || 'Download failed');
+        return;
+      }
+      const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', `invoice_${invoiceNo.replace('/', '_')}.pdf`);
+      const safeInvoiceNo = String(invoiceNo || invoiceId || 'purchase_invoice').replace(/\//g, '_');
+      link.setAttribute('download', `invoice_${safeInvoiceNo}.pdf`);
       document.body.appendChild(link);
       link.click();
       link.remove();
+      window.URL.revokeObjectURL(url);
     } catch (error) {
-      toast.error('Failed to download PDF');
+      const status = error?.response?.status;
+      const data = error?.response?.data;
+      let detail =
+        (typeof data === 'object' && data && !(data instanceof Blob)
+          ? formatFastApiDetail(data.detail)
+          : null) ||
+        (await parseAxiosBlobError(data)) ||
+        error?.message ||
+        'Failed to download PDF';
+      if (status && !String(detail).includes(String(status))) {
+        detail = `${detail} (HTTP ${status})`;
+      }
+      toast.error(detail);
     }
   };
 
@@ -232,6 +305,7 @@ const PurchaseInvoices = () => {
   const closePreview = () => {
     setShowPreview(false);
     setPreviewInvoice(null);
+    setWeighmentLightboxOpen(false);
   };
 
   const exportToCSV = async () => {
@@ -246,6 +320,7 @@ const PurchaseInvoices = () => {
       if (filters.agent_name) params.append('agent_name', filters.agent_name.trim());
       if (filters.party_name) params.append('party_name', filters.party_name.trim());
       if (filters.search) params.append('search', filters.search);
+      params.append('list_sub_tab', activeInvoiceSubTab);
       params.append('per_page', '10000'); // Get all
 
       const response = await axios.get(`${API}/purchase-invoices?${params}`);
@@ -302,6 +377,7 @@ const PurchaseInvoices = () => {
       if (filters.agent_name) params.append('agent_name', filters.agent_name.trim());
       if (filters.party_name) params.append('party_name', filters.party_name.trim());
       if (filters.search) params.append('search', filters.search);
+      params.append('list_sub_tab', activeInvoiceSubTab);
       params.append('per_page', '10000');
 
       const response = await axios.get(`${API}/purchase-invoices?${params}`);
@@ -530,6 +606,12 @@ const PurchaseInvoices = () => {
               <option value="pushed">Pushed</option>
             </select>
           </div>
+          <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t pt-4">
+            <Button type="button" variant="outline" size="sm" onClick={clearAllFilters}>
+              <RotateCcw className="h-4 w-4 mr-2" />
+              Clear all filters
+            </Button>
+          </div>
         </CardContent>
       </Card>
 
@@ -551,7 +633,7 @@ const PurchaseInvoices = () => {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-slate-700">{(metrics.total_quantity_kg ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 3 })} kg</div>
-              <div className="text-xs text-gray-500">As per current filters</div>
+              <div className="text-xs text-gray-500">Same filters and sub-tab as the table; sum of Total Qty (kg)</div>
             </CardContent>
           </Card>
 
@@ -590,6 +672,29 @@ const PurchaseInvoices = () => {
       <Card className="min-w-0">
         <CardHeader>
           <CardTitle>Invoices</CardTitle>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button
+              variant={activeInvoiceSubTab === 'pending' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => goToInvoiceSubTab('pending')}
+            >
+              Pending Invoices ({pendingTabCount})
+            </Button>
+            <Button
+              variant={activeInvoiceSubTab === 'pushed' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => goToInvoiceSubTab('pushed')}
+            >
+              Pushed Invoices ({pushedTabCount})
+            </Button>
+            <Button
+              variant={activeInvoiceSubTab === 'audit' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => goToInvoiceSubTab('audit')}
+            >
+              Audit Book Recorded ({auditTabCount})
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="min-w-0">
           <Table>
@@ -619,7 +724,9 @@ const PurchaseInvoices = () => {
                 </TableRow>
               ) : sortedInvoices.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={15} className="text-center text-gray-500">No invoices found</TableCell>
+                  <TableCell colSpan={15} className="text-center text-gray-500">
+                    No invoices found in this sub-tab
+                  </TableCell>
                 </TableRow>
               ) : (
                 sortedInvoices.map((invoice) => (
@@ -672,17 +779,21 @@ const PurchaseInvoices = () => {
                             <Eye className="h-3 w-3" />
                           </Button>
                         )}
-                        {invoice.status === 'draft' && (
+                        {(invoice.status === 'draft' || user?.role === 'admin') && (
                           <>
                             <Button size="sm" variant="outline" onClick={() => navigate(`/purchase-invoices/edit/${invoice.id}`)}>
                               Edit
                             </Button>
-                            <Button size="sm" variant="outline" onClick={() => handleApprove(invoice.id)}>
-                              <Check className="h-3 w-3" />
-                            </Button>
-                            <Button size="sm" variant="outline" onClick={() => handleDelete(invoice.id)}>
-                              <Trash2 className="h-3 w-3" />
-                            </Button>
+                            {invoice.status === 'draft' && (
+                              <>
+                                <Button size="sm" variant="outline" onClick={() => handleApprove(invoice.id)}>
+                                  <Check className="h-3 w-3" />
+                                </Button>
+                                <Button size="sm" variant="outline" onClick={() => handleDelete(invoice.id)}>
+                                  <Trash2 className="h-3 w-3" />
+                                </Button>
+                              </>
+                            )}
                           </>
                         )}
                         {invoice.status === 'approved' && (
@@ -800,6 +911,33 @@ const PurchaseInvoices = () => {
                   </div>
                 </div>
 
+                {/* Weighment slip attachment */}
+                {previewInvoice.weighment_slip_file_url && (
+                  <div className="rounded-lg border border-gray-200 bg-white p-4">
+                    <h3 className="font-semibold text-gray-700 mb-2">Weighment slip</h3>
+                    <p className="text-xs text-gray-500 mb-3">Compressed scan/photo (opens larger on click)</p>
+                    <button
+                      type="button"
+                      className="block w-full text-left focus:outline-none focus:ring-2 focus:ring-blue-400 rounded-md"
+                      onClick={() => setWeighmentLightboxOpen(true)}
+                    >
+                      <img
+                        src={`${BACKEND_URL}${previewInvoice.weighment_slip_file_url}`}
+                        alt="Weighment slip"
+                        className="max-h-56 w-full rounded-md border object-contain bg-gray-50"
+                      />
+                    </button>
+                    <a
+                      href={`${BACKEND_URL}${previewInvoice.weighment_slip_file_url}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-2 inline-block text-sm text-blue-600 hover:underline"
+                    >
+                      Open full size in new tab
+                    </a>
+                  </div>
+                )}
+
                 {/* Line Items */}
                 <div>
                   <h3 className="font-semibold text-gray-700 mb-3">Line Items</h3>
@@ -892,7 +1030,7 @@ const PurchaseInvoices = () => {
 
               {/* Footer Actions */}
               <div className="px-6 py-4 border-t bg-gray-50 flex gap-2 justify-end">
-                {previewInvoice.status === 'draft' && (
+                {(previewInvoice.status === 'draft' || user?.role === 'admin') && (
                   <Button variant="outline" onClick={() => navigate(`/purchase-invoices/edit/${previewInvoice.id}`)}>
                     Edit Invoice
                   </Button>
@@ -906,6 +1044,21 @@ const PurchaseInvoices = () => {
           </div>
         </div>
       )}
+
+      <Dialog open={weighmentLightboxOpen} onOpenChange={setWeighmentLightboxOpen}>
+        <DialogContent className="max-w-[min(96vw,56rem)] max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Weighment slip</DialogTitle>
+          </DialogHeader>
+          {previewInvoice?.weighment_slip_file_url && (
+            <img
+              src={`${BACKEND_URL}${previewInvoice.weighment_slip_file_url}`}
+              alt="Weighment slip full size"
+              className="w-full max-h-[75vh] object-contain rounded-md bg-gray-50"
+            />
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* Push Confirmation Modal */}
       <Dialog open={showPushModal} onOpenChange={(open) => {
@@ -941,7 +1094,8 @@ const PurchaseInvoices = () => {
                     Apply digital signature to invoice PDF
                   </Label>
                   <p className="text-xs text-gray-500 mt-1">
-                    Optional. If unchecked, signature area remains empty.
+                    Optional. If unchecked, this invoice will not get a cryptographic seal, and the company
+                    signature image from settings will not appear on the PDF footer for this pushed invoice.
                   </p>
                 </div>
               </div>

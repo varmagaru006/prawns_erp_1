@@ -3,7 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { clientAPI } from '../api/auth';
 import LinkBrandingTab from '../components/LinkBrandingTab';
 import UsersTab from '../components/UsersTab';
-import { ArrowLeft, Building2, Package, ToggleLeft, ToggleRight, Check, AlertCircle, Zap, Link2, Users, Settings } from 'lucide-react';
+import { ArrowLeft, Building2, Package, ToggleLeft, ToggleRight, Check, AlertCircle, Zap, Link2, Users, Settings, Eye, EyeOff } from 'lucide-react';
 
 export default function ClientDetail() {
   const { id } = useParams();
@@ -12,6 +12,14 @@ export default function ClientDetail() {
   const [loading, setLoading] = useState(true);
   const [toggling, setToggling] = useState({});
   const [bulkLoading, setBulkLoading] = useState(false);
+  const [bootstrapping, setBootstrapping] = useState(false);
+  const [showBootstrapModal, setShowBootstrapModal] = useState(false);
+  const [showBootstrapPassword, setShowBootstrapPassword] = useState(false);
+  const [bootstrapForm, setBootstrapForm] = useState({
+    admin_email: '',
+    admin_name: '',
+    admin_password: 'admin123'
+  });
   const [notification, setNotification] = useState(null);
   const [activeTab, setActiveTab] = useState('features');
 
@@ -103,6 +111,38 @@ export default function ClientDetail() {
     
     if (featuresToChange.length === 0) return;
     await handleBulkToggle(featuresToChange, targetState, `${module} module`);
+  };
+
+  const openBootstrapModal = () => {
+    setBootstrapForm({
+      admin_email: client?.owner_email || '',
+      admin_name: client?.owner_name || '',
+      admin_password: 'admin123'
+    });
+    setShowBootstrapPassword(false);
+    setShowBootstrapModal(true);
+  };
+
+  const handleBootstrapTenant = async (e) => {
+    if (e) e.preventDefault();
+    setBootstrapping(true);
+    try {
+      const res = await clientAPI.bootstrapTenant(id, {
+        admin_email: bootstrapForm.admin_email,
+        admin_name: bootstrapForm.admin_name,
+        admin_password: bootstrapForm.admin_password,
+      });
+      showNotification(
+        `Bootstrap done. DB: ${res.client_db_name}${res.admin_created ? `, admin: ${res.admin_email}` : ''}`,
+        'success'
+      );
+      setShowBootstrapModal(false);
+      await loadClientData();
+    } catch (err) {
+      showNotification(err.response?.data?.detail || 'Tenant bootstrap failed', 'error');
+    } finally {
+      setBootstrapping(false);
+    }
   };
 
   // Group features by module
@@ -252,6 +292,15 @@ export default function ClientDetail() {
                 </span>
               </div>
             </div>
+          </div>
+          <div className="ml-4">
+            <button
+              onClick={openBootstrapModal}
+              disabled={bootstrapping}
+              className="px-4 py-2 rounded-lg bg-white text-primary-700 font-medium hover:bg-primary-50 disabled:opacity-60"
+            >
+              {bootstrapping ? 'Bootstrapping...' : 'Bootstrap Tenant'}
+            </button>
           </div>
         </div>
 
@@ -424,6 +473,77 @@ export default function ClientDetail() {
 
       {activeTab === 'users' && (
         <UsersTab client={client} isLinked={isLinked} />
+      )}
+
+      {showBootstrapModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-lg bg-white shadow-xl">
+            <div className="border-b px-5 py-4">
+              <h3 className="text-lg font-semibold text-gray-900">Bootstrap Tenant</h3>
+              <p className="mt-1 text-sm text-gray-600">
+                Initialize DB, flags, tenant config, and default admin.
+              </p>
+            </div>
+            <form onSubmit={handleBootstrapTenant} className="space-y-4 px-5 py-4">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">Admin Email</label>
+                <input
+                  type="email"
+                  required
+                  value={bootstrapForm.admin_email}
+                  onChange={(e) => setBootstrapForm(prev => ({ ...prev, admin_email: e.target.value }))}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">Admin Name</label>
+                <input
+                  type="text"
+                  required
+                  value={bootstrapForm.admin_name}
+                  onChange={(e) => setBootstrapForm(prev => ({ ...prev, admin_name: e.target.value }))}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">Admin Password</label>
+                <div className="relative">
+                  <input
+                    type={showBootstrapPassword ? 'text' : 'password'}
+                    required
+                    value={bootstrapForm.admin_password}
+                    onChange={(e) => setBootstrapForm(prev => ({ ...prev, admin_password: e.target.value }))}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 pr-10 text-sm outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowBootstrapPassword(prev => !prev)}
+                    className="absolute inset-y-0 right-0 px-3 text-gray-500 hover:text-gray-700"
+                    aria-label={showBootstrapPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showBootstrapPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+              </div>
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowBootstrapModal(false)}
+                  className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={bootstrapping}
+                  className="rounded-md bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-60"
+                >
+                  {bootstrapping ? 'Bootstrapping...' : 'Run Bootstrap'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   );

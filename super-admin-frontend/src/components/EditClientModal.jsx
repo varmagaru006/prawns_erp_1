@@ -13,9 +13,12 @@ export default function EditClientModal({ isOpen, onClose, onSuccess, client }) 
       setFormData({
         tenant_id: client.tenant_id || '',
         business_name: client.business_name || '',
-        contact_person: client.contact_person || '',
-        contact_email: client.contact_email || '',
-        subscription_status: client.subscription_status || 'trial'
+        owner_name: client.owner_name || '',
+        owner_email: client.owner_email || '',
+        client_ui_url: client.client_ui_url || '',
+        client_api_url: client.client_api_url || '',
+        client_db_name: client.client_db_name || '',
+        subscription_status: client.subscription_status || 'active'
       });
       loadPlans();
     }
@@ -87,13 +90,65 @@ export default function EditClientModal({ isOpen, onClose, onSuccess, client }) 
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Contact Email</label>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Owner Name</label>
             <input
-              type="email"
-              value={formData.contact_email}
-              onChange={(e) => setFormData({ ...formData, contact_email: e.target.value })}
+              type="text"
+              value={formData.owner_name}
+              onChange={(e) => setFormData({ ...formData, owner_name: e.target.value })}
               className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none"
             />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Owner Email</label>
+            <input
+              type="email"
+              value={formData.owner_email}
+              onChange={(e) => setFormData({ ...formData, owner_email: e.target.value })}
+              className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Client UI URL</label>
+            <input
+              type="url"
+              value={formData.client_ui_url}
+              onChange={(e) => setFormData({ ...formData, client_ui_url: e.target.value })}
+              className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none"
+              placeholder="e.g., http://localhost:3001"
+            />
+            <p className="mt-1 text-sm text-gray-500">
+              Localhost Option B: run each client UI on a different port (example: Client A = `http://localhost:3001`, Client B = `http://localhost:3002`).
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Client API URL</label>
+            <input
+              type="url"
+              value={formData.client_api_url}
+              onChange={(e) => setFormData({ ...formData, client_api_url: e.target.value })}
+              className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none"
+              placeholder="e.g., http://localhost:8000"
+            />
+            <p className="mt-1 text-sm text-gray-500">
+              If all client UIs share one backend locally, keep this as `http://localhost:8000`.
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Client DB Name</label>
+            <input
+              type="text"
+              value={formData.client_db_name}
+              onChange={(e) => setFormData({ ...formData, client_db_name: e.target.value })}
+              className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none"
+              placeholder="e.g., prawn_erp_cli_001"
+            />
+            <p className="mt-1 text-sm text-gray-500">
+              Use a unique DB name per client (recommended format: `prawn_erp_&lt;tenant_id&gt;`).
+            </p>
           </div>
 
           <div>
