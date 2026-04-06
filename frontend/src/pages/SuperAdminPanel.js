@@ -5,6 +5,7 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../components/ui/card';
 import { toast } from 'sonner';
+import { formatLoadErrorMessage } from '../utils/apiError';
 import { 
   Shield, 
   Building2, 
@@ -42,38 +43,36 @@ const SuperAdminPanel = () => {
     owner_name: '',
     owner_email: '',
     owner_password: '',
-    // Step 3: Feature Flags
+    // Step 3: Feature Flags (defaults match backend feature_registry.py)
     feature_flags: {
-      procurement: true,
-      preprocessing: true,
-      coldStorage: true,
-      production: true,
-      qualityControl: true,
-      sales: true,
-      accounts: true,
-      wastageDashboard: false,
-      yieldBenchmarks: false,
-      marketRates: false,
-      purchaseInvoiceDashboard: true,
-      partyLedger: true,
-      admin: true
+      dashboard: true, procurement: true, agents: true, preprocessing: true, production: true,
+      qualityControl: true, coldStorage: true, finishedGoods: true, sales: true, accounts: true,
+      purchaseInvoiceDashboard: true, parties: true, partyLedger: true, wastageDashboard: false, yieldBenchmarks: false,
+      marketRates: false, admin: true, notifications: true, superAdmin: false
     }
   });
 
+  // Must match backend feature_registry.py / super-admin-api FEATURE_REGISTRY
   const featureList = [
-    { code: 'procurement', name: 'Procurement', description: 'Manage prawn procurement' },
-    { code: 'preprocessing', name: 'Pre-Processing', description: 'Processing operations' },
-    { code: 'coldStorage', name: 'Cold Storage', description: 'Cold storage management' },
-    { code: 'production', name: 'Production', description: 'Production tracking' },
-    { code: 'qualityControl', name: 'Quality Control', description: 'Quality checks' },
-    { code: 'sales', name: 'Sales & Dispatch', description: 'Sales and dispatch' },
-    { code: 'accounts', name: 'Accounts & Billing', description: 'Financial management' },
-    { code: 'wastageDashboard', name: 'Wastage Dashboard', description: 'Track wastage' },
-    { code: 'yieldBenchmarks', name: 'Yield Benchmarks', description: 'Yield tracking' },
-    { code: 'marketRates', name: 'Market Rates', description: 'Market price tracking' },
-    { code: 'purchaseInvoiceDashboard', name: 'Purchase Invoice', description: 'Invoice management' },
-    { code: 'partyLedger', name: 'Party Ledger', description: 'Party master and ledger' },
-    { code: 'admin', name: 'Admin Panel', description: 'Administrative functions' }
+    { code: 'dashboard', name: 'Dashboard', description: 'Main dashboard and analytics' },
+    { code: 'procurement', name: 'Procurement', description: 'Incoming prawn lots management' },
+    { code: 'agents', name: 'Agents & Vendors', description: 'Vendor and agent management' },
+    { code: 'preprocessing', name: 'Pre-Processing', description: 'Batch processing and yield tracking' },
+    { code: 'production', name: 'Production', description: 'Production orders and conversion' },
+    { code: 'qualityControl', name: 'Quality Control', description: 'QC inspections and quality assurance' },
+    { code: 'coldStorage', name: 'Cold Storage', description: 'Inventory and temperature monitoring' },
+    { code: 'finishedGoods', name: 'Finished Goods', description: 'Ready inventory for dispatch' },
+    { code: 'sales', name: 'Sales & Dispatch', description: 'Buyer management and orders' },
+    { code: 'accounts', name: 'Accounts', description: 'Wage bills and payments' },
+    { code: 'purchaseInvoiceDashboard', name: 'Purchase Invoice Dashboard', description: 'Invoice metrics and bulk export' },
+    { code: 'parties', name: 'Party Master', description: 'Party/vendor master data' },
+    { code: 'partyLedger', name: 'Party Ledger', description: 'Party ledger and FY-wise accounts' },
+    { code: 'wastageDashboard', name: 'Wastage Dashboard', description: 'Yield tracking and revenue loss' },
+    { code: 'yieldBenchmarks', name: 'Yield Benchmarks', description: 'Configure wastage thresholds' },
+    { code: 'marketRates', name: 'Market Rates', description: 'Configure pricing for revenue calculations' },
+    { code: 'admin', name: 'Admin Panel', description: 'Company settings, audit trail, attachments' },
+    { code: 'notifications', name: 'Notifications', description: 'System notifications' },
+    { code: 'superAdmin', name: 'Super Admin', description: 'Platform-wide tenant and feature management' }
   ];
 
   // Load data on mount
@@ -102,7 +101,7 @@ const SuperAdminPanel = () => {
       } catch (error) {
         if (!cancelled && error.name !== 'CanceledError') {
           console.error('Failed to load data:', error);
-          toast.error('Failed to load data');
+          toast.error(formatLoadErrorMessage('Failed to load data', error));
         }
       } finally {
         if (!cancelled) {
@@ -153,19 +152,10 @@ const SuperAdminPanel = () => {
         owner_email: '',
         owner_password: '',
         feature_flags: {
-          procurement: true,
-          preprocessing: true,
-          coldStorage: true,
-          production: true,
-          qualityControl: true,
-          sales: true,
-          accounts: true,
-          wastageDashboard: false,
-          yieldBenchmarks: false,
-          marketRates: false,
-          purchaseInvoiceDashboard: true,
-          partyLedger: true,
-          admin: true
+          dashboard: true, procurement: true, agents: true, preprocessing: true, production: true,
+          qualityControl: true, coldStorage: true, finishedGoods: true, sales: true, accounts: true,
+          purchaseInvoiceDashboard: true, parties: true, partyLedger: true, wastageDashboard: false, yieldBenchmarks: false,
+          marketRates: false, admin: true, notifications: true, superAdmin: false
         }
       });
       loadTenants();
@@ -205,7 +195,7 @@ const SuperAdminPanel = () => {
   return (
     <div className="p-6 space-y-6" data-testid="super-admin-panel">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex items-center gap-3">
           <div className="p-2 bg-purple-100 rounded-lg">
             <Shield className="h-6 w-6 text-purple-600" />
@@ -215,7 +205,7 @@ const SuperAdminPanel = () => {
             <p className="text-gray-500">Manage tenants, features, and platform settings</p>
           </div>
         </div>
-        <Button onClick={() => setShowWizard(true)} className="bg-purple-600 hover:bg-purple-700" data-testid="new-client-btn">
+        <Button onClick={() => setShowWizard(true)} className="w-full bg-purple-600 hover:bg-purple-700 sm:w-auto" data-testid="new-client-btn">
           <Plus className="h-4 w-4 mr-2" />
           New Client
         </Button>

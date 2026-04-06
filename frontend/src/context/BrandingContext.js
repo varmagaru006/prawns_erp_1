@@ -3,7 +3,7 @@ import axios from 'axios';
 
 const BrandingContext = createContext(null);
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
 const API = `${BACKEND_URL}/api`;
 
 // Default branding config
@@ -18,10 +18,12 @@ const DEFAULT_BRANDING = {
 
 export const BrandingProvider = ({ children }) => {
   const [branding, setBranding] = useState(DEFAULT_BRANDING);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false); // Don't block first paint; fetch in background
 
   useEffect(() => {
-    fetchBranding();
+    // Defer fetch so login form can paint immediately with defaults
+    const t = setTimeout(() => { fetchBranding(); }, 0);
+    return () => clearTimeout(t);
   }, []);
 
   const fetchBranding = async () => {

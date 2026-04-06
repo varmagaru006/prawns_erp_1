@@ -3,7 +3,7 @@ import { Upload, File, Trash2, Download, Image, FileText, X, Loader2, Paperclip 
 import { Button } from './ui/button';
 import { toast } from 'sonner';
 
-const API_URL = process.env.REACT_APP_BACKEND_URL;
+const API_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
 
 const CATEGORIES = [
   { value: 'invoice', label: 'Invoice' },

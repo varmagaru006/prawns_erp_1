@@ -3,15 +3,7 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import { useSortableTable } from '../hooks/useSortableTable';
 
-const API = process.env.REACT_APP_BACKEND_URL;
-
-const COMPANY = {
-  name: "KRISH AQUA TRADERS",
-  addr1: "195/1A1&1A2, Batnavelli Village, By-Pass Road, Amalapuram,",
-  addr2: "Dr.BR Ambedkar Konaseema District, Andhra Pradesh-533201.",
-  phone: "8096696789",
-  email: "krishaquatraders@gmail.com",
-};
+const API = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
 
 // Compute running balance
 function computeBalances(entries, opening) {
@@ -101,7 +93,7 @@ function Field({ label, value, onChange, type = "text", required, hint }) {
 }
 
 // ─── LEDGER PRINT TEMPLATE ────────────────────────────────────────────────────
-function LedgerPrintView({ party, fy, entries, opening }) {
+function LedgerPrintView({ party, fy, entries, opening, company }) {
   const computed = computeBalances(entries, opening);
   
   // Calculate totals
@@ -120,9 +112,9 @@ function LedgerPrintView({ party, fy, entries, opening }) {
       <style>{PRINT_STYLE}</style>
       {/* Header */}
       <div style={{ textAlign: "center", borderBottom: "2px solid #0369a1", paddingBottom: 8, marginBottom: 10 }}>
-        <div style={{ fontSize: 16, fontWeight: 900, color: "#0c4a6e" }}>{COMPANY.name}</div>
-        <div style={{ fontSize: 10, color: "#334155" }}>{COMPANY.addr1}</div>
-        <div style={{ fontSize: 10, color: "#334155" }}>{COMPANY.addr2}</div>
+        <div style={{ fontSize: 16, fontWeight: 900, color: "#0c4a6e" }}>{company?.name || ""}</div>
+        <div style={{ fontSize: 10, color: "#334155" }}>{company?.addr1 || ""}</div>
+        <div style={{ fontSize: 10, color: "#334155" }}>{company?.addr2 || ""}</div>
         <div style={{ fontSize: 11, fontWeight: 700, marginTop: 4 }}>
           PARTY NAME: {party.party_name}{party.party_alias ? ` (${party.party_alias})` : ""}
         </div>
@@ -181,7 +173,7 @@ function LedgerPrintView({ party, fy, entries, opening }) {
                 <tr key={e.id} style={{ background: "#fef9c3" }}>
                   <td style={tdStyle}>{fmtDate(e.entry_date)}</td>
                   <td colSpan={8} style={{...tdStyle, textAlign: "center", fontStyle: "italic"}}>
-                    {e.entry_type === "manual_credit" ? `Credit: ${e.description}` : "Payment Received"}
+                    {e.entry_type === "manual_credit" ? `Credit: ${e.description}` : (e.description || "Payment Received")}
                   </td>
                   <td style={{ ...tdStyle, textAlign: "right", fontWeight: 700, color: "#15803d" }}>{fmt(e.payment_amount)}</td>
                   <td style={{ ...tdStyle, textAlign: "center" }}>{fmtDate(e.payment_date || e.entry_date)}</td>
@@ -227,6 +219,14 @@ function LedgerPrintView({ party, fy, entries, opening }) {
 
 // ─── MAIN MODULE ─────────────────────────────────────────────────────────────
 export default function PartyLedgerModule() {
+  const currentUser = useMemo(() => {
+    try {
+      return JSON.parse(localStorage.getItem("user") || "null");
+    } catch {
+      return null;
+    }
+  }, []);
+  const isAdmin = String(currentUser?.role || "").toLowerCase() === "admin";
   const [view, setView]           = useState("list");
   const [selectedParty, setParty] = useState(null);
   const [selectedFY, setFY]       = useState("25-26");
@@ -239,12 +239,14 @@ export default function PartyLedgerModule() {
   const [parties, setParties]     = useState([]);
   const [ledgerData, setLedgerData] = useState({});
   const [loading, setLoading]     = useState(false);
+  const [carryForwarding, setCarryForwarding] = useState(false);
   const [searchQ, setSearch]      = useState("");
   
   const [payForm, setPayForm] = useState({ date: "", amount: "", paid_to: "", mode: "bank_transfer", reference: "", bill_no: "" });
   const [partyForm, setPartyForm] = useState({ party_name: "", party_alias: "", short_code: "", mobile: "", address: "" });
   const [manualForm, setManualForm] = useState({ date: "", amount: "", description: "" });
   const [obForm, setObForm] = useState({ amount: "" });
+  const [tenantConfig, setTenantConfig] = useState(null);
 
   const ALL_FY = ["24-25", "25-26", "26-27"];
 
@@ -253,6 +255,27 @@ export default function PartyLedgerModule() {
     p.party_name.toLowerCase().includes(searchQ.toLowerCase()) ||
     (p.party_alias || "").toLowerCase().includes(searchQ.toLowerCase())
   );
+
+  // Load company settings (tenant config) for header text
+  useEffect(() => {
+    async function loadTenantConfig() {
+      try {
+        const res = await axios.get(`${API}/tenant-config`);
+        const map = {};
+        (res.data || []).forEach(c => { map[c.key] = c.value; });
+        setTenantConfig({
+          name: map.company_name || "",
+          addr1: map.company_address_1 || "",
+          addr2: map.company_address_2 || "",
+          phone: map.company_phone || "",
+          email: map.company_email || "",
+        });
+      } catch (err) {
+        console.error("Failed to load tenant config", err);
+      }
+    }
+    loadTenantConfig();
+  }, []);
 
   // Sortable table for parties list (after filteredParties is defined)
   const { sortedData: sortedParties, requestSort: requestPartySort, getSortIcon: getPartySortIcon } = useSortableTable(
@@ -383,14 +406,114 @@ export default function PartyLedgerModule() {
     }
   }
 
+  async function downloadLedgerExport(format) {
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        toast.error('Please login again');
+        return;
+      }
+      const response = await axios.get(
+        `${API}/api/party-ledger/parties/${selectedParty.id}/export?fy=${selectedFY}&format=${format}`,
+        {
+          responseType: 'blob',
+          headers: { Authorization: `Bearer ${token}` }
+        }
+      );
+      const blob = response.data instanceof Blob ? response.data : new Blob([response.data]);
+      const ext = format === 'excel' ? 'xls' : 'csv';
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `party_ledger_${selectedFY}.${ext}`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || `Failed to export ${format.toUpperCase()}`);
+    }
+  }
+
   // Export CSV
   function exportCSV() {
-    window.open(`${API}/api/party-ledger/parties/${selectedParty.id}/export?fy=${selectedFY}&format=csv`, '_blank');
+    downloadLedgerExport('csv');
   }
 
   // Export Excel
   function exportExcel() {
-    window.open(`${API}/api/party-ledger/parties/${selectedParty.id}/export?fy=${selectedFY}&format=excel`, '_blank');
+    downloadLedgerExport('excel');
+  }
+
+  async function runFyCarryForward() {
+    const fromFY = selectedFY;
+    if (!fromFY) {
+      toast.error("Please select a financial year first");
+      return;
+    }
+    if (!window.confirm(`Run carry forward from FY ${fromFY} to next FY?`)) return;
+
+    setCarryForwarding(true);
+    try {
+      const response = await axios.post(
+        `${API}/api/party-ledger/carry-forward`,
+        null,
+        { params: { from_fy: fromFY } }
+      );
+      const d = response.data || {};
+      toast.success(
+        `Carry forward completed: created ${d.created_ledgers || 0}, skipped ${d.skipped_existing || 0}`
+      );
+      await fetchParties();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Failed to run FY carry forward");
+    } finally {
+      setCarryForwarding(false);
+    }
+  }
+
+  async function deleteLedgerEntry(entryId) {
+    if (!entryId) return;
+    if (!window.confirm("Delete this ledger entry? This will recompute balances.")) return;
+    try {
+      await axios.delete(`${API}/api/party-ledger/entry/${entryId}`);
+      toast.success("Ledger entry deleted");
+      fetchLedgerDetail(selectedParty.id, selectedFY);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Failed to delete ledger entry");
+    }
+  }
+
+  async function editLedgerEntry(entry) {
+    if (!entry?.id) return;
+    const currentAmount = entry.entry_type === "manual_debit"
+      ? (entry.total_bill || entry.tds_after_bill || 0)
+      : (entry.payment_amount || 0);
+    const amountRaw = window.prompt("Amount", String(currentAmount ?? 0));
+    if (amountRaw == null) return;
+    const dateRaw = window.prompt("Entry date (YYYY-MM-DD)", String(entry.entry_date || "").split("T")[0]);
+    if (dateRaw == null) return;
+    const descriptionRaw = window.prompt("Description", entry.description || "");
+    if (descriptionRaw == null) return;
+
+    const payload = {
+      amount: parseFloat(amountRaw || "0"),
+      entry_date: dateRaw,
+      description: descriptionRaw
+    };
+    if (entry.entry_type === "payment") {
+      const paidToRaw = window.prompt("Paid To", entry.paid_to || "");
+      if (paidToRaw == null) return;
+      payload.paid_to = paidToRaw;
+      payload.payment_date = dateRaw;
+    }
+    try {
+      await axios.put(`${API}/api/party-ledger/entry/${entry.id}`, payload);
+      toast.success("Ledger entry updated");
+      fetchLedgerDetail(selectedParty.id, selectedFY);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Failed to update ledger entry");
+    }
   }
 
   // ── LIST VIEW ──────────────────────────────────────────────────────────────
@@ -407,11 +530,33 @@ export default function PartyLedgerModule() {
           <div style={{ fontSize: 22, fontWeight: 800, color: "#0f172a" }}>Party Ledger</div>
           <div style={{ fontSize: 13, color: "#64748b", marginTop: 2 }}>Maintain ledger accounts for all parties · Indian Financial Year</div>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <select value={selectedFY} onChange={e => setFY(e.target.value)}
-            style={{ border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", fontSize: 13, background: "#fff", color: "#1e293b" }}>
-            {ALL_FY.map(y => <option key={y} value={y}>FY {y}</option>)}
-          </select>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <select value={selectedFY} onChange={e => setFY(e.target.value)}
+              style={{ border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", fontSize: 13, background: "#fff", color: "#1e293b" }}>
+              {ALL_FY.map(y => <option key={y} value={y}>FY {y}</option>)}
+            </select>
+            <button
+              onClick={runFyCarryForward}
+              disabled={carryForwarding}
+              style={{
+                border: "1px solid #c7d2fe",
+                background: carryForwarding ? "#e2e8f0" : "#eef2ff",
+                color: "#3730a3",
+                borderRadius: 8,
+                padding: "8px 12px",
+                fontSize: 12,
+                fontWeight: 700,
+                cursor: carryForwarding ? "not-allowed" : "pointer"
+              }}
+              title={`Create next FY ledger books using FY ${selectedFY} closing balances`}
+            >
+              {carryForwarding ? "Running..." : "Run FY Carry Forward"}
+            </button>
+          </div>
+          <div style={{ fontSize: 11, color: "#6366f1" }}>
+            Carries closing balance of selected FY as opening balance of next FY.
+          </div>
         </div>
       </div>
 
@@ -652,12 +797,34 @@ export default function PartyLedgerModule() {
                           <tr key={e.id} style={{ background: "#fef9c3", borderBottom: "2px solid #fde68a" }}>
                             <td style={{ padding: "7px 8px", textAlign: "center", color: "#92400e", fontWeight: 600 }}>{fmtDate(e.entry_date)}</td>
                             <td colSpan={8} style={{ padding: "7px 8px", textAlign: "center", color: "#92400e", fontStyle: "italic" }}>
-                              {e.entry_type === "manual_credit" ? `Credit: ${e.description}` : "Payment Received"}
+                              {e.entry_type === "manual_credit" ? `Credit: ${e.description}` : (e.description || "Payment Received")}
                             </td>
                             <td style={{ padding: "7px 8px", textAlign: "right", fontWeight: 800, color: "#15803d", fontSize: 13 }}>{fmt(e.payment_amount)}</td>
                             <td style={{ padding: "7px 8px", textAlign: "center", color: "#92400e" }}>{fmtDate(e.payment_date || e.entry_date)}</td>
                             <td style={{ padding: "7px 8px", textAlign: "right", fontWeight: 800, color: "#dc2626", fontSize: 13 }}>{fmt(e.balance_after || e.running_balance)}</td>
-                            <td style={{ padding: "7px 8px", textAlign: "center", fontWeight: 700, color: "#0369a1" }}>{e.paid_to}</td>
+                            <td style={{ padding: "7px 8px", textAlign: "center", fontWeight: 700, color: "#0369a1" }}>
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                                <span>{e.paid_to}</span>
+                                {isAdmin && (
+                                  <>
+                                    <button
+                                      onClick={() => editLedgerEntry(e)}
+                                      style={{ border: "1px solid #bfdbfe", background: "#eff6ff", color: "#1d4ed8", borderRadius: 6, padding: "2px 6px", fontSize: 10, cursor: "pointer" }}
+                                      title="Edit entry (admin)"
+                                    >
+                                      Edit
+                                    </button>
+                                    <button
+                                      onClick={() => deleteLedgerEntry(e.id)}
+                                      style={{ border: "1px solid #fecaca", background: "#fff1f2", color: "#b91c1c", borderRadius: 6, padding: "2px 6px", fontSize: 10, cursor: "pointer" }}
+                                      title="Delete entry (admin)"
+                                    >
+                                      Delete
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </td>
                           </tr>
                         );
                       }
@@ -671,7 +838,26 @@ export default function PartyLedgerModule() {
                             <td style={{ padding: "7px 8px", textAlign: "right", fontWeight: 700, color: "#dc2626" }}>{fmt(e.total_bill || e.tds_after_bill)}</td>
                             <td colSpan={4} style={{ padding: "7px 8px" }}></td>
                             <td style={{ padding: "7px 8px", textAlign: "right", fontWeight: 800, color: "#dc2626", fontSize: 13 }}>{fmt(e.balance_after || e.running_balance)}</td>
-                            <td style={{ padding: "7px 8px" }}></td>
+                            <td style={{ padding: "7px 8px", textAlign: "center" }}>
+                              {isAdmin && (
+                                <>
+                                  <button
+                                    onClick={() => editLedgerEntry(e)}
+                                    style={{ border: "1px solid #bfdbfe", background: "#eff6ff", color: "#1d4ed8", borderRadius: 6, padding: "2px 6px", fontSize: 10, cursor: "pointer", marginRight: 4 }}
+                                    title="Edit entry (admin)"
+                                  >
+                                    Edit
+                                  </button>
+                                  <button
+                                    onClick={() => deleteLedgerEntry(e.id)}
+                                    style={{ border: "1px solid #fecaca", background: "#fff1f2", color: "#b91c1c", borderRadius: 6, padding: "2px 6px", fontSize: 10, cursor: "pointer" }}
+                                    title="Delete entry (admin)"
+                                  >
+                                    Delete
+                                  </button>
+                                </>
+                              )}
+                            </td>
                           </tr>
                         );
                       }
@@ -706,7 +892,13 @@ export default function PartyLedgerModule() {
             <button onClick={() => window.print()} style={{ background: "#0f172a", color: "#fff", border: "none", borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>↓ Print / Save PDF</button>
           </div>
           <div style={{ overflowX: "auto", border: "1px solid #e2e8f0", borderRadius: 8 }}>
-            <LedgerPrintView party={selectedParty} fy={selectedFY} entries={entries} opening={currentLedger.opening_balance} />
+            <LedgerPrintView
+              party={selectedParty}
+              fy={selectedFY}
+              entries={entries}
+              opening={currentLedger.opening_balance}
+              company={tenantConfig}
+            />
           </div>
         </Modal>
       )}

@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { toast } from 'sonner';
+import { formatLoadErrorMessage } from '../utils/apiError';
 import { Plus, ClipboardCheck, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
 
 const QualityControl = () => {
@@ -50,7 +51,7 @@ const QualityControl = () => {
       setLots(lotsRes.data);
       setFinishedGoods(goodsRes.data);
     } catch (error) {
-      toast.error('Failed to load data');
+      toast.error(formatLoadErrorMessage('Failed to load data', error));
     } finally {
       setLoading(false);
     }
@@ -98,14 +99,14 @@ const QualityControl = () => {
 
   return (
     <div className="space-y-6" data-testid="qc-page">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h1 className="text-2xl lg:text-3xl font-bold text-slate-800">Quality Control</h1>
           <p className="text-slate-600 mt-1">Inspection and quality assurance tracking</p>
         </div>
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
-            <Button className="gap-2" data-testid="add-inspection-button">
+            <Button className="w-full gap-2 sm:w-auto" data-testid="add-inspection-button">
               <Plus size={18} />
               New Inspection
             </Button>

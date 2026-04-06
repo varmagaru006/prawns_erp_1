@@ -4,13 +4,31 @@ Handles tenant context and feature flag resolution with Redis caching
 """
 from typing import Optional, Dict
 from fastapi import HTTPException, Request
-from jose import jwt, JWTError
+import jwt
 import os
 import redis
 import json
 
-# Redis connection
-redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+try:
+    from feature_registry import merge_flags_with_registry
+except ImportError:
+    try:
+        from backend.feature_registry import merge_flags_with_registry
+    except ImportError:
+        def merge_flags_with_registry(db_flags: dict) -> dict:
+            return dict(db_flags)  # no registry available, return as-is
+
+# Redis connection (optional - if Redis is down, cache is skipped and app still works)
+try:
+    redis_client = redis.Redis(
+        host=os.environ.get("REDIS_HOST", "localhost"),
+        port=int(os.environ.get("REDIS_PORT", "6379")),
+        db=0,
+        decode_responses=True,
+        socket_connect_timeout=2,
+    )
+except Exception:
+    redis_client = None
 
 class TenantContext:
     """Manages tenant context for the current request"""
@@ -38,18 +56,22 @@ def get_tenant_from_token(token: str) -> tuple[str, str]:
     Extract tenant_id from JWT token
     Returns: (tenant_id, lot_number_prefix)
     """
-    try:
-        SECRET_KEY = os.environ.get('SECRET_KEY', 'your-secret-key-change-in-production')
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        
-        # For now, all users belong to cli_001
-        # In production, this would be stored in the user record
-        tenant_id = payload.get("tenant_id", "cli_001")
-        lot_prefix = payload.get("lot_prefix", "PRW")
-        
-        return tenant_id, lot_prefix
-    except JWTError:
-        return "cli_001", "PRW"  # Default tenant
+    keys = [
+        os.environ.get("SECRET_KEY", "your-secret-key-change-in-production"),
+        os.environ.get("JWT_SECRET_KEY"),
+    ]
+    for key in keys:
+        if not key:
+            continue
+        try:
+            # Use PyJWT — same library as server.py token creation.
+            payload = jwt.decode(token, key, algorithms=["HS256"])
+            tenant_id = payload.get("tenant_id", "cli_001")
+            lot_prefix = payload.get("lot_prefix", "PRW")
+            return tenant_id, lot_prefix
+        except jwt.PyJWTError:
+            continue
+    return "cli_001", "PRW"
 
 
 class FeatureFlagService:
@@ -65,26 +87,26 @@ class FeatureFlagService:
     async def is_enabled(self, tenant_id: str, feature_code: str) -> bool:
         """
         Check if a feature is enabled for a tenant
-        Uses Redis cache with 60-second TTL
+        Uses Redis cache with 60-second TTL (skipped if Redis unavailable)
         """
         cache_key = f"feature:{tenant_id}:{feature_code}"
-        
-        # Check Redis cache
-        cached = redis_client.get(cache_key)
-        if cached is not None:
-            return cached == "1"
-        
-        # Query MongoDB
+        if redis_client:
+            try:
+                cached = redis_client.get(cache_key)
+                if cached is not None:
+                    return cached == "1"
+            except Exception:
+                pass
         flag = await self.db.feature_flags.find_one({
             "tenant_id": tenant_id,
             "feature_code": feature_code
         }, {"_id": 0})
-        
         is_enabled = flag.get("is_enabled", False) if flag else False
-        
-        # Cache in Redis
-        redis_client.setex(cache_key, self.cache_ttl, "1" if is_enabled else "0")
-        
+        if redis_client:
+            try:
+                redis_client.setex(cache_key, self.cache_ttl, "1" if is_enabled else "0")
+            except Exception:
+                pass
         return is_enabled
     
     async def get_all_flags(self, tenant_id: str) -> Dict[str, bool]:
@@ -93,15 +115,13 @@ class FeatureFlagService:
         Uses Redis cache for entire flags object
         """
         cache_key = f"flags:{tenant_id}"
-        
-        # Check Redis cache
-        try:
-            cached = redis_client.get(cache_key)
-            if cached:
-                return json.loads(cached)
-        except:
-            pass  # Redis unavailable, skip cache
-        
+        if redis_client:
+            try:
+                cached = redis_client.get(cache_key)
+                if cached:
+                    return json.loads(cached)
+            except Exception:
+                pass
         # Query MongoDB
         flags = await self.db.feature_flags.find(
             {"tenant_id": tenant_id},
@@ -109,26 +129,26 @@ class FeatureFlagService:
         ).to_list(1000)
         
         flags_dict = {flag["feature_code"]: flag["is_enabled"] for flag in flags}
+        # Merge with registry so client always gets full set (unknown codes default off)
+        flags_dict = merge_flags_with_registry(flags_dict)
         
-        # Cache in Redis
-        try:
-            redis_client.setex(cache_key, self.cache_ttl, json.dumps(flags_dict))
-        except:
-            pass  # Redis unavailable, skip caching
-        
+        if redis_client:
+            try:
+                redis_client.setex(cache_key, self.cache_ttl, json.dumps(flags_dict))
+            except Exception:
+                pass
         return flags_dict
     
     def invalidate_cache(self, tenant_id: str, feature_code: Optional[str] = None):
         """Invalidate Redis cache when features are toggled"""
+        if not redis_client:
+            return
         try:
             if feature_code:
-                cache_key = f"feature:{tenant_id}:{feature_code}"
-                redis_client.delete(cache_key)
-            
-            # Always invalidate the full flags cache
+                redis_client.delete(f"feature:{tenant_id}:{feature_code}")
             redis_client.delete(f"flags:{tenant_id}")
-        except:
-            pass  # Redis unavailable, skip cache invalidation
+        except Exception:
+            pass
 
 
 # Middleware to inject tenant context
@@ -136,16 +156,21 @@ async def tenant_middleware(request: Request, call_next):
     """
     Middleware to extract tenant_id from JWT and set context
     """
-    # Try to get token from Authorization header
-    auth_header = request.headers.get("Authorization", "")
-    
-    if auth_header.startswith("Bearer "):
-        token = auth_header.split(" ")[1]
+    # Try to get token from Authorization header (scheme is case-insensitive per RFC 7235)
+    auth_header = (request.headers.get("Authorization") or "").strip()
+    parts = auth_header.split(None, 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        token = parts[1]
         tenant_id, lot_prefix = get_tenant_from_token(token)
         tenant_context.set_tenant(tenant_id, lot_prefix)
     else:
-        # Default to cli_001 for non-authenticated requests
-        tenant_context.set_tenant("cli_001", "PRW")
+        # Allow pre-auth tenant routing from header/query (useful for login on tenant-specific URLs).
+        hinted_tenant = (
+            request.headers.get("X-Tenant-ID")
+            or request.query_params.get("tenant_id")
+            or "cli_001"
+        )
+        tenant_context.set_tenant(hinted_tenant, "PRW")
     
     response = await call_next(request)
     return response

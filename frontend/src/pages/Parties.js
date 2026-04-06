@@ -16,6 +16,7 @@ const Parties = () => {
   const [search, setSearch] = useState('');
   const [showDrawer, setShowDrawer] = useState(false);
   const [editingParty, setEditingParty] = useState(null);
+  const [insights, setInsights] = useState(null);
   const [formData, setFormData] = useState({
     party_name: '',
     party_alias: '',
@@ -42,18 +43,27 @@ const Parties = () => {
     try {
       const params = new URLSearchParams();
       if (search) params.append('search', search);
-      console.log('Fetching parties from:', `${API}/parties?${params}`);
-      const response = await axios.get(`${API}/parties?${params}`, { timeout: 10000 });
-      console.log('Parties response:', response.data);
-      setParties(response.data || []);
+      const [partiesRes, insightsRes] = await Promise.all([
+        axios.get(`${API}/parties?${params}`, { timeout: 10000 }),
+        axios.get(`${API}/parties/insights`, { timeout: 10000 }),
+      ]);
+      const partyRows = partiesRes.data || [];
+      const byParty = insightsRes.data?.by_party || [];
+      const kgMap = new Map(byParty.map((x) => [x.party_id, x.fy_kg || 0]));
+      const merged = partyRows.map((p) => ({
+        ...p,
+        fy_kg_provided: kgMap.get(p.id) || 0,
+      }));
+      setParties(merged);
+      setInsights(insightsRes.data || null);
     } catch (error) {
-      console.error('Parties fetch error:', error.message, error);
       if (error.code === 'ECONNABORTED') {
         toast.error('Request timed out');
       } else {
         toast.error('Failed to load parties');
       }
       setParties([]);
+      setInsights(null);
     } finally {
       setLoading(false);
     }
@@ -142,12 +152,12 @@ const Parties = () => {
   return (
     <div className="p-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="mb-6 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h1 className="text-3xl font-bold text-gray-800">Party Master</h1>
           <p className="text-gray-600">Manage suppliers and farmer parties</p>
         </div>
-        <Button onClick={() => openDrawer()} data-testid="add-party-btn">
+        <Button onClick={() => openDrawer()} data-testid="add-party-btn" className="w-full sm:w-auto">
           <Plus className="h-4 w-4 mr-2" />
           Add Party
         </Button>
@@ -180,6 +190,56 @@ const Parties = () => {
           </CardTitle>
         </CardHeader>
         <CardContent>
+          {insights && (
+            <div className="mb-6 space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                <div className="rounded-md border bg-blue-50 p-3">
+                  <div className="text-xs text-blue-700">Current FY</div>
+                  <div className="text-lg font-bold text-blue-900">{insights.fy}</div>
+                </div>
+                <div className="rounded-md border bg-emerald-50 p-3">
+                  <div className="text-xs text-emerald-700">KG Provided This FY</div>
+                  <div className="text-lg font-bold text-emerald-900">{(insights.summary?.total_fy_kg || 0).toLocaleString('en-IN', { maximumFractionDigits: 3 })} kg</div>
+                </div>
+                <div className="rounded-md border bg-indigo-50 p-3">
+                  <div className="text-xs text-indigo-700">Top Performing Parties</div>
+                  <div className="text-lg font-bold text-indigo-900">{insights.summary?.top_performing_count || 0}</div>
+                </div>
+                <div className="rounded-md border bg-amber-50 p-3">
+                  <div className="text-xs text-amber-700">Parties Getting Away</div>
+                  <div className="text-lg font-bold text-amber-900">{insights.summary?.declining_count || 0}</div>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                <div className="rounded-md border p-3">
+                  <h3 className="font-semibold text-sm mb-2">Top Performing Parties (FY KG)</h3>
+                  {insights.top_performing_parties?.length ? (
+                    <div className="space-y-1">
+                      {insights.top_performing_parties.slice(0, 5).map((row, i) => (
+                        <div key={row.party_id} className="flex justify-between text-sm">
+                          <span>{i + 1}. {row.party_name}</span>
+                          <span className="font-medium">{(row.fy_kg || 0).toLocaleString('en-IN', { maximumFractionDigits: 3 })} kg</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : <div className="text-sm text-gray-500">No FY supply data yet.</div>}
+                </div>
+                <div className="rounded-md border p-3">
+                  <h3 className="font-semibold text-sm mb-2">Parties Getting Away (90-day drop)</h3>
+                  {insights.declining_parties?.length ? (
+                    <div className="space-y-1">
+                      {insights.declining_parties.slice(0, 5).map((row) => (
+                        <div key={row.party_id} className="flex justify-between text-sm">
+                          <span>{row.party_name}</span>
+                          <span className="font-medium text-amber-700">-{row.drop_pct}% ({row.drop_kg} kg)</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : <div className="text-sm text-gray-500">No declining trend detected.</div>}
+                </div>
+              </div>
+            </div>
+          )}
           {loading ? (
             <div className="text-center py-8 text-gray-500">Loading...</div>
           ) : parties.length === 0 ? (
@@ -215,6 +275,13 @@ const Parties = () => {
                     getSortIcon={getSortIcon} 
                   />
                   <SortableTableHead 
+                    label="FY KG Provided" 
+                    sortKey="fy_kg_provided" 
+                    onSort={requestSort} 
+                    getSortIcon={getSortIcon} 
+                    className="text-right"
+                  />
+                  <SortableTableHead 
                     label="Current FY Balance" 
                     sortKey="current_fy_balance" 
                     onSort={requestSort} 
@@ -246,6 +313,9 @@ const Parties = () => {
                           {party.mobile}
                         </a>
                       ) : '-'}
+                    </TableCell>
+                    <TableCell className="text-right font-medium text-indigo-700">
+                      {(party.fy_kg_provided || 0).toLocaleString('en-IN', { maximumFractionDigits: 3 })}
                     </TableCell>
                     <TableCell className="text-right font-medium">
                       <span className={party.current_fy_balance > 0 ? 'text-red-600' : 'text-green-600'}>

@@ -85,6 +85,11 @@ export const clientAPI = {
     return response.data;
   },
 
+  bootstrapTenant: async (clientId, data = {}) => {
+    const response = await api.post(`/clients/${clientId}/bootstrap`, data);
+    return response.data;
+  },
+
   getPlans: async () => {
     const response = await api.get('/subscription-plans');
     return response.data;
@@ -181,6 +186,23 @@ export const userProvisioningAPI = {
   
   deleteUser: async (clientId, userId) => {
     const response = await api.delete(`/clients/${clientId}/users/${userId}`);
+    return response.data;
+  },
+
+  resetPassword: async (clientId, userId, newPassword = null) => {
+    const response = await api.patch(`/clients/${clientId}/users/${userId}/reset-password`, {
+      new_password: newPassword
+    });
+    return response.data;
+  },
+
+  toggleActive: async (clientId, userId) => {
+    const response = await api.patch(`/clients/${clientId}/users/${userId}/toggle-active`);
+    return response.data;
+  },
+
+  getActivityLogs: async (params = {}) => {
+    const response = await api.get('/activity-logs', { params });
     return response.data;
   },
 };

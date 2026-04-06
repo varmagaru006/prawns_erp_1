@@ -1,0 +1,56 @@
+# Prawn ERP - Full stack (MongoDB + Backend + Frontend)
+# See DOCKER.md for step-by-step instructions.
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: prawns_erp_mongo
+    ports:
+      - "27018:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: mongo_admin_local
+    volumes:
+      - mongo_data:/data/db
+      - ./docker/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: prawns_erp_backend
+    ports:
+      - "8000:8000"
+    environment:
+      MONGO_URL: mongodb://prawn_erp_user:prawn_erp_dev_password@mongo:27017
+      DB_NAME: prawn_erp
+      SECRET_KEY: dev-secret-key-change-me
+    volumes:
+      - backend_uploads:/app/uploads
+    depends_on:
+      mongo:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        REACT_APP_BACKEND_URL: http://localhost:8000
+    container_name: prawns_erp_frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  mongo_data:
+  backend_uploads:

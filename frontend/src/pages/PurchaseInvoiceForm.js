@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { API } from '../context/AuthContext';
+import { API, BACKEND_URL } from '../context/AuthContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { toast } from 'sonner';
-import { Plus, Trash2, Save, Eye, Users } from 'lucide-react';
+import { Plus, Trash2, Save, Users, ImageUp } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 const PurchaseInvoiceForm = () => {
@@ -30,7 +30,9 @@ const PurchaseInvoiceForm = () => {
     // A5: Party fields
     party_id: '',
     party_name_text: '',
-    same_as_farmer: false
+    same_as_farmer: false,
+    weighment_slip_file_url: '',
+    weighment_slip_mime_type: ''
   });
 
   const [parties, setParties] = useState([]);
@@ -38,6 +40,8 @@ const PurchaseInvoiceForm = () => {
   const [showPartyDropdown, setShowPartyDropdown] = useState(false);
   const [showPartyCreate, setShowPartyCreate] = useState(false);
   const [newPartyName, setNewPartyName] = useState('');
+  const [weighmentUploading, setWeighmentUploading] = useState(false);
+  const weighmentFileInputRef = useRef(null);
 
   const [lineItems, setLineItems] = useState([
     { line_no: 1, variety: 'Vannamei', count_value: '', quantity_kg: 0, rate: 0, custom_variety_notes: '', custom_count_notes: '' }
@@ -131,7 +135,9 @@ const PurchaseInvoiceForm = () => {
         notes: inv.notes || '',
         party_id: inv.party_id || '',
         party_name_text: inv.party_name_text || '',
-        same_as_farmer: false
+        same_as_farmer: false,
+        weighment_slip_file_url: inv.weighment_slip_file_url || '',
+        weighment_slip_mime_type: inv.weighment_slip_mime_type || ''
       });
       if (inv.party_name_text) {
         setPartySearch(inv.party_name_text);
@@ -205,6 +211,45 @@ const PurchaseInvoiceForm = () => {
     setLineItems(newLines);
   };
 
+  const handleWeighmentFileChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast.error('Choose an image file (camera or gallery)');
+      e.target.value = '';
+      return;
+    }
+    setWeighmentUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await axios.post(`${API}/purchase-invoices/upload-weighment-slip`, fd);
+      setFormData((prev) => ({
+        ...prev,
+        weighment_slip_file_url: res.data.file_url,
+        weighment_slip_mime_type: res.data.mime_type || 'image/jpeg'
+      }));
+      toast.success(res.data.message || 'Weighment slip saved (compressed)');
+    } catch (err) {
+      const d = err.response?.data?.detail;
+      toast.error(typeof d === 'string' ? d : 'Failed to upload weighment slip');
+    } finally {
+      setWeighmentUploading(false);
+      e.target.value = '';
+    }
+  };
+
+  const clearWeighmentSlip = () => {
+    setFormData((prev) => ({
+      ...prev,
+      weighment_slip_file_url: '',
+      weighment_slip_mime_type: ''
+    }));
+    if (weighmentFileInputRef.current) {
+      weighmentFileInputRef.current.value = '';
+    }
+  };
+
   const handleSubmit = async () => {
     // Validation
     if (!formData.farmer_name) {
@@ -220,6 +265,8 @@ const PurchaseInvoiceForm = () => {
     const payload = {
       ...formData,
       farmer_mobile: formData.farmer_mobile || null,
+      weighment_slip_file_url: formData.weighment_slip_file_url || null,
+      weighment_slip_mime_type: formData.weighment_slip_mime_type || null,
       line_items: lineItems.map(line => ({
         line_no: line.line_no,
         variety: line.variety,
@@ -247,16 +294,16 @@ const PurchaseInvoiceForm = () => {
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
+      <div className="mb-6 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h1 className="text-3xl font-bold text-gray-800">
             {isEdit ? 'Edit' : 'Create'} Purchase Invoice
           </h1>
           <p className="text-gray-600">Fill in invoice details and line items</p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={() => navigate('/purchase-invoices')}>Cancel</Button>
-          <Button onClick={handleSubmit}>
+        <div className="flex w-full flex-wrap gap-2 lg:w-auto lg:justify-end">
+          <Button variant="outline" onClick={() => navigate('/purchase-invoices')} className="w-full sm:w-auto">Cancel</Button>
+          <Button onClick={handleSubmit} className="w-full sm:w-auto">
             <Save className="h-4 w-4 mr-2" />
             Save Draft
           </Button>
@@ -416,6 +463,51 @@ const PurchaseInvoiceForm = () => {
                 onChange={(e) => setFormData({ ...formData, weighment_slip_no: e.target.value })}
                 placeholder="Enter slip number"
               />
+            </div>
+
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium mb-2">Weighment slip (photo)</label>
+              <p className="text-xs text-gray-500 mb-2">
+                Attach a photo of the physical slip. The server stores it as a compressed JPEG (max edge 2048px) to save space.
+              </p>
+              <input
+                ref={weighmentFileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleWeighmentFileChange}
+              />
+              <div className="flex flex-wrap items-start gap-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={weighmentUploading}
+                  onClick={() => weighmentFileInputRef.current?.click()}
+                >
+                  <ImageUp className="h-4 w-4 mr-2" />
+                  {weighmentUploading ? 'Uploading…' : 'Upload slip image'}
+                </Button>
+                {formData.weighment_slip_file_url ? (
+                  <>
+                    <Button type="button" variant="ghost" size="sm" onClick={clearWeighmentSlip}>
+                      Remove attachment
+                    </Button>
+                    <a
+                      href={`${BACKEND_URL}${formData.weighment_slip_file_url}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block"
+                    >
+                      <img
+                        src={`${BACKEND_URL}${formData.weighment_slip_file_url}`}
+                        alt="Weighment slip preview"
+                        className="max-h-32 rounded-md border border-gray-200 object-contain bg-gray-50"
+                      />
+                    </a>
+                  </>
+                ) : null}
+              </div>
             </div>
 
             <div>

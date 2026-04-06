@@ -1,15 +1,21 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { API } from '../context/AuthContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { toast } from 'sonner';
-import { Save, Building2 } from 'lucide-react';
+import { Save, Building2, PenLine, Trash2, Upload } from 'lucide-react';
+
+const BACKEND_BASE = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
 
 const CompanySettings = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [sigUploading, setSigUploading] = useState(false);
+  const [signatureImageUrl, setSignatureImageUrl] = useState('');
+  const sigFileRef = useRef(null);
+  const sigReplaceRef = useRef(null);
   const [settings, setSettings] = useState({
     company_name: '',
     company_address_1: '',
@@ -38,10 +44,46 @@ const CompanySettings = () => {
         company_phone: config.company_phone || '',
         company_email: config.company_email || ''
       });
+      setSignatureImageUrl(config.invoice_signature_image || '');
     } catch (error) {
       toast.error('Failed to load company settings');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSignatureUpload = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setSigUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const { data } = await axios.post(`${API}/tenant-config/signature-image`, fd, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      setSignatureImageUrl(data.url || '');
+      toast.success('Signature image saved — it will appear on purchase invoice PDFs.');
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to upload signature');
+    } finally {
+      setSigUploading(false);
+    }
+  };
+
+  const handleRemoveSignature = async () => {
+    if (!signatureImageUrl) return;
+    if (!window.confirm('Remove the signature image from invoice PDFs?')) return;
+    setSigUploading(true);
+    try {
+      await axios.delete(`${API}/tenant-config/signature-image`);
+      setSignatureImageUrl('');
+      toast.success('Signature image removed');
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to remove signature');
+    } finally {
+      setSigUploading(false);
     }
   };
 
@@ -152,6 +194,66 @@ const CompanySettings = () => {
                   placeholder="Enter email address"
                 />
               </div>
+            </div>
+
+            <div className="border-t pt-6 space-y-3">
+              <div className="flex items-center gap-2">
+                <PenLine className="h-5 w-5 text-slate-600" />
+                <h3 className="text-sm font-semibold text-gray-800">Invoice signature (PDF)</h3>
+              </div>
+              <p className="text-sm text-gray-600">
+                Upload a clear scan or photo of your signature. It is printed on purchase invoice PDFs with the date and time the PDF was generated (UTC). Only Admin or Owner can change this.
+              </p>
+              {signatureImageUrl ? (
+                <div className="flex flex-wrap items-end gap-4">
+                  <div className="rounded-lg border border-slate-200 bg-white p-3 inline-block">
+                    <img
+                      src={`${BACKEND_BASE}${signatureImageUrl}`}
+                      alt="Saved signature"
+                      className="max-h-24 object-contain"
+                    />
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <input
+                      ref={sigReplaceRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/gif"
+                      className="hidden"
+                      onChange={handleSignatureUpload}
+                      disabled={sigUploading}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={sigUploading}
+                      onClick={() => sigReplaceRef.current?.click()}
+                    >
+                      <Upload className="h-4 w-4" />
+                      {sigUploading ? 'Uploading…' : 'Replace'}
+                    </Button>
+                    <Button type="button" variant="outline" size="sm" onClick={handleRemoveSignature} disabled={sigUploading}>
+                      <Trash2 className="h-4 w-4 mr-1" />
+                      Remove
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <input
+                    ref={sigFileRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/gif"
+                    className="hidden"
+                    onChange={handleSignatureUpload}
+                    disabled={sigUploading}
+                  />
+                  <Button type="button" variant="outline" disabled={sigUploading} onClick={() => sigFileRef.current?.click()}>
+                    <Upload className="h-4 w-4" />
+                    {sigUploading ? 'Uploading…' : 'Upload signature image'}
+                  </Button>
+                </div>
+              )}
             </div>
 
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">

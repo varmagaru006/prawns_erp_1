@@ -63,10 +63,10 @@ export default function Dashboard() {
         duration_mins: 60
       });
       
-      // Store the impersonation token and redirect to client ERP
-      // The client ERP is at the same origin, just at root path
-      const clientErpUrl = window.location.origin;
-      const redirectUrl = `${clientErpUrl}/login?impersonation_token=${result.token}`;
+      // Redirect to the client-specific UI URL if configured.
+      const clientErpUrl = (client.client_ui_url || '').trim() || window.location.origin;
+      const tenantParam = encodeURIComponent(client.tenant_id || '');
+      const redirectUrl = `${clientErpUrl}/login?impersonation_token=${encodeURIComponent(result.token)}&tenant_id=${tenantParam}`;
       
       // Open in new tab
       window.open(redirectUrl, '_blank');

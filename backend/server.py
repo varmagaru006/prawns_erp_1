@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, UploadFile, File, Form, Request
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, UploadFile, File, Form, Request, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -23,28 +23,103 @@ from reportlab.lib.units import inch
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 import io
 from enum import Enum
+import asyncio
+import time
+import json
+import hmac
+import base64
+import hashlib
+import re
 
 # Multi-tenant services
 from services.multi_tenant import tenant_context, FeatureFlagService, tenant_middleware
 
 # Super Admin module (integrated tenant management) - follows the 3-Feature Upgrade Guide
-from super_admin import super_admin_router, set_database as set_super_admin_db, create_indexes as create_super_admin_indexes
+from super_admin import super_admin_router, set_database as set_super_admin_db, set_feature_service as set_super_admin_feature_service, create_indexes as create_super_admin_indexes
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# MongoDB connection
+# MongoDB connection (Atlas TLS: use certifi CA bundle — avoids SSL handshake errors on macOS)
+from mongo_utils import motor_client_kwargs
+
 mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+client = AsyncIOMotorClient(mongo_url, **motor_client_kwargs(mongo_url))
+DEFAULT_DB_NAME = os.environ['DB_NAME']
+SUPER_ADMIN_DB_NAME = os.environ.get("SUPER_ADMIN_DB_NAME", "prawn_erp_super_admin")
+ENABLE_MULTI_DB_ROUTING = os.environ.get("ENABLE_MULTI_DB_ROUTING", "false").lower() in ("1", "true", "yes", "on")
+
+
+def _derive_tenant_db_name(tenant_id: str) -> str:
+    safe = "".join(ch for ch in str(tenant_id or "") if ch.isalnum() or ch in ("_", "-")).strip()
+    if not safe:
+        return DEFAULT_DB_NAME
+    if safe in ("default", "cli_001"):
+        # Backward compatibility for existing primary tenant data.
+        return DEFAULT_DB_NAME
+    return f"prawn_erp_{safe}"
+
+
+class TenantAwareDatabase:
+    """
+    Routes db.collection operations to tenant-specific Mongo databases.
+    Existing handlers can continue using `db.<collection>` without code changes.
+    """
+    def __init__(self, mongo_client, default_db_name: str):
+        self._client = mongo_client
+        self._default_db_name = default_db_name
+
+    def _active_db_name(self) -> str:
+        if not ENABLE_MULTI_DB_ROUTING:
+            return self._default_db_name
+        try:
+            tenant_id = tenant_context.get_tenant()
+        except Exception:
+            tenant_id = None
+        if not tenant_id:
+            return self._default_db_name
+        return _derive_tenant_db_name(tenant_id)
+
+    def _active_db(self):
+        return self._client[self._active_db_name()]
+
+    def __getattr__(self, item):
+        return getattr(self._active_db(), item)
+
+    def __getitem__(self, item):
+        return self._active_db()[item]
+
+
+db = TenantAwareDatabase(client, DEFAULT_DB_NAME)
 
 # Feature Flag Service
 feature_service = FeatureFlagService(db)
+
+# Cache resolved tenant DB for cross-tenant login fallback (best-effort, in-memory)
+_LOGIN_TENANT_CACHE_TTL_SEC = 300
+_login_tenant_cache: Dict[str, Dict[str, Any]] = {}
 
 # Security
 SECRET_KEY = os.environ.get('SECRET_KEY', 'your-secret-key-change-in-production')
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 480
+
+
+def _decode_jwt_with_known_keys(token: str) -> dict:
+    """Decode JWT using supported keys for compatibility across services."""
+    keys_to_try = [SECRET_KEY, os.environ.get("JWT_SECRET_KEY")]
+    last_error = None
+    for key in keys_to_try:
+        if not key:
+            continue
+        try:
+            return jwt.decode(token, key, algorithms=[ALGORITHM])
+        except Exception as e:
+            last_error = e
+            continue
+    if last_error:
+        raise last_error
+    raise HTTPException(status_code=401, detail="Invalid authentication credentials")
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
@@ -59,17 +134,43 @@ api_router = APIRouter(prefix="/api")
 # Mount uploads directory for static file serving
 app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
-# CORS Middleware
+# CORS — `allow_origins=["*"]` with `allow_credentials=True` is invalid for browsers on
+# credentialed requests (e.g. Authorization). Dev servers also hop ports (3000 vs 3001).
+_cors_extra = [
+    o.strip()
+    for o in os.environ.get("CORS_ORIGINS", "").split(",")
+    if o.strip()
+]
+_cors_regex = os.environ.get(
+    "CORS_ALLOW_ORIGIN_REGEX",
+    r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3})(:\d+)?$",
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_extra,
+    allow_origin_regex=_cors_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 # Multi-Tenant Middleware
 app.middleware("http")(tenant_middleware)
+
+
+def _safe_parse_datetime(value):
+    """
+    Best-effort datetime parser for documents that may contain ISO strings, None,
+    or legacy/invalid values. Returns the original value if parsing fails.
+    This prevents 500s when listing resources like agents or dashboard lots.
+    """
+    if not value or not isinstance(value, str):
+        return value
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return value
 
 # Enums
 class UserRole(str, Enum):
@@ -184,6 +285,9 @@ class Token(BaseModel):
     access_token: str
     token_type: str
     user: User
+    features: Optional[Dict[str, bool]] = None
+    tenant_id: Optional[str] = None
+    lot_number_prefix: Optional[str] = None
 
 class Agent(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -712,6 +816,8 @@ class PurchaseInvoice(BaseModel):
     farmer_location: Optional[str] = None
     agent_ref_name: Optional[str] = None
     weighment_slip_no: Optional[str] = None
+    weighment_slip_file_url: Optional[str] = None  # e.g. /uploads/weighment_slip_*.jpg (compressed JPEG)
+    weighment_slip_mime_type: Optional[str] = None
     
     # Custom fields
     custom_field_1_label: Optional[str] = None
@@ -763,6 +869,8 @@ class PurchaseInvoiceCreate(BaseModel):
     farmer_location: Optional[str] = None
     agent_ref_name: Optional[str] = None
     weighment_slip_no: Optional[str] = None
+    weighment_slip_file_url: Optional[str] = None
+    weighment_slip_mime_type: Optional[str] = None
     custom_field_1_label: Optional[str] = None
     custom_field_1_value: Optional[str] = None
     custom_field_2_label: Optional[str] = None
@@ -775,6 +883,10 @@ class PurchaseInvoiceCreate(BaseModel):
     party_id: Optional[str] = None
     party_name_text: Optional[str] = None
     same_as_farmer: bool = False
+
+
+class PushInvoiceRequest(BaseModel):
+    apply_digital_signature: bool = False
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -932,6 +1044,82 @@ def get_fy_date_range(fy: str) -> tuple:
     return (date(start_year, 4, 1), date(end_year, 3, 31))
 
 
+def get_previous_fy(fy: str) -> str:
+    parts = fy.split("-")
+    if len(parts) != 2:
+        raise ValueError(f"Invalid FY format: {fy}")
+    start_year = int(parts[0])
+    prev_start = (start_year - 1) % 100
+    prev_end = start_year % 100
+    return f"{prev_start:02d}-{prev_end:02d}"
+
+
+def get_next_fy(fy: str) -> str:
+    parts = fy.split("-")
+    if len(parts) != 2:
+        raise ValueError(f"Invalid FY format: {fy}")
+    start_year = int(parts[0])
+    next_start = (start_year + 1) % 100
+    next_end = (next_start + 1) % 100
+    return f"{next_start:02d}-{next_end:02d}"
+
+
+async def _get_carry_forward_opening_balance(party_id: str, fy: str) -> float:
+    """Carry opening from previous FY closing balance when available."""
+    try:
+        prev_fy = get_previous_fy(fy)
+    except Exception:
+        return 0.0
+    prev_ledger = await db.party_ledger_accounts.find_one(
+        {"party_id": party_id, "financial_year": prev_fy},
+        {"_id": 0, "closing_balance": 1},
+    )
+    return float((prev_ledger or {}).get("closing_balance") or 0.0)
+
+
+async def _create_party_ledger_for_fy(
+    party_id: str,
+    fy: str,
+    created_by: Optional[str] = None,
+    opening_balance: Optional[float] = None,
+    opening_entry_date: Optional[date] = None,
+) -> dict:
+    if opening_balance is None:
+        opening_balance = await _get_carry_forward_opening_balance(party_id, fy)
+    opening_balance = float(opening_balance or 0.0)
+    now_utc = datetime.now(timezone.utc)
+    ledger = {
+        "id": str(uuid.uuid4()),
+        "party_id": party_id,
+        "financial_year": fy,
+        "opening_balance": opening_balance,
+        "closing_balance": opening_balance,
+        "total_billed": 0.0,
+        "total_tds": 0.0,
+        "total_payments": 0.0,
+        "is_locked": False,
+        "created_at": now_utc,
+        "updated_at": now_utc,
+    }
+    await db.party_ledger_accounts.insert_one(ledger)
+
+    dt = opening_entry_date or date.today()
+    opening_entry = {
+        "id": str(uuid.uuid4()),
+        "ledger_id": ledger["id"],
+        "party_id": party_id,
+        "entry_date": dt.isoformat() if hasattr(dt, "isoformat") else str(dt),
+        "entry_type": "opening",
+        "entry_order": 0,
+        "description": f"Opening Balance FY {fy}",
+        "balance_after": opening_balance,
+        "created_at": now_utc,
+        "created_by": created_by or "system",
+    }
+    await db.party_ledger_entries.insert_one(opening_entry)
+    return ledger
+
+
 # Helper functions
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
@@ -942,7 +1130,8 @@ def get_password_hash(password: str) -> str:
 def create_access_token(data: dict) -> str:
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
+    # Integer exp is the most compatible across PyJWT versions and decoders
+    to_encode.update({"exp": int(expire.timestamp())})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
@@ -1140,9 +1329,19 @@ class WastageBreachAlert(BaseModel):
 
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> User:
+    _t0 = time.perf_counter()
+    _m: Dict[str, Any] = {
+        "token_decode_ms": 0,
+        "session_lookup_ms": 0,
+        "user_lookup_ms": 0,
+        "regex_fallback_used": False,
+        "impersonation": False,
+    }
     try:
         token = credentials.credentials
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        _t_decode = time.perf_counter()
+        payload = _decode_jwt_with_known_keys(token)
+        _m["token_decode_ms"] = round((time.perf_counter() - _t_decode) * 1000, 1)
         email: str = payload.get("sub")
         token_type: str = payload.get("type", "regular")
         is_impersonation: bool = payload.get("is_impersonation", False)
@@ -1152,6 +1351,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         
         # Handle impersonation tokens (check both formats)
         if token_type == "impersonation" or is_impersonation:
+            _m["impersonation"] = True
             # Validate impersonation session
             session_id = payload.get("session_id")
             tenant_id = payload.get("tenant_id")
@@ -1160,10 +1360,12 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
             
             # Check if session is still valid in MongoDB
             # Check in local DB first, then in super-admin DB collection
+            _t_session = time.perf_counter()
             session = await db.impersonation_tokens.find_one({
                 "session_id": session_id,
                 "tenant_id": tenant_id
             })
+            _m["session_lookup_ms"] = round((time.perf_counter() - _t_session) * 1000, 1)
             
             # If not found locally, the session might be valid from super-admin
             # We trust the JWT token if it's not expired
@@ -1173,7 +1375,9 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
                 pass  # Allow impersonation to proceed
             
             # Find the user being impersonated
+            _t_user = time.perf_counter()
             user_doc = await db.users.find_one({"email": email, "tenant_id": tenant_id}, {"_id": 0})
+            _m["user_lookup_ms"] = round((time.perf_counter() - _t_user) * 1000, 1)
             
             if user_doc is None:
                 # If user doesn't exist, create a temporary admin user object
@@ -1197,7 +1401,8 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
             
             if isinstance(user_doc.get('created_at'), str):
                 user_doc['created_at'] = datetime.fromisoformat(user_doc['created_at'])
-            
+            _m["total_ms"] = round((time.perf_counter() - _t0) * 1000, 1)
+            logger.debug("get_current_user metrics email=%s metrics=%s", email, _m)
             return User(**user_doc)
             
     except jwt.ExpiredSignatureError:
@@ -1206,14 +1411,49 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         raise HTTPException(status_code=401, detail="Invalid authentication credentials")
     
     # Regular token flow
-    user_doc = await db.users.find_one({"email": email}, {"_id": 0})
+    email_lookup = (email or "").strip().lower()
+    _t_user = time.perf_counter()
+    user_doc = await db.users.find_one({"email": email_lookup}, {"_id": 0})
+    if not user_doc:
+        _m["regex_fallback_used"] = True
+        user_doc = await db.users.find_one(
+            {"email": {"$regex": f"^{re.escape((email or '').strip())}$", "$options": "i"}},
+            {"_id": 0},
+        )
+    _m["user_lookup_ms"] = round((time.perf_counter() - _t_user) * 1000, 1)
     if user_doc is None:
+        _m["total_ms"] = round((time.perf_counter() - _t0) * 1000, 1)
+        logger.debug("get_current_user metrics email=%s metrics=%s", email_lookup, _m)
         raise HTTPException(status_code=401, detail="User not found")
+    if user_doc.get("is_active") is False:
+        raise HTTPException(status_code=403, detail="Account is disabled")
+
+    # Force logout if password/session version changed after token issue.
+    token_pwd_ts = _normalize_pwd_timestamp(payload.get("pwd_ts"))
+    current_pwd_ts_raw = user_doc.get("password_changed_at") or user_doc.get("updated_at") or user_doc.get("created_at")
+    current_pwd_ts = _normalize_pwd_timestamp(current_pwd_ts_raw)
+    if token_pwd_ts and current_pwd_ts and token_pwd_ts != current_pwd_ts:
+        raise HTTPException(status_code=401, detail="Session expired. Please login again.")
     
     if isinstance(user_doc.get('created_at'), str):
         user_doc['created_at'] = datetime.fromisoformat(user_doc['created_at'])
-    
-    return User(**user_doc)
+    # Same defensiveness as login() for legacy / migrated user documents
+    if not user_doc.get('name') or str(user_doc.get('name')).strip() == "":
+        user_doc['name'] = (user_doc.get('email') or email_lookup or "user").split("@")[0] or "User"
+    role_raw = user_doc.get('role', UserRole.worker.value)
+    if isinstance(role_raw, str):
+        try:
+            user_doc['role'] = UserRole(role_raw)
+        except ValueError:
+            user_doc['role'] = UserRole.worker
+    try:
+        _m["total_ms"] = round((time.perf_counter() - _t0) * 1000, 1)
+        logger.debug("get_current_user metrics email=%s metrics=%s", email_lookup, _m)
+        return User(**{k: v for k, v in user_doc.items() if k not in ('password', 'password_hash')})
+    except Exception:
+        _m["total_ms"] = round((time.perf_counter() - _t0) * 1000, 1)
+        logger.debug("get_current_user metrics email=%s metrics=%s", email_lookup, _m)
+        raise HTTPException(status_code=401, detail="Invalid user profile")
 
 def generate_lot_number() -> str:
     """Generate unique lot number with configurable prefix per tenant"""
@@ -1572,9 +1812,45 @@ def calculate_invoice_totals(line_items: List[PurchaseInvoiceLineCreate], tds_ra
         "grand_total": grand_total
     }
 
-def amount_to_words_indian(amount: float) -> str:
+
+def _pdf_safe_float(value: Any, default: float = 0.0) -> float:
+    """Coerce DB/JSON values to float for ReportLab formatting (None, '', strings with commas)."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        s = str(value).strip().replace(",", "")
+        if s == "":
+            return default
+        return float(s)
+    except (ValueError, TypeError):
+        return default
+
+
+def _normalize_pwd_timestamp(value: Any) -> str:
+    """Normalize password/session timestamp for stable JWT comparison."""
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned:
+            return ""
+        try:
+            # Canonicalize equivalent variants like " " vs "T".
+            return datetime.fromisoformat(cleaned).isoformat()
+        except Exception:
+            return cleaned
+    return str(value)
+
+
+def amount_to_words_indian(amount: Any) -> str:
     """Convert amount to Indian rupee words (Lakh/Crore system)"""
-    amount = int(amount)
+    amount = int(round(_pdf_safe_float(amount, 0.0)))
     
     if amount == 0:
         return "Zero Rupees Only"
@@ -1756,13 +2032,19 @@ def generate_wage_bill_pdf(bill: WageBill) -> bytes:
 # Auth endpoints
 @api_router.post("/auth/register", response_model=User)
 async def register(user_data: UserCreate):
-    existing = await db.users.find_one({"email": user_data.email}, {"_id": 0})
+    email_reg = user_data.email.strip().lower()
+    existing = await db.users.find_one({"email": email_reg}, {"_id": 0})
+    if not existing:
+        existing = await db.users.find_one(
+            {"email": {"$regex": f"^{re.escape(user_data.email.strip())}$", "$options": "i"}},
+            {"_id": 0},
+        )
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     
     hashed_password = get_password_hash(user_data.password)
     user = User(
-        email=user_data.email,
+        email=email_reg,
         name=user_data.name,
         role=user_data.role,
         phone=user_data.phone
@@ -1777,32 +2059,220 @@ async def register(user_data: UserCreate):
 
 @api_router.post("/auth/login", response_model=Token)
 async def login(credentials: UserLogin):
-    user_doc = await db.users.find_one({"email": credentials.email}, {"_id": 0})
+    _t0 = time.perf_counter()
+    _metrics: Dict[str, Any] = {
+        "tenant_hint": None,
+        "shared_lookup_ms": 0,
+        "cache_lookup_ms": 0,
+        "hinted_tenant_lookup_ms": 0,
+        "full_scan_ms": 0,
+        "full_scan_tenants_checked": 0,
+        "password_verify_ms": 0,
+        "feature_flags_ms": 0,
+        "cross_tenant_cache_hit": False,
+        "fallback_used": False,
+    }
+    email_key = credentials.email.strip().lower()
+    try:
+        hinted_tenant_id = tenant_context.get_tenant()
+    except Exception:
+        hinted_tenant_id = None
+    _metrics["tenant_hint"] = hinted_tenant_id
+
+    user_doc = None
+    # Prefer tenant-scoped lookup first to avoid cross-tenant collisions
+    # when the same email exists in multiple client tenants.
+    _t_shared = time.perf_counter()
+    if hinted_tenant_id:
+        user_doc = await db.users.find_one({"email": email_key, "tenant_id": hinted_tenant_id}, {"_id": 0})
+        if not user_doc:
+            user_doc = await db.users.find_one(
+                {
+                    "tenant_id": hinted_tenant_id,
+                    "email": {"$regex": f"^{re.escape(credentials.email.strip())}$", "$options": "i"},
+                },
+                {"_id": 0},
+            )
     if not user_doc:
+        user_doc = await db.users.find_one({"email": email_key}, {"_id": 0})
+    if not user_doc:
+        # Legacy rows may use different email casing
+        user_doc = await db.users.find_one(
+            {"email": {"$regex": f"^{re.escape(credentials.email.strip())}$", "$options": "i"}},
+            {"_id": 0},
+        )
+    _metrics["shared_lookup_ms"] = round((time.perf_counter() - _t_shared) * 1000, 1)
+    if not user_doc and ENABLE_MULTI_DB_ROUTING:
+        # Fast path: use cached tenant resolution for this email if available.
+        _t_cache = time.perf_counter()
+        cached = _login_tenant_cache.get(email_key)
+        if cached and cached.get("expires_at", 0) > time.time():
+            try:
+                tid = cached.get("tenant_id")
+                db_name = cached.get("db_name")
+                if db_name:
+                    tdb = client[db_name]
+                    user_doc = await tdb.users.find_one({"email": email_key}, {"_id": 0})
+                    if not user_doc:
+                        user_doc = await tdb.users.find_one(
+                            {"email": {"$regex": f"^{re.escape(credentials.email.strip())}$", "$options": "i"}},
+                            {"_id": 0},
+                        )
+                    if user_doc and tid:
+                        _metrics["cross_tenant_cache_hit"] = True
+                        if not user_doc.get("tenant_id"):
+                            user_doc["tenant_id"] = tid
+                        tenant_context.set_tenant(tid, "PRW")
+            except Exception as e:
+                logger.debug("Cached cross-tenant login lookup miss for %s: %s", email_key, e)
+                _login_tenant_cache.pop(email_key, None)
+        _metrics["cache_lookup_ms"] = round((time.perf_counter() - _t_cache) * 1000, 1)
+    if not user_doc and ENABLE_MULTI_DB_ROUTING:
+        # Fallback: search other tenant databases (for DB-per-tenant clients) using super-admin client mappings.
+        _metrics["fallback_used"] = True
+        try:
+            email_regex = {"$regex": f"^{re.escape(credentials.email.strip())}$", "$options": "i"}
+            clients_coll = client[SUPER_ADMIN_DB_NAME].clients
+
+            # First try hinted tenant only (cheap and usually correct).
+            hinted_checked = False
+            if hinted_tenant_id:
+                _t_hinted = time.perf_counter()
+                hinted_checked = True
+                hinted_doc = await clients_coll.find_one(
+                    {"tenant_id": hinted_tenant_id},
+                    {"_id": 0, "tenant_id": 1, "client_db_name": 1},
+                )
+                if hinted_doc:
+                    tid = hinted_doc.get("tenant_id")
+                    db_name = hinted_doc.get("client_db_name") or _derive_tenant_db_name(tid)
+                    if db_name and db_name != DEFAULT_DB_NAME:
+                        tdb = client[db_name]
+                        cand = await tdb.users.find_one({"email": email_key}, {"_id": 0})
+                        if not cand:
+                            cand = await tdb.users.find_one({"email": email_regex}, {"_id": 0})
+                        if cand:
+                            if not cand.get("tenant_id"):
+                                cand["tenant_id"] = tid
+                            user_doc = cand
+                            if tid:
+                                tenant_context.set_tenant(tid, "PRW")
+                                _login_tenant_cache[email_key] = {
+                                    "tenant_id": tid,
+                                    "db_name": db_name,
+                                    "expires_at": time.time() + _LOGIN_TENANT_CACHE_TTL_SEC,
+                                }
+                _metrics["hinted_tenant_lookup_ms"] = round((time.perf_counter() - _t_hinted) * 1000, 1)
+
+            if not user_doc:
+                _t_scan = time.perf_counter()
+                clients_query = {} if not hinted_checked else {"tenant_id": {"$ne": hinted_tenant_id}}
+                clients_rows = await clients_coll.find(
+                    clients_query,
+                    {"_id": 0, "tenant_id": 1, "client_db_name": 1},
+                ).to_list(2000)
+
+                for cdoc in clients_rows:
+                    _metrics["full_scan_tenants_checked"] += 1
+                    tid = cdoc.get("tenant_id")
+                    db_name = cdoc.get("client_db_name") or _derive_tenant_db_name(tid)
+                    if not db_name or db_name == DEFAULT_DB_NAME:
+                        continue
+                    tdb = client[db_name]
+                    cand = await tdb.users.find_one({"email": email_key}, {"_id": 0})
+                    if not cand:
+                        cand = await tdb.users.find_one({"email": email_regex}, {"_id": 0})
+                    if cand:
+                        if not cand.get("tenant_id"):
+                            cand["tenant_id"] = tid
+                        user_doc = cand
+                        # Ensure request-local routing now points to the resolved tenant DB.
+                        if tid:
+                            tenant_context.set_tenant(tid, "PRW")
+                            _login_tenant_cache[email_key] = {
+                                "tenant_id": tid,
+                                "db_name": db_name,
+                                "expires_at": time.time() + _LOGIN_TENANT_CACHE_TTL_SEC,
+                            }
+                        break
+                _metrics["full_scan_ms"] = round((time.perf_counter() - _t_scan) * 1000, 1)
+        except Exception as e:
+            logger.warning("Cross-tenant login lookup failed for %s: %s", email_key, e)
+    if not user_doc:
+        _metrics["total_ms"] = round((time.perf_counter() - _t0) * 1000, 1)
+        logger.info("login failed metrics email=%s metrics=%s", email_key, _metrics)
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    
+
     # Support both 'password' and 'password_hash' fields for compatibility
+    _t_pwd = time.perf_counter()
     stored_password = user_doc.get('password') or user_doc.get('password_hash')
     if not stored_password or not verify_password(credentials.password, stored_password):
+        _metrics["password_verify_ms"] = round((time.perf_counter() - _t_pwd) * 1000, 1)
+        _metrics["total_ms"] = round((time.perf_counter() - _t0) * 1000, 1)
+        logger.info("login failed metrics email=%s metrics=%s", email_key, _metrics)
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    
+    _metrics["password_verify_ms"] = round((time.perf_counter() - _t_pwd) * 1000, 1)
+
+    if user_doc.get("is_active") is False:
+        raise HTTPException(status_code=403, detail="Account is disabled")
+
     if isinstance(user_doc.get('created_at'), str):
         user_doc['created_at'] = datetime.fromisoformat(user_doc['created_at'])
-    
+
     # Remove both password fields before creating user object
     user_data = {k: v for k, v in user_doc.items() if k not in ['password', 'password_hash']}
-    user = User(**user_data)
-    
+    # Defensive defaults for migrated / partial user documents
+    if not user_data.get('name') or str(user_data.get('name')).strip() == "":
+        user_data['name'] = (user_data.get('email') or email_key or "user").split("@")[0] or "User"
+    role_raw = user_data.get('role', UserRole.worker.value)
+    if isinstance(role_raw, str):
+        try:
+            user_data['role'] = UserRole(role_raw)
+        except ValueError:
+            user_data['role'] = UserRole.worker
+
+    try:
+        user = User(**user_data)
+    except Exception as e:
+        logger.warning("Login: invalid user profile for %s: %s", email_key, e)
+        raise HTTPException(
+            status_code=500,
+            detail="User account data is invalid. Ask an administrator to fix the user record.",
+        )
+
     # Include tenant_id in JWT token for proper multi-tenant support
     tenant_id = user_doc.get('tenant_id', 'cli_001')
-    access_token = create_access_token(data={"sub": user.email, "tenant_id": tenant_id})
-    
-    return Token(access_token=access_token, token_type="bearer", user=user)
+    pwd_ts = user_doc.get("password_changed_at") or user_doc.get("updated_at") or user_doc.get("created_at")
+    access_token = create_access_token(
+        data={"sub": str(user.email), "tenant_id": tenant_id, "pwd_ts": _normalize_pwd_timestamp(pwd_ts)}
+    )
+    # Return features in login response so client can skip /auth/me (faster load)
+    _t_flags = time.perf_counter()
+    try:
+        features = await feature_service.get_all_flags(tenant_id)
+    except Exception as e:
+        logger.warning("get_all_flags failed during login for tenant %s: %s", tenant_id, e)
+        features = {}
+    _metrics["feature_flags_ms"] = round((time.perf_counter() - _t_flags) * 1000, 1)
+    _metrics["resolved_tenant"] = tenant_id
+    _metrics["total_ms"] = round((time.perf_counter() - _t0) * 1000, 1)
+    logger.info("login success metrics email=%s metrics=%s", email_key, _metrics)
+    return Token(
+        access_token=access_token,
+        token_type="bearer",
+        user=user,
+        features=features,
+        tenant_id=tenant_id,
+        lot_number_prefix="PRW"
+    )
 
 @api_router.get("/auth/me")
 async def get_me(current_user: User = Depends(get_current_user)):
     # Add tenant info and feature flags to user response
-    tenant_id = tenant_context.get_tenant()
+    try:
+        tenant_id = tenant_context.get_tenant()
+    except Exception:
+        tenant_id = getattr(current_user, "tenant_id", None) or "cli_001"
     features = await feature_service.get_all_flags(tenant_id)
     
     response = {
@@ -1824,18 +2294,20 @@ async def get_me(current_user: User = Depends(get_current_user)):
 
 @api_router.get("/public-config")
 async def get_public_config():
-    """Get public branding/config for the client ERP (no auth required)"""
-    tenant_id = tenant_context.get_tenant()
-    
-    # Fetch all branding-related configs from tenant_config
+    """Get public branding/config for the client ERP (no auth required). Cached 5 min."""
+    try:
+        tenant_id = tenant_context.get_tenant()
+    except Exception:
+        tenant_id = "default"
+    cache_key = f"public_config:{tenant_id}"
+    cached = _cache_get(cache_key, ttl_sec=300)
+    if cached is not None:
+        return cached
     config_keys = ["company_name", "sidebar_label", "primary_color", "login_bg_color", "logo_url", "favicon_url"]
-    
     config_values = {}
     async for doc in db.tenant_config.find({"key": {"$in": config_keys}}, {"_id": 0}):
         config_values[doc["key"]] = doc.get("value", "")
-    
-    # Return with defaults for missing values
-    return {
+    out = {
         "company_name": config_values.get("company_name") or "Prawn ERP",
         "sidebar_label": config_values.get("sidebar_label") or config_values.get("company_name") or "Prawn ERP",
         "primary_color": config_values.get("primary_color") or "#1e40af",
@@ -1843,6 +2315,8 @@ async def get_public_config():
         "logo_url": config_values.get("logo_url") or "",
         "favicon_url": config_values.get("favicon_url") or ""
     }
+    _cache_set(cache_key, out, ttl_sec=300)
+    return out
 
 @api_router.post("/auth/impersonation/validate")
 async def validate_impersonation(token: str):
@@ -1888,15 +2362,35 @@ async def create_agent(agent_data: AgentCreate, current_user: User = Depends(get
     agent_dict['created_at'] = agent_dict['created_at'].isoformat()
     
     await db.agents.insert_one(agent_dict)
+    _invalidate_agents_cache()
     await create_audit_log(current_user.id, "CREATE_AGENT", "procurement", {"agent_id": agent.id})
     return agent
 
+def _invalidate_agents_cache():
+    try:
+        tid = tenant_context.get_tenant()
+        _response_cache.pop(f"agents_list:{tid}", None)
+    except Exception:
+        pass
+
+
 @api_router.get("/agents", response_model=List[Agent])
 async def get_agents(current_user: User = Depends(get_current_user)):
+    try:
+        tid = tenant_context.get_tenant()
+    except Exception:
+        tid = "default"
+    cache_key = f"agents_list:{tid}"
+    cached = _cache_get(cache_key, ttl_sec=30)
+    if cached is not None:
+        return cached
     agents = await db.agents.find({}, {"_id": 0}).to_list(1000)
     for agent in agents:
-        if isinstance(agent.get('created_at'), str):
-            agent['created_at'] = datetime.fromisoformat(agent['created_at'])
+        created_at = agent.get("created_at")
+        parsed = _safe_parse_datetime(created_at)
+        if parsed is not None:
+            agent["created_at"] = parsed
+    _cache_set(cache_key, agents, ttl_sec=30)
     return agents
 
 @api_router.get("/agents/{agent_id}", response_model=Agent)
@@ -1904,8 +2398,10 @@ async def get_agent(agent_id: str, current_user: User = Depends(get_current_user
     agent = await db.agents.find_one({"id": agent_id}, {"_id": 0})
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
-    if isinstance(agent.get('created_at'), str):
-        agent['created_at'] = datetime.fromisoformat(agent['created_at'])
+    created_at = agent.get("created_at")
+    parsed = _safe_parse_datetime(created_at)
+    if parsed is not None:
+        agent["created_at"] = parsed
     return Agent(**agent)
 
 # Procurement endpoints
@@ -1954,8 +2450,8 @@ async def create_procurement_lot(lot_data: ProcurementLotCreate, current_user: U
     lot_dict['arrival_time'] = lot_dict['arrival_time'].isoformat()
     
     await db.procurement_lots.insert_one(lot_dict)
+    _invalidate_procurement_lots_cache()
     await create_audit_log(current_user.id, "CREATE_LOT", "procurement", {"lot_id": lot.id})
-    
     # Auto-create gate_ice wastage record
     if lot.gross_weight_kg > 0:
         await create_wastage_record(
@@ -1972,8 +2468,24 @@ async def create_procurement_lot(lot_data: ProcurementLotCreate, current_user: U
     
     return lot
 
+def _invalidate_procurement_lots_cache():
+    try:
+        tid = tenant_context.get_tenant()
+        _response_cache.pop(f"procurement_lots:{tid}", None)
+    except Exception:
+        pass
+
+
 @api_router.get("/procurement/lots", response_model=List[ProcurementLot])
 async def get_procurement_lots(current_user: User = Depends(get_current_user)):
+    try:
+        tid = tenant_context.get_tenant()
+    except Exception:
+        tid = "default"
+    cache_key = f"procurement_lots:{tid}"
+    cached = _cache_get(cache_key, ttl_sec=30)
+    if cached is not None:
+        return cached
     lots = await db.procurement_lots.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
     for lot in lots:
         if isinstance(lot.get('created_at'), str):
@@ -1983,7 +2495,81 @@ async def get_procurement_lots(current_user: User = Depends(get_current_user)):
         for payment in lot.get('payments', []):
             if isinstance(payment.get('payment_date'), str):
                 payment['payment_date'] = datetime.fromisoformat(payment['payment_date'])
+    _cache_set(cache_key, lots, ttl_sec=30)
     return lots
+
+
+@api_router.get("/procurement/lots/agent-wise-count")
+async def procurement_lots_agent_wise_count(
+    limit: int = 10,
+    current_user: User = Depends(get_current_user),
+):
+    """Return number of procurement lots grouped by agent."""
+    limit = max(1, min(int(limit), 100))
+    rows = await db.procurement_lots.aggregate([
+        {
+            "$group": {
+                "_id": {"agent_id": "$agent_id", "agent_name": "$agent_name"},
+                "lot_count": {"$sum": 1},
+            }
+        },
+        {"$sort": {"lot_count": -1}},
+        {"$limit": limit},
+        {
+            "$project": {
+                "_id": 0,
+                "agent_id": "$_id.agent_id",
+                "agent_name": "$_id.agent_name",
+                "lot_count": 1,
+            }
+        },
+    ]).to_list(limit)
+    return rows
+
+
+@api_router.get("/procurement/lots/party-wise-count")
+async def procurement_lots_party_wise_count(
+    limit: int = 10,
+    current_user: User = Depends(get_current_user),
+):
+    """Return number of procurement lots grouped by party (via purchase invoice)."""
+    limit = max(1, min(int(limit), 100))
+    rows = await db.procurement_lots.aggregate([
+        {
+            "$match": {
+                "purchase_invoice_id": {"$exists": True, "$ne": None, "$ne": ""},
+            }
+        },
+        {
+            "$lookup": {
+                "from": "purchase_invoices",
+                "localField": "purchase_invoice_id",
+                "foreignField": "id",
+                "as": "invoice",
+            }
+        },
+        {"$unwind": {"path": "$invoice", "preserveNullAndEmptyArrays": False}},
+        {
+            "$group": {
+                "_id": {
+                    "party_id": {"$ifNull": ["$invoice.party_id", ""]},
+                    "party_name_text": {"$ifNull": ["$invoice.party_name_text", "Unknown"]},
+                },
+                "lot_count": {"$sum": 1},
+            }
+        },
+        {"$sort": {"lot_count": -1}},
+        {"$limit": limit},
+        {
+            "$project": {
+                "_id": 0,
+                "party_id": "$_id.party_id",
+                "party_name_text": "$_id.party_name_text",
+                "lot_count": 1,
+            }
+        },
+    ]).to_list(limit)
+    return rows
 
 @api_router.get("/procurement/lots/{lot_id}", response_model=ProcurementLot)
 async def get_procurement_lot(lot_id: str, current_user: User = Depends(get_current_user)):
@@ -2174,11 +2760,28 @@ async def create_finished_good(fg_data: FinishedGoodCreate, current_user: User =
         fg_dict['expiry_date'] = fg_dict['expiry_date'].isoformat()
     
     await db.finished_goods.insert_one(fg_dict)
+    _invalidate_finished_goods_cache()
     await create_audit_log(current_user.id, "CREATE_FINISHED_GOOD", "production", {"fg_id": fg.id})
     return fg
 
+def _invalidate_finished_goods_cache():
+    try:
+        tid = tenant_context.get_tenant()
+        _response_cache.pop(f"finished_goods:{tid}", None)
+    except Exception:
+        pass
+
+
 @api_router.get("/finished-goods", response_model=List[FinishedGood])
 async def get_finished_goods(current_user: User = Depends(get_current_user)):
+    try:
+        tid = tenant_context.get_tenant()
+    except Exception:
+        tid = "default"
+    cache_key = f"finished_goods:{tid}"
+    cached = _cache_get(cache_key, ttl_sec=30)
+    if cached is not None:
+        return cached
     fgs = await db.finished_goods.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
     for fg in fgs:
         if isinstance(fg.get('created_at'), str):
@@ -2187,6 +2790,7 @@ async def get_finished_goods(current_user: User = Depends(get_current_user)):
             fg['manufactured_date'] = datetime.fromisoformat(fg['manufactured_date'])
         if fg.get('expiry_date') and isinstance(fg['expiry_date'], str):
             fg['expiry_date'] = datetime.fromisoformat(fg['expiry_date'])
+    _cache_set(cache_key, fgs, ttl_sec=30)
     return fgs
 
 # Notifications
@@ -2221,39 +2825,146 @@ async def get_notifications(current_user: User = Depends(get_current_user)):
             notif['created_at'] = datetime.fromisoformat(notif['created_at'])
     return notifs
 
-# Dashboard
+# Dashboard (optimized: counts + aggregation instead of loading all docs)
 @api_router.get("/dashboard/stats", response_model=DashboardStats)
 async def get_dashboard_stats(current_user: User = Depends(get_current_user)):
-    lots = await db.procurement_lots.find({}, {"_id": 0}).to_list(10000)
-    batches = await db.preprocessing_batches.find({"end_time": None}, {"_id": 0}).to_list(1000)
-    orders = await db.production_orders.find({"qc_status": "pending"}, {"_id": 0}).to_list(1000)
-    fgs = await db.finished_goods.find({}, {"_id": 0}).to_list(10000)
-    pending_qc = await db.finished_goods.find({"qc_status": "pending"}, {"_id": 0}).to_list(1000)
-    
-    total_weight = sum(lot.get('net_weight_kg', 0) for lot in lots)
-    total_value = sum(lot.get('total_amount', 0) for lot in lots)
-    fg_inventory = sum(fg.get('weight_kg', 0) for fg in fgs)
-    
-    recent_lots = await db.procurement_lots.find({}, {"_id": 0}).sort("created_at", -1).limit(5).to_list(5)
+    # Use count_documents and aggregation for speed (no full collection scan)
+    lot_count = await db.procurement_lots.count_documents({})
+    lot_agg = await db.procurement_lots.aggregate([
+        {"$group": {"_id": None, "weight": {"$sum": {"$ifNull": ["$net_weight_kg", 0]}}, "value": {"$sum": {"$ifNull": ["$total_amount", 0]}}}}
+    ]).to_list(1)
+    total_value = lot_agg[0]["value"] if lot_agg else 0
+    inv_agg = await db.purchase_invoices.aggregate([
+        {"$group": {"_id": None, "total_quantity_kg": {"$sum": {"$ifNull": ["$total_quantity_kg", 0]}}}}
+    ]).to_list(1)
+    total_weight = (inv_agg[0]["total_quantity_kg"] if inv_agg else 0) or 0
+
+    active_batches = await db.preprocessing_batches.count_documents({"end_time": None})
+    active_orders = await db.production_orders.count_documents({"qc_status": "pending"})
+    fg_agg = await db.finished_goods.aggregate([
+        {"$group": {"_id": None, "inventory": {"$sum": "$weight_kg"}}}
+    ]).to_list(1)
+    fg_inventory = fg_agg[0]["inventory"] if fg_agg else 0
+    pending_qc = await db.finished_goods.count_documents({"qc_status": "pending"})
+
+    recent_lots = await db.procurement_lots.find({}, {"_id": 0, "lot_number": 1, "net_weight_kg": 1, "created_at": 1}).sort("created_at", -1).limit(5).to_list(5)
     recent_activities = [
-        {
-            "type": "procurement",
-            "description": f"New lot {lot.get('lot_number')} - {lot.get('net_weight_kg'):.2f} KG",
-            "timestamp": lot.get('created_at')
-        }
+        {"type": "procurement", "description": f"New lot {lot.get('lot_number')} - {(lot.get('net_weight_kg') or 0):.2f} KG", "timestamp": lot.get("created_at")}
         for lot in recent_lots
     ]
-    
+
     return DashboardStats(
-        total_procurement_lots=len(lots),
+        total_procurement_lots=lot_count,
         total_weight_procured_kg=total_weight,
         total_procurement_value=total_value,
-        active_preprocessing_batches=len(batches),
-        active_production_orders=len(orders),
+        active_preprocessing_batches=active_batches,
+        active_production_orders=active_orders,
         finished_goods_inventory_kg=fg_inventory,
-        pending_qc_items=len(pending_qc),
+        pending_qc_items=pending_qc,
         recent_activities=recent_activities
     )
+
+
+@api_router.get("/dashboard/overview")
+async def get_dashboard_overview(current_user: User = Depends(get_current_user)):
+    """Single endpoint for dashboard: stats + recent lots + batches + live prices. Cached 30s per tenant. Queries run in parallel for speed."""
+    _t0 = time.perf_counter()
+    try:
+        tid = tenant_context.get_tenant()
+    except Exception:
+        tid = "default"
+    cache_key = f"dashboard_overview:{tid}"
+    _t_cache = time.perf_counter()
+    cached = _cache_get(cache_key, ttl_sec=30)
+    cache_lookup_ms = round((time.perf_counter() - _t_cache) * 1000, 1)
+    if cached is not None:
+        logger.debug(
+            "dashboard_overview metrics tenant=%s cache_hit=%s cache_lookup_ms=%s total_ms=%s",
+            tid,
+            True,
+            cache_lookup_ms,
+            round((time.perf_counter() - _t0) * 1000, 1),
+        )
+        return cached
+
+    # Run all independent MongoDB operations in parallel (biggest win after login)
+    _t_queries = time.perf_counter()
+    (
+        lot_count,
+        lot_agg_list,
+        purchase_inv_agg_list,
+        active_batches,
+        active_orders,
+        fg_agg_list,
+        pending_qc,
+        recent_lots_list,
+        lots,
+        batches,
+    ) = await asyncio.gather(
+        db.procurement_lots.count_documents({}),
+        db.procurement_lots.aggregate([{"$group": {"_id": None, "weight": {"$sum": {"$ifNull": ["$net_weight_kg", 0]}}, "value": {"$sum": {"$ifNull": ["$total_amount", 0]}}}}]).to_list(1),
+        db.purchase_invoices.aggregate([{"$group": {"_id": None, "total_quantity_kg": {"$sum": {"$ifNull": ["$total_quantity_kg", 0]}}}}]).to_list(1),
+        db.preprocessing_batches.count_documents({"end_time": None}),
+        db.production_orders.count_documents({"qc_status": "pending"}),
+        db.finished_goods.aggregate([{"$group": {"_id": None, "inventory": {"$sum": "$weight_kg"}}}]).to_list(1),
+        db.finished_goods.count_documents({"qc_status": "pending"}),
+        db.procurement_lots.find({}, {"_id": 0, "lot_number": 1, "net_weight_kg": 1, "created_at": 1}).sort("created_at", -1).limit(5).to_list(5),
+        db.procurement_lots.find({}, {"_id": 0}).sort("created_at", -1).limit(50).to_list(50),
+        db.preprocessing_batches.find({}, {"_id": 0}).sort("created_at", -1).limit(50).to_list(50),
+    )
+    queries_ms = round((time.perf_counter() - _t_queries) * 1000, 1)
+
+    lot_agg = lot_agg_list
+    total_value = lot_agg[0]["value"] if lot_agg else 0
+    # Weight procured = sum of kg from purchase invoices only
+    total_weight = (purchase_inv_agg_list[0]["total_quantity_kg"] if purchase_inv_agg_list else 0) or 0
+    fg_agg = fg_agg_list
+    fg_inventory = fg_agg[0]["inventory"] if fg_agg else 0
+    recent_activities = [
+        {"type": "procurement", "description": f"New lot {lot.get('lot_number')} - {(lot.get('net_weight_kg') or 0):.2f} KG", "timestamp": lot.get("created_at")}
+        for lot in recent_lots_list
+    ]
+    stats = {
+        "total_procurement_lots": lot_count,
+        "total_weight_procured_kg": total_weight,
+        "total_procurement_value": total_value,
+        "active_preprocessing_batches": active_batches,
+        "active_production_orders": active_orders,
+        "finished_goods_inventory_kg": fg_inventory,
+        "pending_qc_items": pending_qc,
+        "recent_activities": recent_activities,
+    }
+    for lot in lots:
+        lot["created_at"] = _safe_parse_datetime(lot.get("created_at"))
+        lot["arrival_time"] = _safe_parse_datetime(lot.get("arrival_time"))
+        for p in lot.get("payments", []):
+            p["payment_date"] = _safe_parse_datetime(p.get("payment_date"))
+    for batch in batches:
+        batch["created_at"] = _safe_parse_datetime(batch.get("created_at"))
+        batch["start_time"] = _safe_parse_datetime(batch.get("start_time"))
+        batch["end_time"] = _safe_parse_datetime(batch.get("end_time"))
+    live_prices = [
+        {"id": str(uuid.uuid4()), "category": "Vannamei 30/40", "price_per_kg": 420.0, "location": "Andhra Pradesh", "market": "Nellore", "date": datetime.now(timezone.utc), "source": "Market Data"},
+        {"id": str(uuid.uuid4()), "category": "Vannamei 40/60", "price_per_kg": 380.0, "location": "Andhra Pradesh", "market": "Kakinada", "date": datetime.now(timezone.utc), "source": "Market Data"},
+        {"id": str(uuid.uuid4()), "category": "Vannamei 60/80", "price_per_kg": 340.0, "location": "Andhra Pradesh", "market": "Bhimavaram", "date": datetime.now(timezone.utc), "source": "Market Data"},
+        {"id": str(uuid.uuid4()), "category": "Black Tiger 20/30", "price_per_kg": 650.0, "location": "Andhra Pradesh", "market": "Nellore", "date": datetime.now(timezone.utc), "source": "Market Data"},
+    ]
+    out = {"stats": stats, "lots": lots, "batches": batches, "live_prices": live_prices}
+    _t_cache_set = time.perf_counter()
+    _cache_set(cache_key, out, ttl_sec=30)
+    cache_set_ms = round((time.perf_counter() - _t_cache_set) * 1000, 1)
+    logger.info(
+        "dashboard_overview metrics tenant=%s cache_hit=%s cache_lookup_ms=%s queries_ms=%s cache_set_ms=%s total_ms=%s rows_lots=%s rows_batches=%s",
+        tid,
+        False,
+        cache_lookup_ms,
+        queries_ms,
+        cache_set_ms,
+        round((time.perf_counter() - _t0) * 1000, 1),
+        len(lots),
+        len(batches),
+    )
+    return out
 
 
 
@@ -2699,6 +3410,168 @@ async def download_wage_bill_pdf(bill_id: str, current_user: User = Depends(get_
 # Purchase Invoice Endpoints (Amendment A4)
 # ══════════════════════════════════════════════════════════════════════════════
 
+def normalize_invoice_advance_balance(invoice: dict) -> None:
+    """Ensure advance_paid and balance_due are set on invoice dict (for list, single, PDF, ledger).
+    Always derive balance_due from grand_total - advance_paid so stored zeros don't hide real amounts.
+    """
+    if not invoice:
+        return
+    advance = _pdf_safe_float(invoice.get("advance_paid"), 0.0)
+    invoice["advance_paid"] = advance
+    grand = _pdf_safe_float(invoice.get("grand_total"), 0.0)
+    # Always compute from source of truth so metrics/list never show wrong zeros
+    invoice["balance_due"] = round(grand - advance, 2)
+
+
+def _normalize_purchase_invoice_list_sub_tab(raw: Optional[str]) -> Optional[str]:
+    if not raw or not str(raw).strip():
+        return None
+    v = str(raw).strip().lower()
+    if v in ("pending", "pushed", "audit"):
+        return v
+    return None
+
+
+def _build_purchase_invoice_list_query(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    invoice_status: Optional[str] = None,
+    agent_name: Optional[str] = None,
+    party_name: Optional[str] = None,
+    search: Optional[str] = None,
+    list_sub_tab: Optional[str] = None,
+) -> dict:
+    """Build MongoDB query for purchase invoice list/metrics.
+    Same logic for both so stats cards match filters.
+    list_sub_tab: pending (status != pushed), pushed, audit (is_manually_recorded).
+    """
+    query: dict = {}
+    if from_date or to_date:
+        query["invoice_date"] = {}
+        if from_date:
+            query["invoice_date"]["$gte"] = from_date
+        if to_date:
+            query["invoice_date"]["$lte"] = to_date
+    if payment_status and payment_status.strip():
+        statuses = [s.strip() for s in payment_status.split(",") if s.strip()]
+        if statuses:
+            query["payment_status"] = {"$in": statuses}
+    if invoice_status and invoice_status.strip():
+        statuses = [s.strip() for s in invoice_status.split(",") if s.strip()]
+        if statuses:
+            query["status"] = {"$in": statuses}
+
+    if agent_name and agent_name.strip():
+        agent_term = agent_name.strip()
+        query["agent_ref_name"] = {"$regex": agent_term, "$options": "i"}
+
+    if party_name and party_name.strip():
+        party_term = party_name.strip()
+        query["party_name_text"] = {"$regex": party_term, "$options": "i"}
+
+    if search and search.strip():
+        search_term = search.strip()
+        query["$or"] = [
+            {"farmer_name": {"$regex": search_term, "$options": "i"}},
+            {"invoice_no": {"$regex": search_term, "$options": "i"}},
+            {"agent_ref_name": {"$regex": search_term, "$options": "i"}},
+            {"party_name_text": {"$regex": search_term, "$options": "i"}},
+        ]
+
+    tab = _normalize_purchase_invoice_list_sub_tab(list_sub_tab)
+    sub_tab_filter: Optional[dict] = None
+    if tab == "pending":
+        sub_tab_filter = {"status": {"$ne": "pushed"}}
+    elif tab == "pushed":
+        sub_tab_filter = {"status": "pushed"}
+    elif tab == "audit":
+        sub_tab_filter = {"is_manually_recorded": True}
+
+    if sub_tab_filter:
+        if not query:
+            return sub_tab_filter
+        return {"$and": [dict(query), sub_tab_filter]}
+    return query
+
+
+async def _purchase_invoice_metrics_aggregation(query: dict):
+    """Run aggregation to get count + metrics. Total kg = sum of total_quantity_kg on each matched invoice
+    (same field as the list/grid), so stats match the active filters including list_sub_tab."""
+    pipeline = [
+        {"$match": query},
+        {"$addFields": {
+            "balance_due": {"$round": [{"$subtract": [{"$ifNull": ["$grand_total", 0]}, {"$ifNull": ["$advance_paid", 0]}]}, 2]},
+        }},
+        {"$group": {
+            "_id": None,
+            "total_count": {"$sum": 1},
+            "total_value": {"$sum": {"$ifNull": ["$grand_total", 0]}},
+            "total_quantity_kg": {"$sum": {"$ifNull": ["$total_quantity_kg", 0]}},
+            "advances_paid_total": {"$sum": {"$ifNull": ["$advance_paid", 0]}},
+            "advances_paid_count": {"$sum": {"$cond": [{"$gt": [{"$ifNull": ["$advance_paid", 0]}, 0]}, 1, 0]}},
+            "partial_count": {"$sum": {"$cond": [{"$eq": ["$payment_status", "partial"]}, 1, 0]}},
+            "partial_total": {"$sum": {"$cond": [{"$eq": ["$payment_status", "partial"]}, "$balance_due", 0]}},
+        }},
+    ]
+    cursor = db.purchase_invoices.aggregate(pipeline)
+    row = await cursor.to_list(1)
+    if not row:
+        return {
+            "total_count": 0,
+            "total_value": 0,
+            "total_quantity_kg": 0,
+            "partial_count": 0,
+            "partial_total": 0,
+            "advances_paid_count": 0,
+            "advances_paid_total": 0,
+        }
+    r = row[0]
+    return {
+        "total_count": r["total_count"],
+        "total_value": round(float(r["total_value"]), 2),
+        "total_quantity_kg": round(float(r.get("total_quantity_kg") or 0), 3),
+        "partial_count": r["partial_count"],
+        "partial_total": round(float(r["partial_total"]), 2),
+        "advances_paid_count": r["advances_paid_count"],
+        "advances_paid_total": round(float(r["advances_paid_total"]), 2),
+    }
+
+
+async def _purchase_invoice_sub_tab_counts(query: dict) -> dict:
+    """Counts per list sub-tab for the same filter set (excluding list_sub_tab). Overlap allowed (e.g. pushed + audit)."""
+    pipeline = [
+        {"$match": query},
+        {"$group": {
+            "_id": None,
+            "pending": {"$sum": {"$cond": [{"$ne": ["$status", "pushed"]}, 1, 0]}},
+            "pushed": {"$sum": {"$cond": [{"$eq": ["$status", "pushed"]}, 1, 0]}},
+            "audit": {"$sum": {"$cond": [{"$eq": ["$is_manually_recorded", True]}, 1, 0]}},
+        }},
+    ]
+    cursor = db.purchase_invoices.aggregate(pipeline)
+    row = await cursor.to_list(1)
+    if not row:
+        return {"pending": 0, "pushed": 0, "audit": 0}
+    r = row[0]
+    return {
+        "pending": int(r.get("pending") or 0),
+        "pushed": int(r.get("pushed") or 0),
+        "audit": int(r.get("audit") or 0),
+    }
+
+
+async def _purchase_invoice_total_kg_all() -> float:
+    """Sum of quantity_kg from line items across ALL purchase invoices. Aggregates directly on lines collection (no lookup)."""
+    cursor = db.purchase_invoice_lines.aggregate([
+        {"$group": {"_id": None, "total_quantity_kg": {"$sum": {"$ifNull": ["$quantity_kg", 0]}}}},
+    ])
+    row = await cursor.to_list(1)
+    if not row:
+        return 0.0
+    return float(row[0].get("total_quantity_kg") or 0)
+
+
 @api_router.post("/purchase-invoices", response_model=PurchaseInvoice)
 async def create_purchase_invoice(
     invoice_data: PurchaseInvoiceCreate,
@@ -2720,6 +3593,8 @@ async def create_purchase_invoice(
         farmer_location=invoice_data.farmer_location,
         agent_ref_name=invoice_data.agent_ref_name,
         weighment_slip_no=invoice_data.weighment_slip_no,
+        weighment_slip_file_url=invoice_data.weighment_slip_file_url,
+        weighment_slip_mime_type=invoice_data.weighment_slip_mime_type,
         custom_field_1_label=invoice_data.custom_field_1_label,
         custom_field_1_value=invoice_data.custom_field_1_value,
         custom_field_2_label=invoice_data.custom_field_2_label,
@@ -2802,76 +3677,90 @@ async def get_purchase_invoices(
     to_date: Optional[str] = None,
     payment_status: Optional[str] = None,
     invoice_status: Optional[str] = None,
+    agent_name: Optional[str] = None,
+    party_name: Optional[str] = None,
     search: Optional[str] = None,
+    list_sub_tab: Optional[str] = Query(None, description="List slice: pending (not pushed), pushed, or audit (manually recorded)"),
     page: int = 1,
     per_page: int = 25,
     sort: str = "invoice_date:desc",
+    debug_timing: bool = False,
     current_user: User = Depends(get_current_user)
 ):
-    """Get purchase invoices with filters and pagination"""
-    query = {}
-    
-    # Date filter
-    if from_date or to_date:
-        query['invoice_date'] = {}
-        if from_date:
-            query['invoice_date']['$gte'] = from_date
-        if to_date:
-            query['invoice_date']['$lte'] = to_date
-    
-    # Payment status filter (can be comma-separated)
-    if payment_status:
-        statuses = [s.strip() for s in payment_status.split(',')]
-        query['payment_status'] = {'$in': statuses}
-    
-    # Invoice status filter (can be comma-separated)
-    if invoice_status:
-        statuses = [s.strip() for s in invoice_status.split(',')]
-        query['status'] = {'$in': statuses}
-    
-    # Search filter
-    if search:
-        query['$or'] = [
-            {'farmer_name': {'$regex': search, '$options': 'i'}},
-            {'invoice_no': {'$regex': search, '$options': 'i'}},
-            {'agent_ref_name': {'$regex': search, '$options': 'i'}},
-            {'party_name_text': {'$regex': search, '$options': 'i'}}
-        ]
-    
-    # Get total count
-    total = await db.purchase_invoices.count_documents(query)
-    
-    # Parse sort
+    """Get purchase invoices with filters and pagination. Omitted or empty filters mean no restriction. Uses aggregation for metrics (fast) and paginated find for list. Use debug_timing=1 to get timing breakdown in response."""
+    base_query = _build_purchase_invoice_list_query(
+        from_date,
+        to_date,
+        payment_status,
+        invoice_status,
+        agent_name=agent_name,
+        party_name=party_name,
+        search=search,
+        list_sub_tab=None,
+    )
+    query = _build_purchase_invoice_list_query(
+        from_date,
+        to_date,
+        payment_status,
+        invoice_status,
+        agent_name=agent_name,
+        party_name=party_name,
+        search=search,
+        list_sub_tab=list_sub_tab,
+    )
     sort_field, sort_dir = sort.split(':')
     sort_direction = -1 if sort_dir == 'desc' else 1
-    
-    # Calculate pagination
     skip = (page - 1) * per_page
-    
-    # Fetch invoices
-    invoices = await db.purchase_invoices.find(query, {"_id": 0}) \
-        .sort(sort_field, sort_direction) \
-        .skip(skip) \
-        .limit(per_page) \
-        .to_list(per_page)
-    
-    # Enrich invoices with party short_code
-    for invoice in invoices:
-        if invoice.get('party_id'):
-            party = await db.parties.find_one({"id": invoice['party_id']}, {"_id": 0, "short_code": 1})
-            if party:
-                invoice['party_short_code'] = party.get('short_code')
-    
-    # Calculate total pages
-    pages = (total + per_page - 1) // per_page
-    
-    return {
+
+    t0 = time.perf_counter() if debug_timing else None
+
+    # Run metrics aggregation, page fetch, all-invoices total kg, and sub-tab counts in parallel
+    async def fetch_page():
+        cursor = db.purchase_invoices.find(query, {"_id": 0}).sort(sort_field, sort_direction).skip(skip).limit(per_page)
+        return await cursor.to_list(per_page)
+
+    metrics, invoices, total_kg_all, sub_tab_counts = await asyncio.gather(
+        _purchase_invoice_metrics_aggregation(query),
+        fetch_page(),
+        _purchase_invoice_total_kg_all(),
+        _purchase_invoice_sub_tab_counts(base_query),
+    )
+    metrics["sub_tab_counts"] = sub_tab_counts
+    metrics["total_quantity_kg_all"] = round(total_kg_all, 3)  # All invoices, not just selected filters
+    total = metrics["total_count"]
+    pages = (total + per_page - 1) // per_page if per_page else 0
+
+    t1 = time.perf_counter() if debug_timing else None
+
+    for inv in invoices:
+        normalize_invoice_advance_balance(inv)
+
+    # Batch party short_code lookup (one query instead of N)
+    party_ids = list({inv["party_id"] for inv in invoices if inv.get("party_id")})
+    if party_ids:
+        parties = await db.parties.find({"id": {"$in": party_ids}}, {"_id": 0, "id": 1, "short_code": 1}).to_list(len(party_ids))
+        party_map = {p["id"]: p.get("short_code") for p in parties}
+        for inv in invoices:
+            if inv.get("party_id"):
+                inv["party_short_code"] = party_map.get(inv["party_id"])
+
+    t2 = time.perf_counter() if debug_timing else None
+
+    out = {
         "data": invoices,
         "total": total,
         "page": page,
         "per_page": per_page,
-        "pages": pages
+        "pages": pages,
+        "metrics": metrics,
     }
+    if debug_timing and t0 is not None and t1 is not None and t2 is not None:
+        out["debug_timing_ms"] = {
+            "metrics_and_page_ms": round((t1 - t0) * 1000, 1),
+            "party_lookup_ms": round((t2 - t1) * 1000, 1),
+            "total_ms": round((t2 - t0) * 1000, 1),
+        }
+    return out
 
 @api_router.get("/purchase-invoices/metrics")
 async def get_purchase_invoice_metrics(
@@ -2879,61 +3768,168 @@ async def get_purchase_invoice_metrics(
     to_date: Optional[str] = None,
     payment_status: Optional[str] = None,
     invoice_status: Optional[str] = None,
+    agent_name: Optional[str] = None,
+    party_name: Optional[str] = None,
+    search: Optional[str] = None,
+    list_sub_tab: Optional[str] = Query(None, description="Same as GET /purchase-invoices list_sub_tab"),
     current_user: User = Depends(get_current_user)
 ):
-    """Get metrics for purchase invoices dashboard"""
-    query = {}
-    
-    # Date filter
-    if from_date or to_date:
-        query['invoice_date'] = {}
-        if from_date:
-            query['invoice_date']['$gte'] = from_date
-        if to_date:
-            query['invoice_date']['$lte'] = to_date
-    
-    # Get all invoices matching filters (excluding drafts from metrics)
-    all_invoices = await db.purchase_invoices.find(
-        {**query, 'status': {'$in': ['approved', 'pushed']}},
-        {"_id": 0}
-    ).to_list(10000)
-    
-    total_count = len(all_invoices)
-    total_value = sum(inv.get('grand_total', 0) for inv in all_invoices)
-    
-    # Payment status breakdown
-    pending_invoices = [inv for inv in all_invoices if inv.get('payment_status') == 'pending']
-    partial_invoices = [inv for inv in all_invoices if inv.get('payment_status') == 'partial']
-    paid_invoices = [inv for inv in all_invoices if inv.get('payment_status') == 'paid']
-    
-    pending_total = sum(inv.get('balance_due', 0) for inv in pending_invoices)
-    partial_total = sum(inv.get('balance_due', 0) for inv in partial_invoices)
-    paid_total = sum(inv.get('grand_total', 0) for inv in paid_invoices)
-    
-    outstanding_total = pending_total + partial_total
-    
-    # Top farmers by outstanding balance (only pending + partial)
-    outstanding_invoices = pending_invoices + partial_invoices
-    farmer_balances = {}
-    for inv in outstanding_invoices:
-        farmer = inv.get('farmer_name', 'Unknown')
-        farmer_balances[farmer] = farmer_balances.get(farmer, 0) + inv.get('balance_due', 0)
-    
-    top_farmers = sorted(farmer_balances.items(), key=lambda x: x[1], reverse=True)[:8]
-    top_farmers = [{"farmer_name": f, "balance_due": b} for f, b in top_farmers]
-    
+    """Get metrics for purchase invoices dashboard. Uses aggregation (fast). Omitted/empty = All (no restriction)."""
+    base_query = _build_purchase_invoice_list_query(
+        from_date,
+        to_date,
+        payment_status,
+        invoice_status,
+        agent_name=agent_name,
+        party_name=party_name,
+        search=search,
+        list_sub_tab=None,
+    )
+    query = _build_purchase_invoice_list_query(
+        from_date,
+        to_date,
+        payment_status,
+        invoice_status,
+        agent_name=agent_name,
+        party_name=party_name,
+        search=search,
+        list_sub_tab=list_sub_tab,
+    )
+    metrics, sub_tab_counts = await asyncio.gather(
+        _purchase_invoice_metrics_aggregation(query),
+        _purchase_invoice_sub_tab_counts(base_query),
+    )
+    # Add fields the frontend or other callers may expect from the standalone metrics endpoint
+    pending_total = metrics["partial_total"]  # approximate; full pending would need extra aggregation
+    pending_count = metrics["partial_count"]
     return {
-        "total_count": total_count,
-        "total_value": total_value,
-        "pending_count": len(pending_invoices),
+        "total_count": metrics["total_count"],
+        "total_value": metrics["total_value"],
+        "total_quantity_kg": metrics["total_quantity_kg"],
+        "pending_count": pending_count,
         "pending_total": pending_total,
-        "partial_count": len(partial_invoices),
-        "partial_total": partial_total,
-        "paid_count": len(paid_invoices),
-        "paid_total": paid_total,
-        "outstanding_total": outstanding_total,
-        "top_farmers": top_farmers
+        "partial_count": metrics["partial_count"],
+        "partial_total": metrics["partial_total"],
+        "paid_count": metrics["advances_paid_count"],
+        "paid_total": metrics["advances_paid_total"],
+        "advances_paid_count": metrics["advances_paid_count"],
+        "advances_paid_total": metrics["advances_paid_total"],
+        "outstanding_total": pending_total,
+        "top_farmers": [],  # omit heavy top_farmers for speed; use list endpoint if needed
+        "sub_tab_counts": sub_tab_counts,
     }
+
+
+@api_router.get("/purchase-invoices/filter-options")
+async def get_purchase_invoice_filter_options(current_user: User = Depends(get_current_user)):
+    """Get distinct dropdown options for purchase invoice filters."""
+    agent_rows = await db.purchase_invoices.aggregate([
+        {"$match": {"agent_ref_name": {"$exists": True, "$ne": None, "$ne": ""}}},
+        {"$group": {"_id": "$agent_ref_name"}},
+        {"$sort": {"_id": 1}},
+        {"$project": {"_id": 0, "name": "$_id"}},
+    ]).to_list(1000)
+    party_rows = await db.purchase_invoices.aggregate([
+        {"$match": {"party_name_text": {"$exists": True, "$ne": None, "$ne": ""}}},
+        {"$group": {"_id": "$party_name_text"}},
+        {"$sort": {"_id": 1}},
+        {"$project": {"_id": 0, "name": "$_id"}},
+    ]).to_list(1000)
+    return {
+        "agents": [r["name"] for r in agent_rows if r.get("name")],
+        "parties": [r["name"] for r in party_rows if r.get("name")],
+    }
+
+
+def _compress_weighment_slip_image_bytes(raw: bytes) -> tuple[bytes, str]:
+    """Resize large images and re-encode as JPEG for smaller storage (weighment slip scans/photos)."""
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(raw))
+    if img.mode in ("RGBA", "P", "LA"):
+        img = img.convert("RGB")
+    elif img.mode != "RGB":
+        img = img.convert("RGB")
+
+    max_side = 2048
+    w, h = img.size
+    if w <= 0 or h <= 0:
+        raise ValueError("Invalid image dimensions")
+    if max(w, h) > max_side:
+        ratio = max_side / float(max(w, h))
+        img = img.resize((max(1, int(w * ratio)), max(1, int(h * ratio))), Image.Resampling.LANCZOS)
+
+    out = io.BytesIO()
+    img.save(out, format="JPEG", quality=82, optimize=True)
+    data = out.getvalue()
+    if len(data) > 1_500_000:
+        out = io.BytesIO()
+        img.save(out, format="JPEG", quality=68, optimize=True)
+        data = out.getvalue()
+    return data, "image/jpeg"
+
+
+def _safe_delete_weighment_upload_file(public_url: Optional[str]) -> None:
+    """Remove a file under uploads/ if it matches our weighment slip naming (and exists)."""
+    if not public_url:
+        return
+    path = _signature_path_from_config_value(public_url)
+    if path is None or not path.is_file():
+        return
+    base = path.name
+    if not base.startswith("weighment_slip_"):
+        return
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+@api_router.post("/purchase-invoices/upload-weighment-slip")
+async def upload_purchase_invoice_weighment_slip(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
+    """Upload a weighment slip image; server compresses to JPEG (max side 2048px)."""
+    raw_name = (file.filename or "").lower()
+    ext = raw_name.rsplit(".", 1)[-1] if "." in raw_name else ""
+    if ext not in ("png", "jpg", "jpeg", "gif", "webp", "bmp"):
+        raise HTTPException(
+            status_code=400,
+            detail="Supported: PNG, JPG, JPEG, GIF, WebP, BMP",
+        )
+    content = await file.read()
+    if len(content) > 12_000_000:
+        raise HTTPException(status_code=400, detail="File too large (max 12 MB before compression)")
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    try:
+        jpeg_bytes, mime = _compress_weighment_slip_image_bytes(content)
+    except Exception as e:
+        logging.getLogger(__name__).warning("weighment slip compress failed: %s", e)
+        raise HTTPException(status_code=400, detail="Could not read or compress image")
+
+    fname = f"weighment_slip_{uuid.uuid4().hex}.jpg"
+    dest = UPLOADS_DIR / fname
+    with open(dest, "wb") as out:
+        out.write(jpeg_bytes)
+
+    public_url = f"/uploads/{fname}"
+    size_kb = round(len(jpeg_bytes) / 1024.0, 2)
+    await create_audit_log(
+        current_user.id,
+        "UPLOAD_WEIGHMENT_SLIP",
+        "procurement",
+        {"file_name": fname, "size_kb": size_kb},
+    )
+    return {
+        "file_url": public_url,
+        "mime_type": mime,
+        "size_kb": size_kb,
+        "message": "Weighment slip saved (compressed JPEG)",
+    }
+
 
 @api_router.get("/purchase-invoices/{invoice_id}")
 async def get_purchase_invoice(
@@ -2944,7 +3940,7 @@ async def get_purchase_invoice(
     invoice = await db.purchase_invoices.find_one({"id": invoice_id}, {"_id": 0})
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    
+    normalize_invoice_advance_balance(invoice)
     # Get line items
     lines = await db.purchase_invoice_lines.find(
         {"invoice_id": invoice_id},
@@ -2960,13 +3956,14 @@ async def update_purchase_invoice(
     invoice_data: PurchaseInvoiceCreate,
     current_user: User = Depends(get_current_user)
 ):
-    """Update purchase invoice (only if draft status)"""
+    """Update purchase invoice (admin can edit any status; others only draft)"""
     existing = await db.purchase_invoices.find_one({"id": invoice_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    
-    if existing.get('status') != 'draft':
-        raise HTTPException(status_code=400, detail="Can only edit draft invoices")
+
+    is_admin = str(getattr(current_user, "role", "")).lower() == "admin"
+    if existing.get('status') != 'draft' and not is_admin:
+        raise HTTPException(status_code=400, detail="Can only edit draft invoices (admin can edit any invoice)")
     
     # Recalculate totals
     totals = calculate_invoice_totals(invoice_data.line_items, invoice_data.tds_rate_pct)
@@ -2979,6 +3976,8 @@ async def update_purchase_invoice(
         "farmer_location": invoice_data.farmer_location,
         "agent_ref_name": invoice_data.agent_ref_name,
         "weighment_slip_no": invoice_data.weighment_slip_no,
+        "weighment_slip_file_url": invoice_data.weighment_slip_file_url,
+        "weighment_slip_mime_type": invoice_data.weighment_slip_mime_type,
         "custom_field_1_label": invoice_data.custom_field_1_label,
         "custom_field_1_value": invoice_data.custom_field_1_value,
         "custom_field_2_label": invoice_data.custom_field_2_label,
@@ -3000,8 +3999,33 @@ async def update_purchase_invoice(
         update_data['payment_status'] = 'partial'
     else:
         update_data['payment_status'] = 'pending'
+
+    old_slip_url = existing.get("weighment_slip_file_url")
+    new_slip_url = invoice_data.weighment_slip_file_url
+    if old_slip_url and old_slip_url != new_slip_url:
+        _safe_delete_weighment_upload_file(old_slip_url)
     
     await db.purchase_invoices.update_one({"id": invoice_id}, {"$set": update_data})
+
+    # If this invoice already created a procurement lot, keep lot header amounts aligned.
+    if existing.get("status") == "pushed" and existing.get("lot_id"):
+        total_qty = float(totals.get("total_quantity_kg") or 0)
+        subtotal_amt = float(totals.get("subtotal") or 0)
+        avg_rate = round(subtotal_amt / total_qty, 2) if total_qty > 0 else 0
+        await db.procurement_lots.update_one(
+            {"id": existing.get("lot_id")},
+            {"$set": {
+                "gross_weight_kg": total_qty,
+                "net_weight_kg": total_qty,
+                "no_of_tons": round(total_qty / 1000, 3),
+                "rate_per_kg": avg_rate,
+                "total_amount": float(totals.get("grand_total") or 0),
+                "advance_paid": float(invoice_data.advance_paid or 0),
+                "balance_due": float(balance_due or 0),
+                "payment_status": update_data.get("payment_status"),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }}
+        )
     
     # Delete old line items and insert new ones
     await db.purchase_invoice_lines.delete_many({"invoice_id": invoice_id})
@@ -3020,8 +4044,16 @@ async def update_purchase_invoice(
         )
         await db.purchase_invoice_lines.insert_one(line.model_dump())
     
+    # Keep party ledger bill/payment entry in sync with current invoice values when linked.
+    refreshed = await db.purchase_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if refreshed and refreshed.get("party_id"):
+        try:
+            await create_ledger_entry_for_invoice(refreshed, current_user.id)
+        except Exception as e:
+            print(f"Warning: Could not sync ledger after invoice update: {e}")
+
     await create_audit_log(current_user.id, "UPDATE_PURCHASE_INVOICE", "procurement",
-                          {"invoice_id": invoice_id})
+                          {"invoice_id": invoice_id, "status": existing.get("status"), "admin_override": bool(is_admin and existing.get("status") != "draft")})
     
     return {"status": "success", "message": "Invoice updated"}
 
@@ -3052,6 +4084,13 @@ async def approve_purchase_invoice(
             "updated_at": datetime.now(timezone.utc).isoformat()
         }}
     )
+
+    # Create party ledger entry as soon as invoice is approved (with invoice details)
+    if invoice.get("party_id"):
+        try:
+            await create_ledger_entry_for_invoice(invoice, current_user.id)
+        except Exception as e:
+            print(f"Warning: Could not create party ledger entry on approve: {e}")
     
     await create_audit_log(current_user.id, "APPROVE_PURCHASE_INVOICE", "procurement",
                           {"invoice_id": invoice_id, "invoice_no": invoice.get('invoice_no')})
@@ -3061,6 +4100,7 @@ async def approve_purchase_invoice(
 @api_router.post("/purchase-invoices/{invoice_id}/push-to-procurement")
 async def push_invoice_to_procurement(
     invoice_id: str,
+    payload: Optional[PushInvoiceRequest] = None,
     current_user: User = Depends(get_current_user)
 ):
     """Push approved invoice to procurement (creates procurement lot)"""
@@ -3077,6 +4117,10 @@ async def push_invoice_to_procurement(
     
     if invoice.get('lot_id'):
         raise HTTPException(status_code=400, detail="Invoice already pushed")
+
+    apply_digital_signature = bool(payload.apply_digital_signature) if payload else False
+    if apply_digital_signature and current_user.role != UserRole.admin:
+        raise HTTPException(status_code=403, detail="Only admin can apply digital signature")
     
     # Get line items to determine species
     lines = await db.purchase_invoice_lines.find(
@@ -3168,9 +4212,43 @@ async def push_invoice_to_procurement(
             "lot_id": lot['id'],
             "pushed_at": datetime.now(timezone.utc).isoformat(),
             "pushed_by": current_user.id,
+            "apply_digital_signature": apply_digital_signature,
             "updated_at": datetime.now(timezone.utc).isoformat()
         }}
     )
+
+    # Create digital signature metadata only when explicitly requested by admin.
+    if apply_digital_signature:
+        # Default to SECRET_KEY if INVOICE_SIGNING_SECRET is not set (dev convenience).
+        # For production, set INVOICE_SIGNING_SECRET to a dedicated secret.
+        invoice_signing_secret = os.environ.get("INVOICE_SIGNING_SECRET") or SECRET_KEY
+        if invoice_signing_secret:
+            pushed_invoice = await db.purchase_invoices.find_one({"id": invoice_id}, {"_id": 0})
+            if pushed_invoice:
+                payload_bytes = _canonical_purchase_invoice_payload(pushed_invoice, lines)
+                sig_meta = _hmac_sign_purchase_invoice_payload(payload_bytes, invoice_signing_secret)
+                await db.purchase_invoices.update_one(
+                    {"id": invoice_id},
+                    {"$set": {
+                        "digital_signature_algo": sig_meta.get("signature_algo"),
+                        "digital_signature_payload_hash_sha256": sig_meta.get("payload_hash_sha256"),
+                        "digital_signature_value_b64": sig_meta.get("signature_value_b64"),
+                        "digital_signature_signed_by": current_user.id,
+                        "digital_signature_signed_at": datetime.now(timezone.utc).isoformat(),
+                    }}
+                )
+    else:
+        # Explicitly clear signature fields so the invoice sign area remains empty.
+        await db.purchase_invoices.update_one(
+            {"id": invoice_id},
+            {"$set": {
+                "digital_signature_algo": None,
+                "digital_signature_payload_hash_sha256": None,
+                "digital_signature_value_b64": None,
+                "digital_signature_signed_by": None,
+                "digital_signature_signed_at": None,
+            }}
+        )
     
     # A5: Create ledger entry if party is linked
     if invoice.get("party_id"):
@@ -3190,6 +4268,25 @@ async def push_invoice_to_procurement(
         "lot_number": lot_number
     }
 
+@api_router.post("/purchase-invoices/{invoice_id}/sync-ledger")
+async def sync_invoice_ledger(
+    invoice_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Ensure party ledger reflects this invoice (bill + advance payment). Idempotent; backfills advance if missing."""
+    if current_user.role not in ['admin', 'owner', 'procurement_manager']:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    invoice = await db.purchase_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if not invoice.get("party_id"):
+        raise HTTPException(status_code=400, detail="Invoice has no party linked")
+    try:
+        await create_ledger_entry_for_invoice(invoice, current_user.id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ledger sync failed: {str(e)}")
+    return {"status": "success", "message": "Ledger synced for invoice"}
+
 @api_router.delete("/purchase-invoices/{invoice_id}")
 async def delete_purchase_invoice(
     invoice_id: str,
@@ -3206,6 +4303,8 @@ async def delete_purchase_invoice(
     
     if invoice.get('status') != 'draft':
         raise HTTPException(status_code=400, detail="Can only delete draft invoices")
+    
+    _safe_delete_weighment_upload_file(invoice.get("weighment_slip_file_url"))
     
     # Delete line items
     await db.purchase_invoice_lines.delete_many({"invoice_id": invoice_id})
@@ -3257,13 +4356,204 @@ async def toggle_manual_audit(
     
     return {"status": "success", "message": f"Manual audit status updated"}
 
-def generate_purchase_invoice_pdf(invoice: dict, lines: List[dict], tenant_config: dict) -> bytes:
+# Digitally sign purchase invoices on "push to procurement".
+# We sign an HMAC over a canonical JSON payload (invoice + line items),
+# and then embed the signature metadata into the PDF.
+def _canonical_purchase_invoice_payload(invoice: dict, lines: List[dict]) -> bytes:
+    payload = {"invoice": invoice, "lines": lines}
+    payload_json = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
+    return payload_json.encode("utf-8")
+
+
+def _hmac_sign_purchase_invoice_payload(payload_bytes: bytes, secret: str) -> dict:
+    """
+    Returns signature metadata.
+    Uses HMAC-SHA256 so we only need a shared secret (no certificate/keypair).
+    """
+    signature_algo = "HMAC-SHA256"
+    payload_hash_sha256 = hashlib.sha256(payload_bytes).hexdigest()
+    sig_bytes = hmac.new(secret.encode("utf-8"), payload_bytes, hashlib.sha256).digest()
+    sig_b64 = base64.b64encode(sig_bytes).decode("ascii")
+    return {
+        "signature_algo": signature_algo,
+        "payload_hash_sha256": payload_hash_sha256,
+        "signature_value_b64": sig_b64,
+    }
+
+
+def _ende_canonical_signing_date(iso_dt: Optional[str]) -> str:
+    """
+    Formats datetime for endesive's signingdate field.
+    endesive expects: YYYYmmddHHMMSS+00'00'
+    """
+    if not iso_dt:
+        iso_dt = datetime.now(timezone.utc).isoformat()
+    try:
+        dt = datetime.fromisoformat(iso_dt.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.astimezone(timezone.utc)
+    except Exception:
+        dt = datetime.now(timezone.utc)
+    return dt.strftime("%Y%m%d%H%M%S") + "+00'00'"
+
+
+def _parse_signature_box_env(value: Optional[str]) -> tuple:
+    """
+    Parses INVOICE_PDF_SIGNATURE_BOX like "350,50,550,150".
+    Coordinates are page-user-space units (points).
+    """
+    # Keep default visible signature appearance inside footer right area.
+    # Format: (x1, y1, x2, y2) in PDF points.
+    default_box = (440, 66, 555, 88)
+    if not value:
+        return default_box
+    try:
+        parts = [float(x.strip()) for x in value.split(",") if x.strip()]
+        if len(parts) >= 4:
+            return tuple(parts[:4])
+    except Exception:
+        pass
+    return default_box
+
+
+def _maybe_sign_purchase_invoice_pdf(pdf_bytes: bytes, invoice: dict) -> bytes:
+    """
+    If certificate env vars are configured, apply a real cryptographic PDF signature
+    (CMS/PKCS#7) using the provided PFX (PKCS#12) file.
+    Otherwise returns the original PDF bytes unchanged.
+    """
+    pfx_path = os.environ.get("INVOICE_PDF_SIGNING_PFX_PATH")
+    if not pfx_path:
+        return pdf_bytes
+
+    # Only apply cryptographic signature for pushed invoices (admin action).
+    if invoice.get("status") != "pushed":
+        return pdf_bytes
+    if not invoice.get("apply_digital_signature"):
+        return pdf_bytes
+
+    pfx_password = os.environ.get("INVOICE_PDF_SIGNING_PFX_PASSWORD", "")
+    sig_box = _parse_signature_box_env(os.environ.get("INVOICE_PDF_SIGNATURE_BOX"))
+
+    try:
+        from cryptography.hazmat import backends
+        from cryptography.hazmat.primitives.serialization import pkcs12
+        from endesive import pdf as endesive_pdf
+    except Exception as e:
+        # If endesive isn't installed in environment, keep PDF usable.
+        print(f"PDF signing disabled (missing library): {e}")
+        return pdf_bytes
+
+    try:
+        with open(pfx_path, "rb") as f:
+            pfx_data = f.read()
+        p12pk, p12pc, p12oc = pkcs12.load_key_and_certificates(
+            pfx_data, (pfx_password or "").encode("utf-8"), backends.default_backend()
+        )
+        if not p12pk or not p12pc:
+            print("PDF signing disabled: PFX did not contain key/certificate")
+            return pdf_bytes
+    except Exception as e:
+        print(f"PDF signing disabled (PFX load failed): {e}")
+        return pdf_bytes
+
+    # Extract CN/C (if available) for signature metadata
+    def _get_rdn_names(x509_name):
+        # Best-effort extraction of DN components used by endesive example.
+        names = {"CN": "", "C": ""}
+        try:
+            for rdn in x509_name.rdns:
+                for attr in rdn:
+                    if getattr(attr.oid, "dotted_string", "") == "2.5.4.3":  # commonName
+                        names["CN"] = str(attr.value)
+                    if getattr(attr.oid, "dotted_string", "") == "2.5.4.6":  # countryName
+                        names["C"] = str(attr.value)
+        except Exception:
+            pass
+        return names
+
+    names = _get_rdn_names(p12pc.subject)
+    signing_date = _ende_canonical_signing_date(invoice.get("digital_signature_signed_at"))
+
+    reason = os.environ.get("INVOICE_PDF_SIGNING_REASON", "Signed by Prawn ERP")
+    contact = os.environ.get("INVOICE_PDF_SIGNING_CONTACT", "")
+    location = os.environ.get("INVOICE_PDF_SIGNING_LOCATION", "")
+    if not contact:
+        contact = "noreply@example.com"
+    # Keep visual signature text compact so it stays inside the box.
+    signature = "Digitally Signed"
+
+    dct = {
+        "sigflags": 3,
+        "sigpage": 0,
+        "contact": contact,
+        "location": location or "—",
+        "signingdate": signing_date,
+        "reason": reason,
+        "signature": signature,
+        "signaturebox": sig_box,
+    }
+
+    # endesive signs by generating a signature block and appending it to the PDF.
+    # Returning pdf_bytes + datas matches the official example's write(datau); write(datas).
+    datas = endesive_pdf.cms.sign(pdf_bytes, dct, p12pk, p12pc, p12oc, "sha256")
+    return pdf_bytes + datas
+
+
+def _signature_path_from_config_value(raw: Optional[Any]) -> Optional[Path]:
+    """
+    Resolve tenant_config invoice_signature_image to a file under UPLOADS_DIR.
+    Accepts '/uploads/name.ext' or a full URL containing '/uploads/...'.
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    # Normalize separators so we accept values stored with backslashes too.
+    s = s.replace("\\", "/")
+    # Remove query/fragment early so basename is clean.
+    s = s.split("?")[0].split("#")[0]
+
+    # Accept any string that contains "/uploads/" (including full URLs),
+    # or a value stored as "uploads/..." (no leading slash).
+    low = s.lower()
+    uploads_idx = low.find("/uploads/")
+    if uploads_idx != -1:
+        s = s[uploads_idx:]  # now starts with "/uploads/..."
+    elif low.startswith("uploads/"):
+        s = "/" + s  # "uploads/..." -> "/uploads/..."
+    else:
+        return None
+
+    base_name = os.path.basename(s)
+    if not base_name or base_name in (".", "..") or ".." in s:
+        return None
+    try:
+        uploads_root = UPLOADS_DIR.resolve()
+        full = (UPLOADS_DIR / base_name).resolve()
+        full.relative_to(uploads_root)
+    except (OSError, ValueError):
+        return None
+    if not full.is_file():
+        return None
+    return full
+
+
+def generate_purchase_invoice_pdf(
+    invoice: dict,
+    lines: List[dict],
+    tenant_config: dict,
+    signature: Optional[dict] = None,
+    pdf_generated_at: Optional[datetime] = None,
+) -> bytes:
     """Generate PDF matching exact format from reference images"""
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors as rl_colors
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage
     from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
     
     buffer = io.BytesIO()
@@ -3323,9 +4613,9 @@ def generate_purchase_invoice_pdf(invoice: dict, lines: List[dict], tenant_confi
     
     # Meta information table
     meta_data = [
-        ['Farmer Name: ' + invoice.get('farmer_name', ''), 'DATE: ' + str(invoice.get('invoice_date', ''))],
-        ['Location: ' + (invoice.get('farmer_location') or ''), 'Purchase Invoice No: ' + invoice.get('invoice_no', '')],
-        ['Farmer/Agent Ref Name: ' + (invoice.get('agent_ref_name') or ''), 'Weighment Slip No: ' + (invoice.get('weighment_slip_no') or '')]
+        ['Farmer Name: ' + str(invoice.get('farmer_name') or ''), 'DATE: ' + str(invoice.get('invoice_date') or '')],
+        ['Location: ' + str(invoice.get('farmer_location') or ''), 'Purchase Invoice No: ' + str(invoice.get('invoice_no') or '')],
+        ['Farmer/Agent Ref Name: ' + str(invoice.get('agent_ref_name') or ''), 'Weighment Slip No: ' + str(invoice.get('weighment_slip_no') or '')],
     ]
     
     meta_table = Table(meta_data, colWidths=[page_width/2, page_width/2])
@@ -3343,37 +4633,66 @@ def generate_purchase_invoice_pdf(invoice: dict, lines: List[dict], tenant_confi
     inner_content.append(meta_table)
     inner_content.append(Spacer(1, 0.05*inch))
     
-    # Line items table (pad to 15 rows minimum)
+    # Line items table (pad to fixed rows for stable template layout)
     line_data = [['S.NO', 'Variety', 'Count', 'Quantity\nKgs/Gms', 'Rate', 'Amount']]
     
     for idx, line in enumerate(lines, 1):
+        _q = _pdf_safe_float(line.get("quantity_kg"), 0.0)
+        _r = _pdf_safe_float(line.get("rate"), 0.0)
+        _a = _pdf_safe_float(line.get("amount"), 0.0)
         line_data.append([
             str(idx),
-            line.get('variety', ''),
-            line.get('count_value', ''),
-            f"{line.get('quantity_kg', 0):.3f}",
-            f"{line.get('rate', 0):.2f}",
-            f"{line.get('amount', 0):.2f}"
+            str(line.get("variety") or ""),
+            str(line.get("count_value") or ""),
+            f"{_q:.3f}",
+            f"{_r:.2f}",
+            f"{_a:.2f}",
         ])
     
-    # Pad to 15 rows
-    while len(line_data) < 16:  # 15 data rows + 1 header
+    # Pad to 12 rows to avoid crowding totals/footer area
+    while len(line_data) < 13:  # 12 data rows + 1 header
         line_data.append(['', '', '', '', '', '0.00'])
     
     # Add subtotal row
-    line_data.append(['', '', '', '', '', f"{invoice.get('subtotal', 0):.2f}"])
+    line_data.append(['', '', '', '', '', f"{_pdf_safe_float(invoice.get('subtotal'), 0):.2f}"])
     
     # Add TDS row
-    tds_label = f"TDS@{invoice.get('tds_rate_pct', 0.1)}%"
-    line_data.append(['', '', '', '', tds_label, f"{invoice.get('tds_amount', 0):.2f}"])
+    tds_label = f"TDS@{_pdf_safe_float(invoice.get('tds_rate_pct'), 0.1)}%"
+    line_data.append(['', '', '', '', tds_label, f"{_pdf_safe_float(invoice.get('tds_amount'), 0):.2f}"])
     
     # Add Rounded Off row
-    line_data.append(['', '', '', '', 'Rounded Off', f"{invoice.get('rounded_off', 0):.2f}"])
+    line_data.append(['', '', '', '', 'Rounded Off', f"{_pdf_safe_float(invoice.get('rounded_off'), 0):.2f}"])
     
-    # Add Grand Total row
-    line_data.append(['Grand Total', '', '', f"{invoice.get('total_quantity_kg', 0):.3f}", '', f"{invoice.get('grand_total', 0):.2f}"])
-    
-    line_table = Table(line_data, colWidths=[0.5*inch, 1.5*inch, 1*inch, 1*inch, 0.8*inch, 1*inch])
+    # Add Grand Total row (label spans first 3 cols so it fits; qty col 3; amount col 5)
+    _gt = _pdf_safe_float(invoice.get('grand_total'), 0)
+    line_data.append([
+        'Grand Total',
+        '',
+        '',
+        f"{_pdf_safe_float(invoice.get('total_quantity_kg'), 0):.3f}",
+        '',
+        f"{_gt:.2f}",
+    ])
+    # Advance Paid and Balance Due (so generated invoice shows them)
+    advance_paid = _pdf_safe_float(invoice.get('advance_paid'), 0)
+    balance_due = _pdf_safe_float(invoice.get('balance_due'), 0)
+    if balance_due == 0 and advance_paid > 0:
+        balance_due = _gt - advance_paid
+    line_data.append(['Advance Paid', '', '', '', '', f"{advance_paid:.2f}"])
+    line_data.append(['Balance Due', '', '', '', '', f"{balance_due:.2f}"])
+
+    # Column widths fill printable width; col 0 stays narrow for S.No. — wide labels use SPAN below
+    _lcw0 = 0.48 * inch
+    _lcw1 = 1.42 * inch
+    _lcw2 = 0.92 * inch
+    _lcw3 = 1.05 * inch
+    _lcw4 = 0.82 * inch
+    _lcw5 = page_width - (_lcw0 + _lcw1 + _lcw2 + _lcw3 + _lcw4)
+    if _lcw5 < 0.85 * inch:
+        _lcw5 = 0.85 * inch
+    line_col_widths = [_lcw0, _lcw1, _lcw2, _lcw3, _lcw4, _lcw5]
+
+    line_table = Table(line_data, colWidths=line_col_widths)
     line_table.setStyle(TableStyle([
         # Header row
         ('BACKGROUND', (0, 0), (-1, 0), rl_colors.HexColor('#e0f7fa')),
@@ -3381,54 +4700,269 @@ def generate_purchase_invoice_pdf(invoice: dict, lines: List[dict], tenant_confi
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
         ('FONTSIZE', (0, 0), (-1, 0), 10),
         ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
-        # Data rows
-        ('BACKGROUND', (0, 1), (-1, -4), rl_colors.HexColor('#e0f7fa')),
-        ('TEXTCOLOR', (0, 1), (-1, -1), rl_colors.HexColor('#0d47a1')),
-        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 1), (-1, -1), 9),
-        ('ALIGN', (0, 1), (-1, -1), 'CENTER'),
-        ('ALIGN', (-1, 1), (-1, -1), 'RIGHT'),
-        # TDS row (blue label, red amount)
-        ('TEXTCOLOR', (4, -3), (4, -3), rl_colors.HexColor('#1565c0')),
-        ('TEXTCOLOR', (5, -3), (5, -3), rl_colors.HexColor('#d32f2f')),
-        ('FONTNAME', (4, -3), (5, -3), 'Helvetica-Bold'),
-        # Rounded Off row (blue label, red amount)
-        ('TEXTCOLOR', (4, -2), (4, -2), rl_colors.HexColor('#1565c0')),
-        ('TEXTCOLOR', (5, -2), (5, -2), rl_colors.HexColor('#d32f2f')),
-        ('FONTNAME', (4, -2), (5, -2), 'Helvetica-Bold'),
-        # Grand Total row
-        ('BACKGROUND', (0, -1), (-1, -1), rl_colors.HexColor('#e0f7fa')),
+        # Body lines + padded rows: center; numeric amount column right-align on col 5 only
+        ('BACKGROUND', (0, 1), (-1, -7), rl_colors.HexColor('#e0f7fa')),
+        ('TEXTCOLOR', (0, 1), (-1, -7), rl_colors.HexColor('#0d47a1')),
+        ('FONTNAME', (0, 1), (-1, -7), 'Helvetica'),
+        ('FONTSIZE', (0, 1), (-1, -7), 9),
+        ('ALIGN', (0, 1), (-1, -7), 'CENTER'),
+        ('ALIGN', (5, 1), (5, -7), 'RIGHT'),
+        # Subtotal row (-6)
+        ('ALIGN', (5, -6), (5, -6), 'RIGHT'),
+        ('FONTNAME', (5, -6), (5, -6), 'Helvetica-Bold'),
+        # TDS row (-5)
+        ('TEXTCOLOR', (4, -5), (4, -5), rl_colors.HexColor('#1565c0')),
+        ('TEXTCOLOR', (5, -5), (5, -5), rl_colors.HexColor('#d32f2f')),
+        ('FONTNAME', (4, -5), (5, -5), 'Helvetica-Bold'),
+        ('ALIGN', (4, -5), (4, -5), 'RIGHT'),
+        ('ALIGN', (5, -5), (5, -5), 'RIGHT'),
+        # Rounded Off row (-4)
+        ('TEXTCOLOR', (4, -4), (4, -4), rl_colors.HexColor('#1565c0')),
+        ('TEXTCOLOR', (5, -4), (5, -4), rl_colors.HexColor('#d32f2f')),
+        ('FONTNAME', (4, -4), (5, -4), 'Helvetica-Bold'),
+        ('ALIGN', (4, -4), (4, -4), 'RIGHT'),
+        ('ALIGN', (5, -4), (5, -4), 'RIGHT'),
+        # Grand Total (-3): merge label across cols 0–2 so text stays inside grid
+        ('SPAN', (0, -3), (2, -3)),
+        ('BACKGROUND', (0, -3), (-1, -3), rl_colors.HexColor('#e0f7fa')),
+        ('FONTNAME', (0, -3), (-1, -3), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, -3), (-1, -3), 9.5),
+        ('ALIGN', (0, -3), (2, -3), 'LEFT'),
+        ('LEFTPADDING', (0, -3), (2, -3), 4),
+        ('ALIGN', (3, -3), (3, -3), 'RIGHT'),
+        ('ALIGN', (5, -3), (5, -3), 'RIGHT'),
+        # Advance Paid (-2): label spans cols 0–4
+        ('SPAN', (0, -2), (4, -2)),
+        ('FONTNAME', (0, -2), (-1, -2), 'Helvetica'),
+        ('ALIGN', (0, -2), (4, -2), 'LEFT'),
+        ('LEFTPADDING', (0, -2), (4, -2), 4),
+        ('ALIGN', (5, -2), (5, -2), 'RIGHT'),
+        # Balance Due (-1)
+        ('SPAN', (0, -1), (4, -1)),
+        ('BACKGROUND', (0, -1), (-1, -1), rl_colors.HexColor('#e8f5e9')),
         ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, -1), (-1, -1), 11),
+        ('FONTSIZE', (0, -1), (-1, -1), 10),
+        ('ALIGN', (0, -1), (4, -1), 'LEFT'),
+        ('LEFTPADDING', (0, -1), (4, -1), 4),
+        ('ALIGN', (5, -1), (5, -1), 'RIGHT'),
         # Grid
         ('GRID', (0, 0), (-1, -1), 1, rl_colors.HexColor('#0d47a1')),
-        ('TOPPADDING', (0, 0), (-1, -1), 4),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 2),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+        ('TOPPADDING', (0, -3), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, -3), (-1, -1), 4),
     ]))
     inner_content.append(line_table)
     inner_content.append(Spacer(1, 0.1*inch))
     
-    # Bottom section
-    amount_words = amount_to_words_indian(invoice.get('grand_total', 0))
-    bottom_data = [
-        [f"Total Amount In Words: {amount_words}", f"For {tenant_config.get('company_name', 'COMPANY NAME')}"],
-        ['', ''],
-        ['', 'Authorised Signatory']
-    ]
-    
-    bottom_table = Table(bottom_data, colWidths=[page_width*0.6, page_width*0.4], rowHeights=[0.3*inch, 0.5*inch, 0.2*inch])
+    # Bottom section (wrapped Paragraphs so long "amount in words" stays inside the box)
+    amount_words = amount_to_words_indian(invoice.get("grand_total"))
+    _co_raw = tenant_config.get('company_name') or 'COMPANY NAME'
+    _co_name = _co_raw.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    _words_safe = str(amount_words).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    words_in_cell_style = ParagraphStyle(
+        'AmountWords',
+        parent=styles['Normal'],
+        fontName='Helvetica',
+        fontSize=9,
+        leading=11,
+        textColor=rl_colors.HexColor('#0d47a1'),
+        alignment=TA_LEFT,
+        spaceBefore=0,
+        spaceAfter=2,
+    )
+    for_company_style = ParagraphStyle(
+        'ForCompany',
+        parent=styles['Normal'],
+        fontName='Helvetica-Bold',
+        fontSize=10,
+        leading=12,
+        textColor=rl_colors.HexColor('#0d47a1'),
+        alignment=TA_RIGHT,
+    )
+    signature_style = ParagraphStyle(
+        'SignatureStyle',
+        parent=styles['Normal'],
+        fontName='Helvetica',
+        fontSize=8.5,
+        leading=11,
+        textColor=rl_colors.HexColor('#1565c0'),
+        alignment=TA_RIGHT,
+    )
+    auth_sig_style = ParagraphStyle(
+        'AuthSignatory',
+        parent=styles['Normal'],
+        fontName='Helvetica',
+        fontSize=8.5,
+        leading=10,
+        textColor=rl_colors.HexColor('#0d47a1'),
+        alignment=TA_RIGHT,
+    )
+
+    _bottom_left_w = page_width * 0.58
+    _bottom_right_w = page_width * 0.42
+    words_para = Paragraph(
+        f"<b>Total Amount In Words:</b> {_words_safe}",
+        words_in_cell_style,
+    )
+    for_para = Paragraph(f"For {_co_name}", for_company_style)
+
+    _gen_at = pdf_generated_at or datetime.now(timezone.utc)
+    printed_ts_style = ParagraphStyle(
+        'PrintedTs',
+        parent=styles['Normal'],
+        fontName='Helvetica',
+        fontSize=8,
+        leading=10,
+        textColor=rl_colors.HexColor('#455a64'),
+        alignment=TA_RIGHT,
+    )
+    printed_ts_para = Paragraph(
+        f"Printed: {_gen_at.strftime('%d-%m-%Y %H:%M:%S')} UTC",
+        printed_ts_style,
+    )
+
+    # Optional scanned / uploaded owner signature image (Company Settings).
+    # For pushed invoices, only embed this stamp when the user opted in to digitally sign on push;
+    # otherwise the footer should stay visually empty of signature artwork (HMAC/PDF-CMS are already off).
+    sig_image_holder = None
+    _sig_raw = tenant_config.get("invoice_signature_image")
+    _sig_path = _signature_path_from_config_value(_sig_raw)
+    if _sig_raw and _sig_path is None:
+        logging.getLogger(__name__).warning(
+            "Purchase invoice PDF: invoice_signature_image is set (%r) but no matching file under %s. "
+            "Re-upload from Company Settings or ensure backend/uploads is persisted (Docker volume).",
+            _sig_raw,
+            UPLOADS_DIR,
+        )
+    _embed_company_signature_stamp = bool(invoice.get("apply_digital_signature"))
+    if _sig_path is not None and _embed_company_signature_stamp:
+        try:
+            with open(_sig_path, "rb") as _sig_f:
+                _sig_bytes = _sig_f.read()
+            rl_sig = RLImage(io.BytesIO(_sig_bytes))
+            _max_w = 1.45 * inch
+            if rl_sig.drawWidth > _max_w:
+                _sc = _max_w / rl_sig.drawWidth
+                rl_sig.drawWidth = _max_w
+                rl_sig.drawHeight = rl_sig.drawHeight * _sc
+            _sig_inner_w2 = max(float(_bottom_right_w) - 24, 120)
+            sig_image_holder = Table(
+                [[rl_sig], [printed_ts_para]],
+                colWidths=[_sig_inner_w2],
+            )
+            sig_image_holder.setStyle(TableStyle([
+                ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
+                ('VALIGN', (0, 0), (0, 0), 'BOTTOM'),
+                # Keep this compact so the rest of the footer doesn't get clipped
+                ('TOPPADDING', (0, 0), (-1, -1), 2),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
+                ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+            ]))
+        except Exception as _sig_err:
+            # Some image formats can fail ReportLab decoding even if Pillow supports them.
+            # Try converting to PNG in-memory as a robust fallback.
+            try:
+                from PIL import Image as PILImage
+
+                pil_img = PILImage.open(_sig_path)
+                bio = io.BytesIO()
+                pil_img.save(bio, format="PNG")
+                bio.seek(0)
+                rl_sig = RLImage(bio)
+
+                _max_w = 1.45 * inch
+                if rl_sig.drawWidth > _max_w:
+                    _sc = _max_w / rl_sig.drawWidth
+                    rl_sig.drawWidth = _max_w
+                    rl_sig.drawHeight = rl_sig.drawHeight * _sc
+                _sig_inner_w2 = max(float(_bottom_right_w) - 24, 120)
+                sig_image_holder = Table(
+                    [[rl_sig], [printed_ts_para]],
+                    colWidths=[_sig_inner_w2],
+                )
+                sig_image_holder.setStyle(TableStyle([
+                    ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
+                    ('VALIGN', (0, 0), (0, 0), 'BOTTOM'),
+                ('TOPPADDING', (0, 0), (-1, -1), 2),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                ]))
+            except Exception as _sig_pil_err:
+                logging.getLogger(__name__).warning(
+                    "Purchase invoice PDF: could not embed signature image from %s. "
+                    "ReportLab error=%s, Pillow fallback error=%s",
+                    _sig_path,
+                    _sig_err,
+                    _sig_pil_err,
+                )
+                sig_image_holder = None
+
+    # Visual signature block (always): line + "Authorized Signatory". When pushed with HMAC, add digital note.
+    _sig_inner_w = max(float(_bottom_right_w) - 24, 120)
+    sig_line_row = Table(
+        [['', '']],
+        colWidths=[_sig_inner_w * 0.36, _sig_inner_w * 0.64],
+    )
+    sig_line_row.setStyle(TableStyle([
+        ('LINEBELOW', (1, 0), (1, 0), 0.75, rl_colors.HexColor('#0d47a1')),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (1, 0), (1, 0), 4),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+    ]))
+
+    digital_lines = ""
+    if signature and signature.get("signature_value_b64"):
+        digital_lines = "Digitally Signed"
+        _sat = signature.get("signed_at")
+        if _sat:
+            try:
+                _iso = str(_sat).replace("Z", "+00:00")
+                _dt = datetime.fromisoformat(_iso)
+                if _dt.tzinfo is None:
+                    _dt = _dt.replace(tzinfo=timezone.utc)
+                digital_lines += f"<br/><font size=\"8\" color=\"#455a64\">{_dt.strftime('%d-%m-%Y %H:%M')} UTC</font>"
+            except Exception:
+                pass
+
+    show_signature_block = bool(invoice.get("apply_digital_signature"))
+    right_col_flowables = [for_para]
+    if show_signature_block:
+        right_col_flowables.extend([sig_line_row, Spacer(1, 0.04 * inch)])
+        if sig_image_holder is not None:
+            right_col_flowables.append(sig_image_holder)
+            right_col_flowables.append(Spacer(1, 0.02 * inch))
+        right_col_flowables.append(Paragraph("Authorized Signatory", auth_sig_style))
+        if digital_lines:
+            # Smaller spacer to avoid pushing scanned signature out of page when clipping occurs.
+            right_col_flowables.extend([Spacer(1, 0.02 * inch), Paragraph(digital_lines, signature_style)])
+
+    bottom_data = [[words_para, right_col_flowables]]
+
+    bottom_table = Table(
+        bottom_data,
+        colWidths=[_bottom_left_w, _bottom_right_w],
+    )
+    # If the "Digitally Signed" block is present, tighten outer padding to keep everything visible.
+    _outer_pad = 4 if digital_lines else 6
     bottom_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, -1), rl_colors.HexColor('#e0f7fa')),
         ('TEXTCOLOR', (0, 0), (-1, -1), rl_colors.HexColor('#0d47a1')),
         ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 0), (0, 0), 9),
-        ('FONTSIZE', (1, 0), (1, 0), 10),
-        ('FONTSIZE', (1, 2), (1, 2), 9),
-        ('ALIGN', (0, 0), (0, -1), 'LEFT'),
-        ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+        ('ALIGN', (0, 0), (0, 0), 'LEFT'),
+        ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ('GRID', (0, 0), (-1, -1), 1, rl_colors.HexColor('#0d47a1')),
-        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('TOPPADDING', (0, 0), (-1, -1), _outer_pad),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), _outer_pad),
+        ('LEFTPADDING', (0, 0), (0, 0), 6),
+        ('RIGHTPADDING', (0, 0), (0, 0), 6),
+        ('LEFTPADDING', (1, 0), (1, 0), 6),
+        ('RIGHTPADDING', (1, 0), (1, 0), 6),
     ]))
     inner_content.append(bottom_table)
     
@@ -3446,38 +4980,63 @@ async def download_purchase_invoice_pdf(
     current_user: User = Depends(get_current_user)
 ):
     """Download purchase invoice as PDF"""
-    invoice = await db.purchase_invoices.find_one({"id": invoice_id}, {"_id": 0})
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-    
-    # Get line items
-    lines = await db.purchase_invoice_lines.find(
-        {"invoice_id": invoice_id},
-        {"_id": 0}
-    ).sort("line_no", 1).to_list(100)
-    
-    # Get tenant config
-    config_docs = await db.tenant_config.find({}, {"_id": 0}).to_list(100)
-    tenant_config = {doc['key']: doc['value'] for doc in config_docs}
-    
-    # Generate PDF
-    pdf_bytes = generate_purchase_invoice_pdf(invoice, lines, tenant_config)
-    
-    # Return as downloadable file
-    from fastapi.responses import Response
-    return Response(
-        content=pdf_bytes,
-        media_type='application/pdf',
-        headers={
-            'Content-Disposition': f'attachment; filename=purchase_invoice_{invoice["invoice_no"].replace("/", "_")}.pdf'
-        }
-    )
+    _log = logging.getLogger(__name__)
+    try:
+        invoice = await db.purchase_invoices.find_one({"id": invoice_id}, {"_id": 0})
+        if not invoice:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+        normalize_invoice_advance_balance(invoice)
+        lines = await db.purchase_invoice_lines.find(
+            {"invoice_id": invoice_id},
+            {"_id": 0}
+        ).sort("line_no", 1).to_list(100)
+
+        tenant_config = await get_tenant_config_dict(use_cache=False)
+        signature_context = None
+        if invoice.get("status") == "pushed" and invoice.get("digital_signature_value_b64"):
+            signature_context = {
+                "signature_value_b64": invoice.get("digital_signature_value_b64"),
+                "signed_by": invoice.get("digital_signature_signed_by"),
+                "signed_at": invoice.get("digital_signature_signed_at"),
+            }
+        try:
+            pdf_bytes = generate_purchase_invoice_pdf(
+                invoice,
+                lines,
+                tenant_config,
+                signature_context,
+                pdf_generated_at=datetime.now(timezone.utc),
+            )
+            pdf_bytes = _maybe_sign_purchase_invoice_pdf(pdf_bytes, invoice)
+        except Exception as e:
+            _log.exception("purchase invoice PDF generation failed for %s", invoice_id)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Could not generate PDF: {e!s}",
+            ) from e
+
+        from fastapi.responses import Response
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename=purchase_invoice_{str(invoice.get("invoice_no") or invoice_id).replace("/", "_")}.pdf'
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        _log.exception("purchase invoice PDF download failed for %s", invoice_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not download invoice PDF: {e!s}",
+        ) from e
 
 @api_router.get("/tenant-config")
 async def get_tenant_config(current_user: User = Depends(get_current_user)):
-    """Get all tenant configuration"""
-    config_docs = await db.tenant_config.find({}, {"_id": 0}).to_list(100)
-    return config_docs
+    """Get all tenant configuration (cached 60s)."""
+    d = await get_tenant_config_dict()
+    return [{"key": k, "value": v} for k, v in d.items()]
 
 @api_router.post("/tenant-config")
 async def update_tenant_config(
@@ -3500,11 +5059,86 @@ async def update_tenant_config(
         {"$set": {"key": key, "value": value}},
         upsert=True
     )
-    
+    try:
+        tid = tenant_context.get_tenant()
+        _response_cache.pop(f"tenant_config_dict:{tid}", None)
+    except Exception:
+        pass
     await create_audit_log(current_user.id, "UPDATE_TENANT_CONFIG", "admin",
                           {"key": key})
-    
     return {"status": "success", "message": "Configuration updated"}
+
+
+@api_router.post("/tenant-config/signature-image")
+async def upload_invoice_signature_image(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
+    """Upload PNG/JPEG/WebP/GIF used on purchase invoice PDFs (admin or owner only)."""
+    if current_user.role not in ['admin', 'owner']:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    raw_name = file.filename or ""
+    ext = raw_name.rsplit(".", 1)[-1].lower() if "." in raw_name else ""
+    if ext not in ("png", "jpg", "jpeg", "gif", "webp"):
+        raise HTTPException(status_code=400, detail="Use PNG, JPG, JPEG, GIF, or WebP")
+    content = await file.read()
+    if len(content) > 2_000_000:
+        raise HTTPException(status_code=400, detail="Image too large (max 2 MB)")
+    fname = f"invoice_signature_{uuid.uuid4().hex[:16]}.{ext}"
+    dest = UPLOADS_DIR / fname
+    with open(dest, "wb") as out:
+        out.write(content)
+    public_url = f"/uploads/{fname}"
+    await db.tenant_config.update_one(
+        {"key": "invoice_signature_image"},
+        {"$set": {"key": "invoice_signature_image", "value": public_url}},
+        upsert=True,
+    )
+    try:
+        tid = tenant_context.get_tenant()
+        _response_cache.pop(f"tenant_config_dict:{tid}", None)
+    except Exception:
+        pass
+    await create_audit_log(
+        current_user.id,
+        "UPDATE_TENANT_CONFIG",
+        "admin",
+        {"key": "invoice_signature_image", "action": "upload"},
+    )
+    return {"url": public_url, "message": "Signature image saved"}
+
+
+@api_router.delete("/tenant-config/signature-image")
+async def delete_invoice_signature_image(current_user: User = Depends(get_current_user)):
+    """Remove uploaded invoice signature image from config and delete file from disk."""
+    if current_user.role not in ['admin', 'owner']:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    doc = await db.tenant_config.find_one({"key": "invoice_signature_image"}, {"_id": 0})
+    old_val = (doc or {}).get("value") or ""
+    old_path = _signature_path_from_config_value(old_val)
+    if old_path and old_path.is_file():
+        try:
+            old_path.unlink()
+        except OSError:
+            pass
+    await db.tenant_config.update_one(
+        {"key": "invoice_signature_image"},
+        {"$set": {"key": "invoice_signature_image", "value": ""}},
+        upsert=True,
+    )
+    try:
+        tid = tenant_context.get_tenant()
+        _response_cache.pop(f"tenant_config_dict:{tid}", None)
+    except Exception:
+        pass
+    await create_audit_log(
+        current_user.id,
+        "UPDATE_TENANT_CONFIG",
+        "admin",
+        {"key": "invoice_signature_image", "action": "delete"},
+    )
+    return {"status": "success", "message": "Signature image removed"}
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Comprehensive Reports - PDF & Excel Generation
@@ -3854,13 +5488,18 @@ async def get_audit_logs(
     # Get total count
     total = await db.audit_logs.count_documents(query)
     
-    # Enrich logs with user names
+    # Batch enrich logs with user names (one query instead of N)
+    user_ids = list({log["user_id"] for log in logs if log.get("user_id")})
+    user_map = {}
+    if user_ids:
+        users = await db.users.find({"id": {"$in": user_ids}}, {"_id": 0, "id": 1, "name": 1, "email": 1}).to_list(len(user_ids))
+        user_map = {u["id"]: u for u in users}
     for log in logs:
-        if log.get('user_id'):
-            user = await db.users.find_one({"id": log['user_id']}, {"_id": 0, "name": 1, "email": 1})
+        if log.get("user_id"):
+            user = user_map.get(log["user_id"])
             if user:
-                log['user_name'] = user.get('name', 'Unknown')
-                log['user_email'] = user.get('email', 'Unknown')
+                log["user_name"] = user.get("name", "Unknown")
+                log["user_email"] = user.get("email", "Unknown")
     
     return {
         "logs": logs,
@@ -4446,9 +6085,16 @@ async def get_wastage_breach_alerts(current_user: User = Depends(get_current_use
         "alert_acknowledged": False
     }, {"_id": 0}).sort("created_at", -1).to_list(100)
     
+    # Batch fetch lots (one query instead of N)
+    lot_ids = list({a["lot_id"] for a in alerts if a.get("lot_id")})
+    lot_map = {}
+    if lot_ids:
+        lots = await db.procurement_lots.find({"id": {"$in": lot_ids}}, {"_id": 0, "id": 1, "lot_number": 1, "species": 1}).to_list(len(lot_ids))
+        lot_map = {l["id"]: l for l in lots}
+    
     result = []
     for alert in alerts:
-        lot = await db.procurement_lots.find_one({"id": alert['lot_id']}, {"_id": 0, "lot_number": 1, "species": 1})
+        lot = lot_map.get(alert["lot_id"]) if alert.get("lot_id") else None
         if lot:
             variance_pct = alert['yield_pct'] - alert['min_yield_pct'] if alert.get('min_yield_pct') else 0
             result.append(WastageBreachAlert(
@@ -4794,8 +6440,6 @@ async def update_procurement_lot(
 @api_router.get("/announcements/active")
 async def get_active_announcements(request: Request, current_user: dict = Depends(get_current_user)):
     """Get active announcements for the current tenant"""
-    from datetime import datetime, timezone
-    
     tenant_id = current_user.get("tenant_id")
     if not tenant_id:
         return []
@@ -4804,14 +6448,20 @@ async def get_active_announcements(request: Request, current_user: dict = Depend
     
     # Fetch announcements from MongoDB
     announcements = await db.active_announcements.find({
-        "$or": [
-            {"target_all": True},
-            {"target_tenant_ids": tenant_id}
-        ],
-        "show_from": {"$lte": now.isoformat()},
-        "$or": [
-            {"show_until": None},
-            {"show_until": {"$gte": now.isoformat()}}
+        "$and": [
+            {
+                "$or": [
+                    {"target_all": True},
+                    {"target_tenant_ids": tenant_id}
+                ]
+            },
+            {"show_from": {"$lte": now.isoformat()}},
+            {
+                "$or": [
+                    {"show_until": None},
+                    {"show_until": {"$gte": now.isoformat()}}
+                ]
+            }
         ]
     }).to_list(length=20)
     
@@ -4888,7 +6538,7 @@ async def create_party(party: PartyCreate, current_user: User = Depends(get_curr
     party_data["is_active"] = True
     
     await db.parties.insert_one(party_data)
-    
+    _invalidate_parties_cache()
     # Auto-create ledger account with opening balance 0 for current FY
     current_fy = get_financial_year(date.today())
     ledger_id = str(uuid.uuid4())
@@ -4930,13 +6580,21 @@ async def create_party(party: PartyCreate, current_user: User = Depends(get_curr
     
     return Party(**party_data)
 
+def _invalidate_parties_cache():
+    try:
+        tid = tenant_context.get_tenant()
+        _response_cache.pop(f"parties_list:{tid}", None)
+    except Exception:
+        pass
+
+
 @api_router.get("/parties", response_model=List[Party])
 async def list_parties(
     search: Optional[str] = None,
     is_active: Optional[bool] = None,
     current_user: User = Depends(get_current_user)
 ):
-    """List all parties with optional search"""
+    """List all parties with optional search. Full list (no filters) cached 30s."""
     query = {}
     if search:
         query["$or"] = [
@@ -4947,18 +6605,149 @@ async def list_parties(
     if is_active is not None:
         query["is_active"] = is_active
     
+    use_cache = not query  # cache only unfiltered list (dropdown / default load)
+    try:
+        tid = tenant_context.get_tenant()
+    except Exception:
+        tid = "default"
+    cache_key = f"parties_list:{tid}"
+    if use_cache:
+        cached = _cache_get(cache_key, ttl_sec=30)
+        if cached is not None:
+            return cached
+    
     parties = await db.parties.find(query, {"_id": 0}).sort("party_name", 1).to_list(1000)
     
-    # Add current FY ledger balance for each party
+    # Batch fetch current FY ledger balances (one query instead of N)
     current_fy = get_financial_year(date.today())
+    party_ids = [p["id"] for p in parties]
+    ledger_map = {}
+    if party_ids:
+        ledgers = await db.party_ledger_accounts.find(
+            {"party_id": {"$in": party_ids}, "financial_year": current_fy},
+            {"_id": 0, "party_id": 1, "closing_balance": 1}
+        ).to_list(len(party_ids))
+        ledger_map = {lg["party_id"]: lg for lg in ledgers}
     for party in parties:
-        ledger = await db.party_ledger_accounts.find_one(
-            {"party_id": party["id"], "financial_year": current_fy},
-            {"_id": 0, "closing_balance": 1}
-        )
+        ledger = ledger_map.get(party["id"])
         party["current_fy_balance"] = ledger["closing_balance"] if ledger else 0.0
     
-    return [Party(**p) for p in parties]
+    result = [Party(**p) for p in parties]
+    if use_cache:
+        _cache_set(cache_key, result, ttl_sec=30)
+    return result
+
+
+@api_router.get("/parties/insights")
+async def get_party_insights(
+    fy: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+):
+    """Party Master insights: FY KG supplied, top parties, and declining parties."""
+    if not fy:
+        fy = get_financial_year(date.today())
+    fy_start, fy_end = get_fy_date_range(fy)
+    fy_start_s = fy_start.isoformat()
+    fy_end_s = fy_end.isoformat()
+
+    # Rolling comparison windows (recent 90 days vs previous 90 days).
+    today = date.today()
+    recent_from = (today - timedelta(days=89)).isoformat()
+    recent_to = today.isoformat()
+    prev_from = (today - timedelta(days=179)).isoformat()
+    prev_to = (today - timedelta(days=90)).isoformat()
+
+    parties = await db.parties.find({}, {"_id": 0, "id": 1, "party_name": 1, "short_code": 1, "is_active": 1}).to_list(2000)
+    party_map = {p["id"]: p for p in parties if p.get("id")}
+
+    fy_rows = await db.purchase_invoices.aggregate([
+        {
+            "$match": {
+                "party_id": {"$exists": True, "$ne": None, "$ne": ""},
+                "invoice_date": {"$gte": fy_start_s, "$lte": fy_end_s},
+            }
+        },
+        {
+            "$group": {
+                "_id": "$party_id",
+                "kg": {"$sum": {"$ifNull": ["$total_quantity_kg", 0]}},
+                "invoice_count": {"$sum": 1},
+            }
+        },
+    ]).to_list(3000)
+
+    recent_rows = await db.purchase_invoices.aggregate([
+        {
+            "$match": {
+                "party_id": {"$exists": True, "$ne": None, "$ne": ""},
+                "invoice_date": {"$gte": recent_from, "$lte": recent_to},
+            }
+        },
+        {"$group": {"_id": "$party_id", "kg": {"$sum": {"$ifNull": ["$total_quantity_kg", 0]}}}},
+    ]).to_list(3000)
+
+    prev_rows = await db.purchase_invoices.aggregate([
+        {
+            "$match": {
+                "party_id": {"$exists": True, "$ne": None, "$ne": ""},
+                "invoice_date": {"$gte": prev_from, "$lte": prev_to},
+            }
+        },
+        {"$group": {"_id": "$party_id", "kg": {"$sum": {"$ifNull": ["$total_quantity_kg", 0]}}}},
+    ]).to_list(3000)
+
+    fy_map = {r.get("_id"): {"kg": float(r.get("kg") or 0), "invoice_count": int(r.get("invoice_count") or 0)} for r in fy_rows}
+    recent_map = {r.get("_id"): float(r.get("kg") or 0) for r in recent_rows}
+    prev_map = {r.get("_id"): float(r.get("kg") or 0) for r in prev_rows}
+
+    by_party = []
+    for pid, pdata in party_map.items():
+        fy_kg = fy_map.get(pid, {}).get("kg", 0.0)
+        by_party.append({
+            "party_id": pid,
+            "party_name": pdata.get("party_name") or pid,
+            "short_code": pdata.get("short_code"),
+            "is_active": bool(pdata.get("is_active", True)),
+            "fy_kg": round(fy_kg, 3),
+            "fy_invoice_count": fy_map.get(pid, {}).get("invoice_count", 0),
+            "recent_90d_kg": round(recent_map.get(pid, 0.0), 3),
+            "prev_90d_kg": round(prev_map.get(pid, 0.0), 3),
+        })
+
+    top_performing = sorted(
+        [p for p in by_party if p["fy_kg"] > 0],
+        key=lambda x: x["fy_kg"],
+        reverse=True,
+    )[:10]
+
+    declining = []
+    for p in by_party:
+        prev_kg = p["prev_90d_kg"]
+        curr_kg = p["recent_90d_kg"]
+        if prev_kg > 0 and curr_kg < prev_kg:
+            drop_pct = ((prev_kg - curr_kg) / prev_kg) * 100
+            declining.append({
+                **p,
+                "drop_pct": round(drop_pct, 1),
+                "drop_kg": round(prev_kg - curr_kg, 3),
+            })
+    declining = sorted(declining, key=lambda x: x["drop_pct"], reverse=True)[:10]
+
+    total_fy_kg = round(sum(p["fy_kg"] for p in by_party), 3)
+    active_suppliers = sum(1 for p in by_party if p["fy_kg"] > 0)
+
+    return {
+        "fy": fy,
+        "summary": {
+            "total_fy_kg": total_fy_kg,
+            "active_suppliers": active_suppliers,
+            "declining_count": len(declining),
+            "top_performing_count": len(top_performing),
+        },
+        "top_performing_parties": top_performing,
+        "declining_parties": declining,
+        "by_party": by_party,
+    }
 
 @api_router.get("/parties/{party_id}", response_model=Party)
 async def get_party(party_id: str, current_user: User = Depends(get_current_user)):
@@ -4984,6 +6773,7 @@ async def update_party(party_id: str, party: PartyCreate, current_user: User = D
     update_data["updated_at"] = datetime.now(timezone.utc)
     
     await db.parties.update_one({"id": party_id}, {"$set": update_data})
+    _invalidate_parties_cache()
     updated = await db.parties.find_one({"id": party_id}, {"_id": 0})
     return Party(**updated)
 
@@ -5002,10 +6792,12 @@ async def delete_party(party_id: str, current_user: User = Depends(get_current_u
             {"id": party_id}, 
             {"$set": {"is_active": False, "updated_at": datetime.now(timezone.utc)}}
         )
+        _invalidate_parties_cache()
         return {"message": "Party deactivated (has ledger history)"}
     
     # Hard delete if no entries
     await db.parties.delete_one({"id": party_id})
+    _invalidate_parties_cache()
     return {"message": "Party deleted"}
 
 
@@ -5047,25 +6839,27 @@ async def list_party_ledgers_with_details(
     
     parties = await db.parties.find(query, {"_id": 0}).sort("party_name", 1).to_list(1000)
     
-    # Enrich each party with ledger info
+    # Batch fetch ledger accounts for this FY (one query instead of N)
+    party_ids = [p["id"] for p in parties]
+    ledger_map = {}
+    if party_ids:
+        ledgers = await db.party_ledger_accounts.find(
+            {"party_id": {"$in": party_ids}, "financial_year": fy},
+            {"_id": 0}
+        ).to_list(len(party_ids))
+        ledger_map = {lg["party_id"]: lg for lg in ledgers}
+    
+    default_ledger = {
+        "financial_year": fy,
+        "opening_balance": 0.0,
+        "closing_balance": 0.0,
+        "total_billed": 0.0,
+        "total_tds": 0.0,
+        "total_payments": 0.0
+    }
     result = []
     for party in parties:
-        # Get ledger account for this party and FY
-        ledger = await db.party_ledger_accounts.find_one(
-            {"party_id": party["id"], "financial_year": fy},
-            {"_id": 0}
-        )
-        
-        # If no ledger exists, create a default one
-        if not ledger:
-            ledger = {
-                "financial_year": fy,
-                "opening_balance": 0.0,
-                "closing_balance": 0.0,
-                "total_billed": 0.0,
-                "total_tds": 0.0,
-                "total_payments": 0.0
-            }
+        ledger = ledger_map.get(party["id"]) or default_ledger
         
         result.append({
             "id": party["id"],
@@ -5099,21 +6893,25 @@ async def list_party_ledgers(
     # Get all ledgers for this FY
     query = {"financial_year": fy}
     ledgers = await db.party_ledger_accounts.find(query, {"_id": 0}).to_list(1000)
-    
-    # Enrich with party details
+    if not ledgers:
+        return []
+    # Batch fetch parties (avoids N+1)
+    party_ids = [lg["party_id"] for lg in ledgers]
+    parties = await db.parties.find({"id": {"$in": party_ids}}, {"_id": 0, "id": 1, "party_name": 1, "party_alias": 1, "short_code": 1}).to_list(len(party_ids))
+    party_map = {p["id"]: p for p in parties}
     result = []
     for ledger in ledgers:
-        party = await db.parties.find_one({"id": ledger["party_id"]}, {"_id": 0})
-        if party:
-            if search and search.lower() not in party.get("party_name", "").lower():
-                continue
-            result.append({
-                **ledger,
-                "party_name": party.get("party_name"),
-                "party_alias": party.get("party_alias"),
-                "short_code": party.get("short_code")
-            })
-    
+        party = party_map.get(ledger["party_id"])
+        if not party:
+            continue
+        if search and search.lower() not in (party.get("party_name") or "").lower():
+            continue
+        result.append({
+            **ledger,
+            "party_name": party.get("party_name"),
+            "party_alias": party.get("party_alias"),
+            "short_code": party.get("short_code")
+        })
     return result
 
 @api_router.get("/party-ledger/parties/{party_id}/ledger")
@@ -5153,11 +6951,30 @@ async def get_party_ledger_detail(
             "entries": []
         }
     
-    # Get all entries
+    # Get all entries (recompute only on write, not on every read - big perf win)
     entries = await db.party_ledger_entries.find(
         {"ledger_id": ledger["id"]},
         {"_id": 0}
     ).sort("entry_order", 1).to_list(10000)
+    
+    # Batch-fetch invoice lines for all bill entries (avoids N+1)
+    invoice_ids = list({e["invoice_id"] for e in entries if e.get("entry_type") == "bill" and e.get("invoice_id")})
+    lines_by_invoice = {}
+    if invoice_ids:
+        all_lines = await db.purchase_invoice_lines.find(
+            {"invoice_id": {"$in": invoice_ids}},
+            {"_id": 0, "invoice_id": 1, "line_no": 1, "count_value": 1, "quantity_kg": 1, "rate": 1, "amount": 1}
+        ).sort("line_no", 1).to_list(5000)
+        for line in all_lines:
+            iid = line.get("invoice_id")
+            if iid not in lines_by_invoice:
+                lines_by_invoice[iid] = []
+            lines_by_invoice[iid].append({
+                "count_value": line.get("count_value", ""),
+                "quantity_kg": line.get("quantity_kg", 0),
+                "rate": line.get("rate", 0),
+                "amount": line.get("amount", 0)
+            })
     
     # Format entries as per spec
     formatted_entries = []
@@ -5166,27 +6983,12 @@ async def get_party_ledger_detail(
             "id": entry["id"],
             "entry_date": entry["entry_date"].isoformat() if isinstance(entry["entry_date"], datetime) else entry["entry_date"],
             "entry_type": entry["entry_type"],
-            "bill_no": entry.get("invoice_no", ""),  # Map invoice_no to bill_no
+            "bill_no": entry.get("invoice_no", ""),
             "entry_order": entry["entry_order"],
             "balance_after": entry["balance_after"]
         }
-        
-        # For bill entries, get line items
         if entry.get("entry_type") == "bill" and entry.get("invoice_id"):
-            lines = await db.purchase_invoice_lines.find(
-                {"invoice_id": entry["invoice_id"]},
-                {"_id": 0}
-            ).sort("line_no", 1).to_list(100)
-            
-            formatted_entry["lines"] = [
-                {
-                    "count_value": line.get("count_value", ""),
-                    "quantity_kg": line.get("quantity_kg", 0),
-                    "rate": line.get("rate", 0),
-                    "amount": line.get("amount", 0)
-                }
-                for line in lines
-            ]
+            formatted_entry["lines"] = lines_by_invoice.get(entry["invoice_id"], [])
             formatted_entry["total_bill"] = entry.get("bill_subtotal", 0)
             formatted_entry["tds_rate_pct"] = entry.get("tds_rate_pct", 0.1)
             formatted_entry["tds_amount"] = entry.get("tds_amount", 0)
@@ -5200,6 +7002,7 @@ async def get_party_ledger_detail(
             formatted_entry["payment_date"] = entry.get("payment_date", entry["entry_date"])
             formatted_entry["paid_to"] = entry.get("paid_to", "")
             formatted_entry["payment_mode"] = entry.get("payment_mode", "")
+            formatted_entry["description"] = entry.get("description", "Payment Received")
         
         # For manual entries
         if entry.get("entry_type") in ("manual_debit", "manual_credit"):
@@ -5253,21 +7056,11 @@ async def get_party_ledger(
         {"_id": 0}
     )
     if not ledger:
-        # Create new ledger account
-        ledger = {
-            "id": str(uuid.uuid4()),
-            "party_id": party_id,
-            "financial_year": fy,
-            "opening_balance": 0.0,
-            "closing_balance": 0.0,
-            "total_billed": 0.0,
-            "total_tds": 0.0,
-            "total_payments": 0.0,
-            "is_locked": False,
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        }
-        await db.party_ledger_accounts.insert_one(ledger)
+        ledger = await _create_party_ledger_for_fy(
+            party_id=party_id,
+            fy=fy,
+            created_by=getattr(current_user, "id", None),
+        )
     
     # Get all entries
     entries = await db.party_ledger_entries.find(
@@ -5275,19 +7068,24 @@ async def get_party_ledger(
         {"_id": 0}
     ).sort("entry_order", 1).to_list(10000)
     
-    # Get invoice line items for bill entries
+    # Batch-fetch invoice line items for bill entries (avoids N+1)
+    invoice_ids = list({e["invoice_id"] for e in entries if e.get("entry_type") == "bill" and e.get("invoice_id")})
+    lines_by_invoice = {}
+    if invoice_ids:
+        all_lines = await db.purchase_invoice_lines.find(
+            {"invoice_id": {"$in": invoice_ids}},
+            {"_id": 0}
+        ).sort("line_no", 1).to_list(5000)
+        for line in all_lines:
+            iid = line.get("invoice_id")
+            if iid not in lines_by_invoice:
+                lines_by_invoice[iid] = []
+            lines_by_invoice[iid].append(line)
     for entry in entries:
         if entry.get("entry_type") == "bill" and entry.get("invoice_id"):
-            lines = await db.purchase_invoice_lines.find(
-                {"invoice_id": entry["invoice_id"]},
-                {"_id": 0}
-            ).sort("line_no", 1).to_list(100)
-            entry["line_items"] = lines
+            entry["line_items"] = lines_by_invoice.get(entry["invoice_id"], [])
     
-    # Get tenant config for header
-    config_docs = await db.tenant_config.find({}, {"_id": 0}).to_list(100)
-    tenant_config = {doc['key']: doc['value'] for doc in config_docs}
-    
+    tenant_config = await get_tenant_config_dict()
     return {
         "party": party,
         "ledger": ledger,
@@ -5303,14 +7101,15 @@ async def set_opening_balance(
     opening_balance: float,
     current_user: User = Depends(get_current_user)
 ):
-    """Set opening balance for a ledger (only if no entries exist)"""
+    """Set opening balance for a ledger (admin override for lock/entries-exist checks)."""
+    is_admin = str(getattr(current_user, "role", "")).lower() == "admin"
     ledger = await db.party_ledger_accounts.find_one(
         {"party_id": party_id, "financial_year": fy}
     )
     if not ledger:
         raise HTTPException(status_code=404, detail="Ledger not found")
     
-    if ledger.get("is_locked"):
+    if ledger.get("is_locked") and not is_admin:
         raise HTTPException(status_code=400, detail="Ledger is locked")
     
     # Check for existing entries (excluding opening entry)
@@ -5318,7 +7117,7 @@ async def set_opening_balance(
         "ledger_id": ledger["id"],
         "entry_type": {"$ne": "opening"}
     })
-    if entry_count > 0:
+    if entry_count > 0 and not is_admin:
         raise HTTPException(status_code=400, detail="Cannot change opening balance after entries exist")
     
     # Update opening balance
@@ -5410,80 +7209,163 @@ async def recompute_ledger_balances(ledger_id: str):
 
 async def create_ledger_entry_for_invoice(invoice: dict, current_user_id: str):
     """
-    Create a ledger entry when an invoice is pushed.
-    Called from the push-to-procurement endpoint.
+    Create a party ledger (bill) entry from invoice details.
+    Called when an invoice is approved and optionally when pushed to procurement (if not already created).
+    Uses invoice subtotal/grand_total; falls back to summing line items if amounts are missing/zero.
     """
+    normalize_invoice_advance_balance(invoice)
     party_id = invoice.get("party_id")
     if not party_id:
         return None  # No party linked, no ledger entry
-    
+
+    invoice_id = invoice.get("id")
+    if not invoice_id:
+        return None
+
+    # Avoid duplicate bill entry for the same invoice
+    existing_bill = await db.party_ledger_entries.find_one(
+        {"invoice_id": invoice_id, "entry_type": "bill"}
+    )
+    if existing_bill:
+        # Bill already exists; ensure advance_paid is reflected (backfill if missing)
+        advance_paid = float(invoice.get("advance_paid") or 0)
+        if advance_paid > 0:
+            existing_payment = await db.party_ledger_entries.find_one(
+                {"invoice_id": invoice_id, "entry_type": "payment"}
+            )
+            if not existing_payment:
+                # Use same ledger as the bill so payment is counted in this ledger's Total Payments
+                ledger_id_for_payment = existing_bill["ledger_id"]
+                ledger = await db.party_ledger_accounts.find_one(
+                    {"id": ledger_id_for_payment},
+                    {"_id": 0}
+                )
+                if ledger and not ledger.get("is_locked"):
+                    invoice_date = invoice.get("invoice_date")
+                    if isinstance(invoice_date, str):
+                        invoice_date = date.fromisoformat(invoice_date.split("T")[0][:10]) if invoice_date else date.today()
+                    invoice_date_str = invoice_date.isoformat() if hasattr(invoice_date, "isoformat") else str(invoice_date)
+                    max_order = await db.party_ledger_entries.find_one(
+                        {"ledger_id": ledger_id_for_payment},
+                        sort=[("entry_order", -1)]
+                    )
+                    next_order = (max_order.get("entry_order", 0) if max_order else 0) + 1
+                    payment_entry = {
+                        "id": str(uuid.uuid4()),
+                        "ledger_id": ledger_id_for_payment,
+                        "party_id": party_id,
+                        "entry_date": invoice_date_str,
+                        "entry_type": "payment",
+                        "payment_amount": round(advance_paid, 2),
+                        "payment_date": invoice_date_str,
+                        "paid_to": invoice.get("party_name_text") or "",
+                        "payment_mode": None,
+                        "payment_reference": f"Advance against invoice {invoice.get('invoice_no') or invoice_id}",
+                        "invoice_id": invoice_id,
+                        "description": f"Advance against invoice {invoice.get('invoice_no') or invoice_id}",
+                        "balance_after": 0,
+                        "entry_order": next_order,
+                        "created_by": current_user_id,
+                        "created_at": datetime.now(timezone.utc)
+                    }
+                    await db.party_ledger_entries.insert_one(payment_entry)
+                    await recompute_ledger_balances(ledger_id_for_payment)
+        return existing_bill
+
     invoice_date = invoice.get("invoice_date")
     if isinstance(invoice_date, str):
-        invoice_date = date.fromisoformat(invoice_date)
-    
-    # Convert to string for MongoDB storage
-    invoice_date_str = invoice_date.isoformat() if isinstance(invoice_date, date) else str(invoice_date)
-    
+        invoice_date = date.fromisoformat(invoice_date.split("T")[0] if "T" in invoice_date else invoice_date)
+    if not isinstance(invoice_date, date):
+        invoice_date = date.today()
+    invoice_date_str = invoice_date.isoformat()
+
     fy = get_financial_year(invoice_date)
-    
+
+    # Resolve bill amount from invoice: prefer subtotal, then grand_total, then sum of line items
+    subtotal = float(invoice.get("subtotal") or 0) or float(invoice.get("grand_total") or 0)
+    if subtotal <= 0:
+        lines = await db.purchase_invoice_lines.find(
+            {"invoice_id": invoice_id},
+            {"_id": 0, "amount": 1, "quantity_kg": 1, "rate": 1}
+        ).to_list(500)
+        for line in lines:
+            amt = line.get("amount")
+            if amt is not None:
+                subtotal += float(amt)
+            else:
+                qty = float(line.get("quantity_kg") or 0)
+                rate = float(line.get("rate") or 0)
+                subtotal += round(qty * rate, 2)
+        subtotal = round(subtotal, 2)
+
+    tds_rate = float(invoice.get("tds_rate_pct") or 0.1)
+    tds_amount = float(invoice.get("tds_amount")) if invoice.get("tds_amount") is not None else round(subtotal * tds_rate / 100, 4)
+    tds_after_bill = round(subtotal - tds_amount, 2)
+
     # Get or create ledger account
     ledger = await db.party_ledger_accounts.find_one(
         {"party_id": party_id, "financial_year": fy}
     )
     if not ledger:
-        ledger = {
-            "id": str(uuid.uuid4()),
-            "party_id": party_id,
-            "financial_year": fy,
-            "opening_balance": 0.0,
-            "closing_balance": 0.0,
-            "total_billed": 0.0,
-            "total_tds": 0.0,
-            "total_payments": 0.0,
-            "is_locked": False,
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        }
-        await db.party_ledger_accounts.insert_one(ledger)
+        ledger = await _create_party_ledger_for_fy(
+            party_id=party_id,
+            fy=fy,
+            created_by=current_user_id,
+            opening_entry_date=invoice_date,
+        )
     elif ledger.get("is_locked"):
         raise HTTPException(status_code=400, detail=f"Ledger for FY {fy} is locked")
-    
-    # Get next entry order
+
     max_order = await db.party_ledger_entries.find_one(
         {"ledger_id": ledger["id"]},
         sort=[("entry_order", -1)]
     )
     next_order = (max_order.get("entry_order", 0) if max_order else 0) + 1
-    
-    # Calculate TDS values
-    subtotal = invoice.get("subtotal", 0)
-    tds_rate = invoice.get("tds_rate_pct", 0.1)
-    tds_amount = round(subtotal * tds_rate / 100, 4)
-    tds_after_bill = round(subtotal - tds_amount, 2)
-    
-    # Create entry
+
     entry = {
         "id": str(uuid.uuid4()),
         "ledger_id": ledger["id"],
         "party_id": party_id,
-        "entry_date": invoice_date_str,  # Use the string version
+        "entry_date": invoice_date_str,
         "entry_type": "bill",
-        "invoice_id": invoice["id"],
+        "invoice_id": invoice_id,
         "invoice_no": invoice.get("invoice_no"),
-        "bill_subtotal": subtotal,
+        "bill_subtotal": round(subtotal, 2),
         "tds_rate_pct": tds_rate,
-        "tds_amount": tds_amount,
+        "tds_amount": round(tds_amount, 4),
         "tds_after_bill": tds_after_bill,
-        "balance_after": 0,  # Will be computed
+        "balance_after": 0,
         "entry_order": next_order,
         "created_by": current_user_id,
         "created_at": datetime.now(timezone.utc)
     }
     await db.party_ledger_entries.insert_one(entry)
-    
-    # Recompute balances
+
+    # If invoice has advance paid, add a payment entry so ledger balance reflects it
+    advance_paid = float(invoice.get("advance_paid") or 0)
+    if advance_paid > 0:
+        next_order += 1
+        payment_entry = {
+            "id": str(uuid.uuid4()),
+            "ledger_id": ledger["id"],
+            "party_id": party_id,
+            "entry_date": invoice_date_str,
+            "entry_type": "payment",
+            "payment_amount": round(advance_paid, 2),
+            "payment_date": invoice_date_str,
+            "paid_to": invoice.get("party_name_text") or "",
+            "payment_mode": None,
+            "payment_reference": f"Advance against invoice {invoice.get('invoice_no') or invoice_id}",
+            "invoice_id": invoice_id,
+            "description": f"Advance against invoice {invoice.get('invoice_no') or invoice_id}",
+            "balance_after": 0,
+            "entry_order": next_order,
+            "created_by": current_user_id,
+            "created_at": datetime.now(timezone.utc)
+        }
+        await db.party_ledger_entries.insert_one(payment_entry)
+
     await recompute_ledger_balances(ledger["id"])
-    
     return entry
 
 
@@ -5712,6 +7594,7 @@ async def set_party_opening_balance(
         {"_id": 0}
     )
     
+    is_admin = str(getattr(current_user, "role", "")).lower() == "admin"
     if ledger:
         # Check if there are any entries (except opening)
         entries = await db.party_ledger_entries.find(
@@ -5719,7 +7602,7 @@ async def set_party_opening_balance(
             {"_id": 0}
         ).limit(1).to_list(1)
         
-        if entries:
+        if entries and not is_admin:
             raise HTTPException(
                 status_code=400,
                 detail="Cannot set opening balance when entries already exist. Delete all entries first."
@@ -5802,20 +7685,12 @@ async def set_party_opening_balance(
         {"party_id": payment.party_id, "financial_year": fy}
     )
     if not ledger:
-        ledger = {
-            "id": str(uuid.uuid4()),
-            "party_id": payment.party_id,
-            "financial_year": fy,
-            "opening_balance": 0.0,
-            "closing_balance": 0.0,
-            "total_billed": 0.0,
-            "total_tds": 0.0,
-            "total_payments": 0.0,
-            "is_locked": False,
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        }
-        await db.party_ledger_accounts.insert_one(ledger)
+        ledger = await _create_party_ledger_for_fy(
+            party_id=payment.party_id,
+            fy=fy,
+            created_by=current_user.id,
+            opening_entry_date=payment.entry_date,
+        )
     elif ledger.get("is_locked"):
         raise HTTPException(status_code=400, detail=f"Ledger for FY {fy} is locked")
     
@@ -5898,20 +7773,12 @@ async def add_manual_entry(entry_data: ManualEntryCreate, current_user: User = D
         {"party_id": entry_data.party_id, "financial_year": fy}
     )
     if not ledger:
-        ledger = {
-            "id": str(uuid.uuid4()),
-            "party_id": entry_data.party_id,
-            "financial_year": fy,
-            "opening_balance": 0.0,
-            "closing_balance": 0.0,
-            "total_billed": 0.0,
-            "total_tds": 0.0,
-            "total_payments": 0.0,
-            "is_locked": False,
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        }
-        await db.party_ledger_accounts.insert_one(ledger)
+        ledger = await _create_party_ledger_for_fy(
+            party_id=entry_data.party_id,
+            fy=fy,
+            created_by=current_user.id,
+            opening_entry_date=entry_data.entry_date,
+        )
     elif ledger.get("is_locked"):
         raise HTTPException(status_code=400, detail=f"Ledger for FY {fy} is locked")
     
@@ -5953,16 +7820,19 @@ async def add_manual_entry(entry_data: ManualEntryCreate, current_user: User = D
 
 @api_router.delete("/party-ledger/entry/{entry_id}")
 async def delete_ledger_entry(entry_id: str, current_user: User = Depends(get_current_user)):
-    """Delete a ledger entry (only manual entries can be deleted)"""
+    """Delete a ledger entry (admin can delete any non-opening entry)."""
     entry = await db.party_ledger_entries.find_one({"id": entry_id})
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
-    
-    if entry.get("entry_type") not in ("manual_debit", "manual_credit", "payment"):
+
+    is_admin = str(getattr(current_user, "role", "")).lower() == "admin"
+    if entry.get("entry_type") == "opening":
+        raise HTTPException(status_code=400, detail="Opening entry cannot be deleted")
+    if entry.get("entry_type") not in ("manual_debit", "manual_credit", "payment") and not is_admin:
         raise HTTPException(status_code=400, detail="Only manual entries and payments can be deleted")
     
     ledger = await db.party_ledger_accounts.find_one({"id": entry["ledger_id"]})
-    if ledger and ledger.get("is_locked"):
+    if ledger and ledger.get("is_locked") and not is_admin:
         raise HTTPException(status_code=400, detail="Ledger is locked")
     
     await db.party_ledger_entries.delete_one({"id": entry_id})
@@ -5974,6 +7844,67 @@ async def delete_ledger_entry(entry_id: str, current_user: User = Depends(get_cu
     return {"message": "Entry deleted"}
 
 
+@api_router.put("/party-ledger/entry/{entry_id}")
+async def update_ledger_entry(entry_id: str, payload: dict, current_user: User = Depends(get_current_user)):
+    """Update ledger entry fields. Admin-only for full ledger book corrections."""
+    is_admin = str(getattr(current_user, "role", "")).lower() == "admin"
+    if not is_admin:
+        raise HTTPException(status_code=403, detail="Only admin can edit ledger entries")
+
+    entry = await db.party_ledger_entries.find_one({"id": entry_id}, {"_id": 0})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    if entry.get("entry_type") == "bill":
+        raise HTTPException(status_code=400, detail="Bill entries are derived from purchase invoices. Edit invoice instead.")
+
+    ledger = await db.party_ledger_accounts.find_one({"id": entry.get("ledger_id")}, {"_id": 0})
+    if not ledger:
+        raise HTTPException(status_code=404, detail="Ledger not found")
+
+    update_data = {"updated_at": datetime.now(timezone.utc)}
+    entry_type = entry.get("entry_type")
+    if payload.get("entry_date") is not None:
+        update_data["entry_date"] = payload.get("entry_date")
+    if payload.get("description") is not None:
+        update_data["description"] = str(payload.get("description") or "")
+
+    if entry_type == "opening":
+        if payload.get("amount") is None:
+            raise HTTPException(status_code=400, detail="amount is required for opening entry")
+        opening_amount = float(payload.get("amount") or 0)
+        update_data["balance_after"] = opening_amount
+        await db.party_ledger_accounts.update_one(
+            {"id": ledger["id"]},
+            {"$set": {"opening_balance": opening_amount, "updated_at": datetime.now(timezone.utc)}}
+        )
+    elif entry_type == "payment":
+        if payload.get("amount") is not None:
+            update_data["payment_amount"] = float(payload.get("amount") or 0)
+        if payload.get("payment_date") is not None:
+            update_data["payment_date"] = payload.get("payment_date")
+        if payload.get("paid_to") is not None:
+            update_data["paid_to"] = str(payload.get("paid_to") or "")
+        if payload.get("payment_mode") is not None:
+            update_data["payment_mode"] = payload.get("payment_mode")
+        if payload.get("payment_reference") is not None:
+            update_data["payment_reference"] = str(payload.get("payment_reference") or "")
+    elif entry_type == "manual_debit":
+        if payload.get("amount") is not None:
+            amt = float(payload.get("amount") or 0)
+            update_data["bill_subtotal"] = amt
+            update_data["tds_after_bill"] = amt
+            update_data["tds_amount"] = 0
+    elif entry_type == "manual_credit":
+        if payload.get("amount") is not None:
+            update_data["payment_amount"] = float(payload.get("amount") or 0)
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported entry type for edit: {entry_type}")
+
+    await db.party_ledger_entries.update_one({"id": entry_id}, {"$set": update_data})
+    await recompute_ledger_balances(ledger["id"])
+    return {"status": "success", "message": "Ledger entry updated"}
+
+
 # ── FY CARRY FORWARD ──────────────────────────────────────────────────────────
 
 @api_router.post("/party-ledger/carry-forward")
@@ -5983,8 +7914,46 @@ async def carry_forward_fy(
 ):
     """
     Carry forward all party ledgers from one FY to the next.
+    Idempotent: existing target ledgers are not overwritten.
     """
-    pass  # TODO: Implement carry forward logic
+    to_fy = get_next_fy(from_fy)
+    to_fy_start, _ = get_fy_date_range(to_fy)
+
+    source_ledgers = await db.party_ledger_accounts.find(
+        {"financial_year": from_fy},
+        {"_id": 0, "party_id": 1, "closing_balance": 1},
+    ).to_list(10000)
+
+    created = 0
+    skipped_existing = 0
+    for src in source_ledgers:
+        party_id = src.get("party_id")
+        if not party_id:
+            continue
+        existing_target = await db.party_ledger_accounts.find_one(
+            {"party_id": party_id, "financial_year": to_fy},
+            {"_id": 0, "id": 1},
+        )
+        if existing_target:
+            skipped_existing += 1
+            continue
+        await _create_party_ledger_for_fy(
+            party_id=party_id,
+            fy=to_fy,
+            created_by=getattr(current_user, "id", None),
+            opening_balance=float(src.get("closing_balance") or 0.0),
+            opening_entry_date=to_fy_start,
+        )
+        created += 1
+
+    return {
+        "status": "success",
+        "from_fy": from_fy,
+        "to_fy": to_fy,
+        "source_ledgers": len(source_ledgers),
+        "created_ledgers": created,
+        "skipped_existing": skipped_existing,
+    }
 
 
 # ── FIX-5: CSV/EXCEL EXPORT ──────────────────────────────────────────────────
@@ -6020,14 +7989,22 @@ async def export_party_ledger(
         {"_id": 0}
     ).sort("entry_order", 1).to_list(10000)
     
-    # Get invoice line items
+    # Batch-fetch invoice line items for bill entries (avoids N+1)
+    invoice_ids = list({e["invoice_id"] for e in entries if e.get("entry_type") == "bill" and e.get("invoice_id")})
+    lines_by_invoice = {}
+    if invoice_ids:
+        all_lines = await db.purchase_invoice_lines.find(
+            {"invoice_id": {"$in": invoice_ids}},
+            {"_id": 0}
+        ).sort("line_no", 1).to_list(5000)
+        for line in all_lines:
+            iid = line.get("invoice_id")
+            if iid not in lines_by_invoice:
+                lines_by_invoice[iid] = []
+            lines_by_invoice[iid].append(line)
     for entry in entries:
         if entry.get("entry_type") == "bill" and entry.get("invoice_id"):
-            lines = await db.purchase_invoice_lines.find(
-                {"invoice_id": entry["invoice_id"]},
-                {"_id": 0}
-            ).sort("line_no", 1).to_list(100)
-            entry["line_items"] = lines
+            entry["line_items"] = lines_by_invoice.get(entry["invoice_id"], [])
     
     # Helper functions
     def format_date(d):
@@ -6179,7 +8156,7 @@ async def export_ledger_pdf(
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
     from reportlab.lib import colors
-    from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+    from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
     
     if not fy:
         fy = get_financial_year(date.today())
@@ -6201,19 +8178,24 @@ async def export_ledger_pdf(
         {"_id": 0}
     ).sort("entry_order", 1).to_list(10000)
     
-    # Get invoice line items for bill entries
+    # Batch-fetch invoice line items for bill entries (avoids N+1)
+    invoice_ids = list({e["invoice_id"] for e in entries if e.get("entry_type") == "bill" and e.get("invoice_id")})
+    lines_by_invoice = {}
+    if invoice_ids:
+        all_lines = await db.purchase_invoice_lines.find(
+            {"invoice_id": {"$in": invoice_ids}},
+            {"_id": 0}
+        ).sort("line_no", 1).to_list(5000)
+        for line in all_lines:
+            iid = line.get("invoice_id")
+            if iid not in lines_by_invoice:
+                lines_by_invoice[iid] = []
+            lines_by_invoice[iid].append(line)
     for entry in entries:
         if entry.get("entry_type") == "bill" and entry.get("invoice_id"):
-            lines = await db.purchase_invoice_lines.find(
-                {"invoice_id": entry["invoice_id"]},
-                {"_id": 0}
-            ).sort("line_no", 1).to_list(100)
-            entry["line_items"] = lines
+            entry["line_items"] = lines_by_invoice.get(entry["invoice_id"], [])
     
-    # Get tenant config
-    config_docs = await db.tenant_config.find({}, {"_id": 0}).to_list(100)
-    tenant_config = {doc['key']: doc['value'] for doc in config_docs}
-    
+    tenant_config = await get_tenant_config_dict()
     # Create PDF
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), topMargin=0.5*inch, bottomMargin=0.5*inch)
@@ -6238,10 +8220,14 @@ async def export_ledger_pdf(
     if party.get('party_alias'):
         party_name += f" ({party['party_alias']})"
     
+    page_width = landscape(A4)[0] - doc.leftMargin - doc.rightMargin
     header_data = [
         [f"PARTY: {party_name}", f"FY: {fy}", f"Opening Balance: ₹{ledger['opening_balance']:,.2f}"]
     ]
-    header_table = Table(header_data, colWidths=[4*inch, 1.5*inch, 2*inch])
+    header_table = Table(
+        header_data,
+        colWidths=[page_width * 0.56, page_width * 0.14, page_width * 0.30]
+    )
     header_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#e0f2fe')),
         ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
@@ -6255,6 +8241,23 @@ async def export_ledger_pdf(
     elements.append(Spacer(1, 0.15*inch))
     
     # Ledger table
+    wrap_style = ParagraphStyle(
+        'LedgerWrap',
+        parent=styles['Normal'],
+        fontName='Helvetica',
+        fontSize=6.4,
+        leading=7.2,
+        alignment=TA_LEFT,
+        wordWrap='CJK',
+        splitLongWords=True,
+    )
+
+    def _cell_text(v):
+        return str(v or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+    def wrap_cell(v):
+        return Paragraph(_cell_text(v), wrap_style)
+
     table_data = [
         ['DATE', 'BILL NO', 'COUNT', 'QTY', 'RATE', 'AMOUNT', 'TOTAL', 'TDS@0.1%', 'AFTER TDS', 'PAYMENT', 'PAY DATE', 'BALANCE', 'PAID TO']
     ]
@@ -6270,7 +8273,7 @@ async def export_ledger_pdf(
     
     for entry in entries:
         if entry.get('entry_type') == 'opening':
-            table_data.append(['OPENING BALANCE', '', '', '', '', '', '', '', '', '', '', format_curr(entry['balance_after']), ''])
+            table_data.append([wrap_cell('OPENING BALANCE'), '', '', '', '', '', '', '', '', '', '', format_curr(entry['balance_after']), ''])
         elif entry.get('entry_type') == 'bill':
             line_items = entry.get('line_items', [])
             if line_items:
@@ -6278,10 +8281,10 @@ async def export_ledger_pdf(
                     is_last = idx == len(line_items) - 1
                     table_data.append([
                         format_date(entry['entry_date']) if idx == 0 else '',
-                        entry.get('invoice_no', '') if idx == 0 else '',
-                        line.get('count_value', ''),
-                        f"{line.get('quantity_kg', 0):.3f}",
-                        f"{line.get('rate', 0):.2f}",
+                        wrap_cell(entry.get('invoice_no', '')) if idx == 0 else '',
+                        wrap_cell(line.get('count_value', '')),
+                        f"{_pdf_safe_float(line.get('quantity_kg'), 0):.3f}",
+                        f"{_pdf_safe_float(line.get('rate'), 0):.2f}",
                         format_curr(line.get('amount', 0)),
                         format_curr(entry['bill_subtotal']) if is_last else '',
                         format_curr(entry['tds_amount']) if is_last else '',
@@ -6294,7 +8297,7 @@ async def export_ledger_pdf(
             else:
                 table_data.append([
                     format_date(entry['entry_date']),
-                    entry.get('invoice_no', ''),
+                    wrap_cell(entry.get('invoice_no', '')),
                     '', '', '', '',
                     format_curr(entry['bill_subtotal']),
                     format_curr(entry['tds_amount']),
@@ -6310,14 +8313,14 @@ async def export_ledger_pdf(
                 format_curr(entry['payment_amount']),
                 format_date(entry.get('payment_date')),
                 format_curr(entry['balance_after']),
-                entry.get('paid_to', '')
+                wrap_cell(entry.get('paid_to', ''))
             ])
         elif entry.get('entry_type') in ('manual_debit', 'manual_credit'):
             amt_col = format_curr(entry.get('tds_after_bill') or entry.get('bill_subtotal', 0)) if entry.get('entry_type') == 'manual_debit' else ''
             pay_col = format_curr(entry.get('payment_amount', 0)) if entry.get('entry_type') == 'manual_credit' else ''
             table_data.append([
                 format_date(entry['entry_date']),
-                entry.get('description', ''),
+                wrap_cell(entry.get('description', '')),
                 '', '', '', '', '', '', amt_col, pay_col, '',
                 format_curr(entry['balance_after']),
                 ''
@@ -6335,8 +8338,9 @@ async def export_ledger_pdf(
         ''
     ])
     
-    # Create table with tight column widths for landscape A4
-    col_widths = [0.65*inch, 0.6*inch, 0.45*inch, 0.45*inch, 0.42*inch, 0.65*inch, 0.65*inch, 0.55*inch, 0.65*inch, 0.65*inch, 0.65*inch, 0.75*inch, 0.5*inch]
+    # Use full printable width and wider text columns to avoid clipping.
+    col_fracs = [0.07, 0.13, 0.05, 0.05, 0.05, 0.07, 0.08, 0.07, 0.08, 0.08, 0.07, 0.08, 0.12]
+    col_widths = [page_width * f for f in col_fracs]
     
     ledger_table = Table(table_data, colWidths=col_widths, repeatRows=1)
     ledger_table.setStyle(TableStyle([
@@ -6349,7 +8353,7 @@ async def export_ledger_pdf(
         
         # Data rows
         ('FONTNAME', (0, 1), (-1, -2), 'Helvetica'),
-        ('FONTSIZE', (0, 1), (-1, -2), 6),
+        ('FONTSIZE', (0, 1), (-1, -2), 6.4),
         ('ALIGN', (3, 1), (5, -1), 'RIGHT'),  # QTY, RATE, AMOUNT
         ('ALIGN', (6, 1), (-3, -1), 'RIGHT'),  # TOTAL, TDS, AFTER, PAYMENT, BALANCE
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -6365,8 +8369,8 @@ async def export_ledger_pdf(
         ('LINEBELOW', (0, -1), (-1, -1), 1, colors.black),
         
         # Padding
-        ('TOPPADDING', (0, 0), (-1, -1), 2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+        ('TOPPADDING', (0, 0), (-1, -1), 2.5),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 2.5),
         ('LEFTPADDING', (0, 0), (-1, -1), 3),
         ('RIGHTPADDING', (0, 0), (-1, -1), 3),
     ]))
@@ -6416,19 +8420,24 @@ async def export_ledger_excel(
         {"_id": 0}
     ).sort("entry_order", 1).to_list(10000)
     
-    # Get invoice line items
+    # Batch-fetch invoice line items for bill entries (avoids N+1)
+    invoice_ids = list({e["invoice_id"] for e in entries if e.get("entry_type") == "bill" and e.get("invoice_id")})
+    lines_by_invoice = {}
+    if invoice_ids:
+        all_lines = await db.purchase_invoice_lines.find(
+            {"invoice_id": {"$in": invoice_ids}},
+            {"_id": 0}
+        ).sort("line_no", 1).to_list(5000)
+        for line in all_lines:
+            iid = line.get("invoice_id")
+            if iid not in lines_by_invoice:
+                lines_by_invoice[iid] = []
+            lines_by_invoice[iid].append(line)
     for entry in entries:
         if entry.get("entry_type") == "bill" and entry.get("invoice_id"):
-            lines = await db.purchase_invoice_lines.find(
-                {"invoice_id": entry["invoice_id"]},
-                {"_id": 0}
-            ).sort("line_no", 1).to_list(100)
-            entry["line_items"] = lines
+            entry["line_items"] = lines_by_invoice.get(entry["invoice_id"], [])
     
-    # Get tenant config
-    config_docs = await db.tenant_config.find({}, {"_id": 0}).to_list(100)
-    tenant_config = {doc['key']: doc['value'] for doc in config_docs}
-    
+    tenant_config = await get_tenant_config_dict()
     # Create workbook
     wb = Workbook()
     ws = wb.active
@@ -6566,6 +8575,23 @@ async def export_ledger_excel(
     )
 
 
+@api_router.get("/health", tags=["Health"])
+async def api_health():
+    """Public health check: process up and MongoDB reachable (use this when login fails unexpectedly)."""
+    try:
+        ping = await db.command("ping")
+        if ping.get("ok") != 1:
+            raise RuntimeError(f"unexpected ping reply: {ping}")
+        return {
+            "status": "ok",
+            "database": "connected",
+            "db_name": os.environ.get("DB_NAME", ""),
+        }
+    except Exception as e:
+        logging.getLogger(__name__).exception("GET /api/health failed")
+        raise HTTPException(status_code=503, detail=f"Database unavailable: {str(e)}")
+
+
 app.include_router(api_router)
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -6653,10 +8679,11 @@ async def saas_handshake(request: Request, body: dict):
 async def saas_push_features(request: Request, body: dict, _=Depends(verify_saas_api_key)):
     """Receive feature flags push from super admin"""
     features = body.get("features", {})
-    
-    # Get tenant_id
-    config = await db.tenant_config.find_one({"key": "tenant_id"})
-    tenant_id = config.get("value") if config else "default"
+    # Use tenant_id from body if provided (so Super Admin can push without prior link); else from config
+    tenant_id = body.get("tenant_id")
+    if not tenant_id:
+        config = await db.tenant_config.find_one({"key": "tenant_id"})
+        tenant_id = config.get("value") if config else "default"
     
     # Clear existing flags and insert new ones
     await db.feature_flags.delete_many({"tenant_id": tenant_id})
@@ -6845,14 +8872,6 @@ async def get_public_config():
     
     return result
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Mount the integrated super admin router (from super_admin.py - 3-Feature Upgrade)
 app.include_router(super_admin_router)
 
@@ -6862,11 +8881,178 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Default client ERP admin (seeded if no users exist)
+DEFAULT_CLIENT_ADMIN_EMAIL = "admin@prawnexport.com"
+DEFAULT_CLIENT_ADMIN_PASSWORD = "admin123"
+DEFAULT_TENANT_ID = "cli_001"
+
+# Simple TTL cache for rarely changing data: key -> (value, expiry_ts)
+_response_cache: Dict[str, tuple] = {}
+def _cache_get(key: str, ttl_sec: int = 60):
+    now = datetime.now(timezone.utc).timestamp()
+    if key in _response_cache:
+        val, expiry = _response_cache[key]
+        if now < expiry:
+            return val
+        del _response_cache[key]
+    return None
+def _cache_set(key: str, value: Any, ttl_sec: int = 60):
+    _response_cache[key] = (value, datetime.now(timezone.utc).timestamp() + ttl_sec)
+
+
+def _cache_invalidate(key_prefix: str = ""):
+    """Remove cache entries whose key starts with key_prefix (or exact key if no wildcard)."""
+    if not key_prefix:
+        return
+    to_remove = [k for k in _response_cache if k == key_prefix or k.startswith(key_prefix + ":")]
+    for k in to_remove:
+        _response_cache.pop(k, None)
+
+
+async def get_tenant_config_dict(use_cache: bool = True) -> Dict[str, Any]:
+    """Load full tenant config as key->value dict. Cached 60s per tenant to avoid repeated DB hits (ledger/PDF/export)."""
+    try:
+        tid = tenant_context.get_tenant()
+    except Exception:
+        tid = "default"
+    cache_key = f"tenant_config_dict:{tid}"
+    if use_cache:
+        cached = _cache_get(cache_key, ttl_sec=60)
+        if cached is not None:
+            return cached
+    config_docs = await db.tenant_config.find({}, {"_id": 0, "key": 1, "value": 1}).to_list(100)
+    out: Dict[str, Any] = {}
+    for doc in config_docs:
+        k = doc.get("key")
+        if k is None or str(k).strip() == "":
+            continue
+        out[str(k)] = doc.get("value", "")
+    _cache_set(cache_key, out, ttl_sec=60)
+    return out
+
+
+async def ensure_erp_indexes():
+    """Create indexes on hot-path collections for faster queries."""
+    try:
+        # Core master data
+        await db.agents.create_index("id", unique=True)
+        await db.agents.create_index("name")
+        await db.agents.create_index("created_at")
+
+        await db.parties.create_index("id", unique=True)
+        await db.parties.create_index("party_name")
+        await db.parties.create_index("short_code")
+
+        await db.notifications.create_index([("target_roles", 1), ("created_at", -1)])
+
+        # Procurement / processing / production
+        await db.procurement_lots.create_index("created_at")
+        await db.procurement_lots.create_index("agent_id")
+        await db.procurement_lots.create_index("tenant_id")
+        await db.procurement_lots.create_index("id", unique=True)
+
+        await db.preprocessing_batches.create_index("created_at")
+        await db.preprocessing_batches.create_index([("end_time", 1)])
+        await db.preprocessing_batches.create_index("procurement_lot_id")  # traceability
+
+        await db.production_orders.create_index("created_at")
+        await db.production_orders.create_index("start_date")  # reports sort
+        await db.party_ledger_entries.create_index([("ledger_id", 1), ("entry_order", 1)])
+        await db.party_ledger_entries.create_index([("invoice_id", 1), ("entry_type", 1)])
+        await db.party_ledger_accounts.create_index([("party_id", 1), ("financial_year", 1)], unique=True)
+
+        await db.purchase_invoice_lines.create_index([("invoice_id", 1), ("line_no", 1)])
+        await db.purchase_invoices.create_index("id", unique=True)
+        await db.purchase_invoices.create_index([("status", 1), ("invoice_date", 1)])
+        await db.purchase_invoices.create_index("invoice_date")  # date range filter + sort
+        await db.purchase_invoices.create_index("payment_status")
+        await db.purchase_invoices.create_index("party_id")
+        # List endpoint: filter by date + status + payment_status, sort by invoice_date
+        await db.purchase_invoices.create_index([("invoice_date", 1), ("status", 1), ("payment_status", 1)])
+
+        # Finished goods / QC
+        await db.finished_goods.create_index("qc_status")
+        await db.finished_goods.create_index("created_at")
+        await db.production_orders.create_index("qc_status")
+
+        await db.qc_inspections.create_index("created_at")
+        await db.qc_inspections.create_index([("entity_type", 1), ("entity_id", 1)])
+
+        # Cold storage
+        await db.cold_storage_chambers.create_index("id", unique=True)
+        await db.cold_storage_slots.create_index("id", unique=True)
+        await db.cold_storage_slots.create_index("chamber_id")
+        await db.cold_storage_inventory.create_index("slot_id")
+        await db.cold_storage_inventory.create_index("chamber_id")
+
+        # Sales & shipments
+        await db.buyers.create_index("id", unique=True)
+        await db.buyers.create_index("name")
+        await db.sales_orders.create_index("id", unique=True)
+        await db.sales_orders.create_index("created_at")
+        await db.shipments.create_index("id", unique=True)
+        await db.shipments.create_index("created_at")
+
+        # Wage bills / accounts
+        await db.wage_bills.create_index("id", unique=True)
+        await db.wage_bills.create_index("created_at")
+        await db.wage_bills.create_index("status")
+
+        # Attachments / notes
+        await db.attachments.create_index([("entity_type", 1), ("entity_id", 1)])
+        await db.attachments.create_index("created_at")
+        await db.notes.create_index([("entity_type", 1), ("entity_id", 1)])
+        await db.notes.create_index("created_at")
+
+        # Tenant config
+        await db.tenant_config.create_index("key")
+
+        # Wastage / traceability
+        await db.lot_stage_wastage.create_index("lot_id")
+        await db.lot_stage_wastage.create_index([("lot_id", 1), ("stage_sequence", 1)])
+        await db.lot_stage_wastage.create_index("created_at")
+
+        # Audit logs (list sorted by timestamp)
+        await db.audit_logs.create_index("timestamp")
+        await db.audit_logs.create_index([("module", 1), ("timestamp", -1)])
+
+        # Temperature logs (sort by recorded_at)
+        await db.temperature_logs.create_index("recorded_at")
+        await db.temperature_logs.create_index("chamber_id")
+
+        # Market rates (sort effective_from)
+        await db.market_rates.create_index("effective_from")
+
+        # Photo tracker (by entity)
+        await db.photo_tracker.create_index([("entity_id", 1), ("created_at", -1)])
+
+        logger.info("ERP collection indexes ensured")
+    except Exception as e:
+        logger.warning("ERP index creation skipped or partial: %s", e)
+
+
 @app.on_event("startup")
 async def startup_event():
-    """Initialize super admin module and create indexes"""
+    """Initialize super admin module, create indexes, and seed default client admin if needed"""
     set_super_admin_db(db)
+    set_super_admin_feature_service(feature_service)
     await create_super_admin_indexes()
+    await ensure_erp_indexes()
+    # Ensure default client ERP admin exists (by email) so login always works
+    existing_admin = await db.users.find_one({"email": DEFAULT_CLIENT_ADMIN_EMAIL})
+    if not existing_admin:
+        await db.users.insert_one({
+            "id": str(uuid.uuid4()),
+            "email": DEFAULT_CLIENT_ADMIN_EMAIL,
+            "name": "Admin User",
+            "role": UserRole.admin.value,
+            "phone": None,
+            "password": get_password_hash(DEFAULT_CLIENT_ADMIN_PASSWORD),
+            "is_active": True,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "tenant_id": DEFAULT_TENANT_ID,
+        })
+        logger.info("Seeded default client ERP admin: %s / %s", DEFAULT_CLIENT_ADMIN_EMAIL, DEFAULT_CLIENT_ADMIN_PASSWORD)
     logger.info("Super Admin module initialized with database indexes")
 
 @app.on_event("shutdown")

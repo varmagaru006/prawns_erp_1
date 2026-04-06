@@ -324,7 +324,7 @@ class TestInvoicePartyIntegration:
         assert approve_response.status_code == 200
         
         # Push the invoice
-        response = api_client.post(f"{BASE_URL}/api/purchase-invoices/{invoice_id}/push")
+        response = api_client.post(f"{BASE_URL}/api/purchase-invoices/{invoice_id}/push-to-procurement")
         assert response.status_code == 200
         data = response.json()
         
@@ -334,6 +334,13 @@ class TestInvoicePartyIntegration:
             print("Ledger entry created on push")
         else:
             print(f"Invoice pushed: {data.get('message', data)}")
+
+        # Signature is optional per record; by default this test push is unsigned.
+        detail_response = api_client.get(f"{BASE_URL}/api/purchase-invoices/{invoice_id}")
+        assert detail_response.status_code == 200
+        inv_data = detail_response.json()
+        assert inv_data.get("status") == "pushed"
+        assert inv_data.get("apply_digital_signature") in [False, None]
         
         # Verify ledger has entry
         if party_id:

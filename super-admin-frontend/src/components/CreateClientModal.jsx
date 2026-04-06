@@ -8,6 +8,9 @@ export default function CreateClientModal({ isOpen, onClose, onSuccess }) {
     business_name: '',
     owner_name: '',
     owner_email: '',
+    client_ui_url: '',
+    client_api_url: '',
+    client_db_name: '',
     plan_id: '',
     subscription_months: 1
   });
@@ -48,6 +51,9 @@ export default function CreateClientModal({ isOpen, onClose, onSuccess }) {
         business_name: '',
         owner_name: '',
         owner_email: '',
+        client_ui_url: '',
+        client_api_url: '',
+        client_db_name: '',
         plan_id: plans[0]?.id || '',
         subscription_months: 1
       });
@@ -142,6 +148,57 @@ export default function CreateClientModal({ isOpen, onClose, onSuccess }) {
               className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none"
               placeholder="e.g., john@example.com"
             />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Client UI URL *
+            </label>
+            <input
+              type="url"
+              required
+              value={formData.client_ui_url}
+              onChange={(e) => setFormData({ ...formData, client_ui_url: e.target.value })}
+              className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none"
+              placeholder="e.g., http://localhost:3001"
+            />
+            <p className="mt-1 text-sm text-gray-500">
+              Localhost Option B: run each client UI on a different port (example: Client A = `http://localhost:3001`, Client B = `http://localhost:3002`).
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Client API URL *
+            </label>
+            <input
+              type="url"
+              required
+              value={formData.client_api_url}
+              onChange={(e) => setFormData({ ...formData, client_api_url: e.target.value })}
+              className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none"
+              placeholder="e.g., http://localhost:8000"
+            />
+            <p className="mt-1 text-sm text-gray-500">
+              If all client UIs share one backend locally, keep this as `http://localhost:8000`.
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Client DB Name *
+            </label>
+            <input
+              type="text"
+              required
+              value={formData.client_db_name}
+              onChange={(e) => setFormData({ ...formData, client_db_name: e.target.value })}
+              className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none"
+              placeholder="e.g., prawn_erp_cli_001"
+            />
+            <p className="mt-1 text-sm text-gray-500">
+              Use a unique DB name per client (recommended format: `prawn_erp_&lt;tenant_id&gt;`).
+            </p>
           </div>
 
           {/* Subscription Plan */}

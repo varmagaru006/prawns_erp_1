@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { toast } from 'sonner';
+import { formatLoadErrorMessage } from '../utils/apiError';
 import { Plus, AlertTriangle, TrendingUp, TrendingDown } from 'lucide-react';
 
 const PreProcessing = () => {
@@ -62,7 +63,7 @@ const PreProcessing = () => {
       setWastageData(wastageMap);
       
     } catch (error) {
-      toast.error('Failed to load data');
+      toast.error(formatLoadErrorMessage('Failed to load data', error));
     } finally {
       setLoading(false);
     }
@@ -124,14 +125,14 @@ const PreProcessing = () => {
 
   return (
     <div className="space-y-6" data-testid="preprocessing-page">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h1 className="text-2xl lg:text-3xl font-bold text-slate-800">Pre-Processing</h1>
           <p className="text-slate-600 mt-1">Manage processing batches and worker assignments</p>
         </div>
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
-            <Button className="gap-2" data-testid="add-batch-button">
+            <Button className="w-full gap-2 sm:w-auto" data-testid="add-batch-button">
               <Plus size={18} />
               Add Batch
             </Button>
