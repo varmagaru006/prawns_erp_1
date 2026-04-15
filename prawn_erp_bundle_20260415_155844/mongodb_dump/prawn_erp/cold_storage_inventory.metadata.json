@@ -1,0 +1,1 @@
+{"indexes":[{"v":{"$numberInt":"2"},"key":{"_id":{"$numberInt":"1"}},"name":"_id_"},{"v":{"$numberInt":"2"},"key":{"slot_id":{"$numberInt":"1"}},"name":"slot_id_1"},{"v":{"$numberInt":"2"},"key":{"chamber_id":{"$numberInt":"1"}},"name":"chamber_id_1"}],"uuid":"6191ca5e62f8441d9e2d63f1ffbf84ad","collectionName":"cold_storage_inventory","type":"collection"}

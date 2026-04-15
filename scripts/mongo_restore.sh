@@ -60,13 +60,14 @@ if [[ "$DROP" -eq 1 && "$YES" -ne 1 ]]; then
   exit 2
 fi
 
-DROP_ARGS=()
-[[ "$DROP" -eq 1 ]] && DROP_ARGS=(--drop)
-
 if [[ -n "$ARCHIVE" ]]; then
   [[ -f "$ARCHIVE" ]] || { echo "Error: archive not found: $ARCHIVE" >&2; exit 1; }
   echo "mongorestore <- archive: $ARCHIVE"
-  mongorestore --uri="$URI" "${DROP_ARGS[@]}" --gzip --archive="$ARCHIVE"
+  if [[ "$DROP" -eq 1 ]]; then
+    mongorestore --uri="$URI" --drop --gzip --archive="$ARCHIVE"
+  else
+    mongorestore --uri="$URI" --gzip --archive="$ARCHIVE"
+  fi
   echo "Done."
   exit 0
 fi
@@ -81,5 +82,9 @@ DUMP_DIR="${ARGS[0]}"
 
 # mongodump -o DIR creates DIR/<dbname>/... ; mongorestore wants the parent that contains db folders
 echo "mongorestore <- $DUMP_DIR"
-mongorestore --uri="$URI" "${DROP_ARGS[@]}" "$DUMP_DIR"
+if [[ "$DROP" -eq 1 ]]; then
+  mongorestore --uri="$URI" --drop "$DUMP_DIR"
+else
+  mongorestore --uri="$URI" "$DUMP_DIR"
+fi
 echo "Done."
