@@ -85,6 +85,47 @@ Replace `YOUR_PASSWORD` with the password you used when creating the user (e.g. 
 - Main app: `./run_local.sh`
 - Super Admin API: `cd super-admin-api && source .venv/bin/activate && uvicorn main:app --reload --host 0.0.0.0 --port 8002`
 
+## 4. Copy all data to another machine (local Mongo)
+
+Install [MongoDB Database Tools](https://www.mongodb.com/try/download/database-tools) (`mongodump` / `mongorestore`) on both machines.
+
+**Source laptop (has Sunbitees / all data):**
+
+- One archive (easy to copy on USB / Drive):
+
+```bash
+cd /path/to/prawns_erp_1
+chmod +x scripts/mongo_*.sh scripts/_mongo_tools.sh
+./scripts/mongo_bundle_backup.sh
+```
+
+This writes `backups/prawn_erp_bundle_<timestamp>.tar.gz` (Mongo dump + `backend/uploads` + `MANIFEST.txt`).
+
+- Or directory dump only:
+
+```bash
+./scripts/mongo_backup.sh
+# or: ./scripts/mongo_backup.sh -a ~/Desktop/prawn_erp.archive.gz
+```
+
+**Target laptop:**
+
+1. Install MongoDB locally and start it (same major version if possible, e.g. 7.x).
+2. Clone the repo and set `MONGO_URL` in `backend/.env` and `super-admin-api/.env` to that instance (e.g. `mongodb://localhost:27017` or your authenticated URI).
+3. Extract the bundle and restore:
+
+```bash
+tar xzf backups/prawn_erp_bundle_<timestamp>.tar.gz
+./scripts/mongo_restore.sh prawn_erp_bundle_<timestamp>/mongodb_dump
+```
+
+4. Optional: restore uploaded files — `cp -a prawn_erp_bundle_*/uploads/* backend/uploads/`
+5. Restart backend (8000), Super Admin API (8002), and frontend (3000).
+
+**Destructive re-import** (replace existing DB content on target): add `--drop --yes` before the dump path or `--archive` argument to `mongo_restore.sh`.
+
+`MONGO_URL` is taken from the environment, or from `backend/.env`, then `super-admin-api/.env`.
+
 ## Troubleshooting
 
 - **"Authentication failed"**: Wrong password or user not created. Re-run the script or reset password by dropping the user in `admin` and running the script again.

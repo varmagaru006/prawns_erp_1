@@ -8,12 +8,12 @@ const API = `${BACKEND_URL}/api`;
 
 // Default branding config
 const DEFAULT_BRANDING = {
-  company_name: 'Prawn ERP',
-  sidebar_label: 'Prawn ERP',
-  primary_color: '#1e40af',
-  login_bg_color: '#0f1117',
-  logo_url: '',
-  favicon_url: ''
+  company_name: 'Sun Bitess',
+  sidebar_label: 'Sun Bitess ERP',
+  primary_color: '#0f5ea8',
+  login_bg_color: 'linear-gradient(135deg, #0b2a4a 0%, #0f5ea8 55%, #1f7fbd 100%)',
+  logo_url: '/assets/sunbitess/logo.png',
+  favicon_url: '/assets/sunbitess/favicon.ico'
 };
 
 export const BrandingProvider = ({ children }) => {
