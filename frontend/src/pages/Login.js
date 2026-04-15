@@ -89,9 +89,16 @@ const Login = () => {
   };
 
   const features = [
-    { icon: Package, text: 'Complete Traceability', color: 'text-blue-600' },
-    { icon: TrendingUp, text: 'Real-time Analytics', color: 'text-green-600' },
-    { icon: ShieldCheck, text: 'Quality Assurance', color: 'text-purple-600' }
+    { icon: Package, text: 'Export-grade Product Tracking', color: 'text-blue-600' },
+    { icon: TrendingUp, text: 'Processing & Yield Visibility', color: 'text-green-600' },
+    { icon: ShieldCheck, text: 'Quality-first Operations', color: 'text-purple-600' }
+  ];
+
+  const highlightedProducts = [
+    { name: 'Head On Shell On Vannamei (Semi IQF)', image: '/assets/sunbitess/product01.jpg' },
+    { name: 'Head On Shell On Vannamei (Block)', image: '/assets/sunbitess/product02.jpg' },
+    { name: 'Head On Body Peel Tail On (Semi IQF)', image: '/assets/sunbitess/product03.jpg' },
+    { name: 'Peeled and Deveined Tail On', image: '/assets/sunbitess/product08-1.jpg' }
   ];
 
   return (
@@ -145,13 +152,13 @@ const Login = () => {
                 </div>
               )}
               <div>
-                <h1 className="text-5xl font-bold">{branding.company_name || 'Prawn ERP'}</h1>
-                <p className="text-blue-100 text-lg">{branding.sidebar_label || 'Aquaculture Export Management'}</p>
+                <h1 className="text-5xl font-bold">{branding.company_name || 'Sun Bitess'}</h1>
+                <p className="text-blue-100 text-lg">{branding.sidebar_label || 'Vannamei Shrimp Export ERP'}</p>
               </div>
             </div>
 
             <p className="text-xl text-blue-50 leading-relaxed">
-              Complete lifecycle management from procurement to export. Track, monitor, and optimize your seafood processing operations.
+              International seafood operations platform for procurement, processing, quality control, storage, and dispatch.
             </p>
 
             <div className="space-y-4 pt-4">
@@ -175,12 +182,21 @@ const Login = () => {
             <div className="flex items-center gap-6 pt-6 text-blue-100">
               <div className="flex items-center gap-2">
                 <Waves className="h-5 w-5" />
-                <span>7 Integrated Modules</span>
+                <span>Vannamei-focused Workflow</span>
               </div>
               <div className="flex items-center gap-2">
                 <ShieldCheck className="h-5 w-5" />
-                <span>ISO Compliant</span>
+                <span>Quality Controlled</span>
               </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3">
+              {highlightedProducts.map((product) => (
+                <div key={product.name} className="rounded-xl bg-white/10 backdrop-blur-md overflow-hidden border border-white/20">
+                  <img src={product.image} alt={product.name} className="h-24 w-full object-cover" loading="lazy" />
+                  <div className="p-2 text-xs text-blue-50 leading-snug">{product.name}</div>
+                </div>
+              ))}
             </div>
           </div>
 
@@ -188,8 +204,8 @@ const Login = () => {
           <Card className="backdrop-blur-xl bg-white/95 shadow-2xl border-0 animate-scaleIn" data-testid="login-card">
             <CardHeader className="space-y-1 text-center">
               {branding.logo_url ? (
-                <div className="mx-auto w-16 h-16 rounded-2xl flex items-center justify-center mb-4 overflow-hidden">
-                  <img src={branding.logo_url} alt={branding.company_name} className="h-16 object-contain" />
+                <div className="mx-auto w-24 h-24 rounded-2xl flex items-center justify-center mb-4 overflow-hidden">
+                  <img src={branding.logo_url} alt={branding.company_name} className="h-24 object-contain" />
                 </div>
               ) : (
                 <div className="mx-auto w-16 h-16 rounded-2xl flex items-center justify-center mb-4" style={{ backgroundColor: branding.primary_color || '#2563eb' }}>
