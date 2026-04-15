@@ -1,0 +1,1 @@
+{"indexes":[{"v":{"$numberInt":"2"},"key":{"_id":{"$numberInt":"1"}},"name":"_id_"},{"v":{"$numberInt":"2"},"key":{"qc_status":{"$numberInt":"1"}},"name":"qc_status_1"},{"v":{"$numberInt":"2"},"key":{"created_at":{"$numberInt":"1"}},"name":"created_at_1"}],"uuid":"d36cda4f2ce0434c8a2b9e0f9264794f","collectionName":"finished_goods","type":"collection"}

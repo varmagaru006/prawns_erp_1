@@ -1,0 +1,9 @@
+bundle_created_utc=2026-04-15T10:28:45Z
+hostname=TTs-MacBook-Pro.local
+repo_hint=prawns_erp_1
+
+Restore on target:
+  1. tar xzf prawn_erp_bundle_20260415_155844.tar.gz
+  2. Set MONGO_URL in backend/.env and super-admin-api/.env to target MongoDB
+  3. scripts/mongo_restore.sh prawn_erp_bundle_20260415_155844/mongodb_dump
+  4. Optional: cp -a prawn_erp_bundle_20260415_155844/uploads/* backend/uploads/

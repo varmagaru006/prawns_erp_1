@@ -1,0 +1,1 @@
+{"indexes":[{"v":{"$numberInt":"2"},"key":{"_id":{"$numberInt":"1"}},"name":"_id_"},{"v":{"$numberInt":"2"},"key":{"party_id":{"$numberInt":"1"},"financial_year":{"$numberInt":"1"}},"name":"party_id_1_financial_year_1","unique":true}],"uuid":"1d2aa7dcfda64a97a1863b94b10eec7b","collectionName":"party_ledger_accounts","type":"collection"}
