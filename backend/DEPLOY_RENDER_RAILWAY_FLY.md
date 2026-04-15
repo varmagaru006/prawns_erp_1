@@ -19,7 +19,7 @@ Use this guide to deploy `backend` with the same runtime settings across provide
 - Set **Start Command** to:
   - `uvicorn server:app --host 0.0.0.0 --port $PORT`
 - Add env vars from the common section.
-- You can also use `backend/render.yaml` for Blueprint deploy.
+- You can also use the root `render.yaml` for Blueprint deploy (it points Render to `backend`).
 
 ## Railway
 
