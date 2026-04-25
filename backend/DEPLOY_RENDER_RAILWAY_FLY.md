@@ -1,6 +1,9 @@
-# Backend deploy on Render / Railway / Fly.io
+# Backend deploy on Render / Railway / Fly.io (Reference)
 
-Use this guide to deploy `backend` with the same runtime settings across providers.
+This is a reference guide for alternative platforms.
+For primary production deployment, use:
+
+- `../DEPLOY_RAILWAY_SINGLE_PROJECT.md`
 
 ## Common service settings
 

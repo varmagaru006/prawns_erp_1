@@ -82,6 +82,14 @@ A production-ready, full-stack ERP system designed for Indian seafood processing
 - **PDF Generation:** ReportLab
 - **Authentication:** JWT with bcrypt
 
+## Production Deployment (Canonical)
+
+Use single-stack Docker deployment as the primary production path:
+
+- [Single Docker stack guide](DEPLOY_DOCKER_SINGLE_STACK.md)
+
+Alternative platform guides are kept for reference only.
+
 ## 📦 Installation
 
 ### One-command local run (simplest)

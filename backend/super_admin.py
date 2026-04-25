@@ -13,6 +13,7 @@ from passlib.context import CryptContext
 import jwt
 import uuid
 import os
+import re
 
 try:
     from feature_registry import get_default_flags, merge_flags_with_registry, registry_as_list
@@ -26,10 +27,36 @@ super_admin_router = APIRouter(prefix="/api/super-admin", tags=["Super Admin"])
 security = HTTPBearer()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 SECRET_KEY = os.environ.get('SECRET_KEY', 'your-secret-key-change-in-production')
+JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY")
 ALGORITHM = "HS256"
+
+
+def _jwt_signing_key() -> str:
+    """Match server.py: primary signing key."""
+    return SECRET_KEY
+
+
+def _jwt_decode_keys():
+    """Match server.py _decode_jwt_with_known_keys ordering for verifying portal tokens."""
+    keys = [SECRET_KEY, JWT_SECRET_KEY]
+    return [k for k in keys if k]
+
+
+def _decode_super_admin_jwt(token: str) -> dict:
+    last_err = None
+    for key in _jwt_decode_keys():
+        try:
+            return jwt.decode(token, key, algorithms=[ALGORITHM])
+        except jwt.InvalidTokenError as e:
+            last_err = e
+    raise last_err or jwt.InvalidTokenError("Invalid token")
 
 # Database reference (set during app startup)
 db: AsyncIOMotorDatabase = None
+# Raw Motor client + DB names for cross-database user lookup (super_admin may live only in platform DB)
+_motor_client = None
+_erp_database_name: Optional[str] = None
+_super_admin_database_name: Optional[str] = None
 # Feature flag service for cache invalidation (set at startup)
 _feature_service = None
 
@@ -37,6 +64,18 @@ def set_database(database: AsyncIOMotorDatabase):
     """Set the database reference"""
     global db
     db = database
+
+
+def configure_super_admin_storage(motor_client, erp_database: str, super_admin_database: str):
+    """
+    Super-admin user documents may exist in `prawn_erp_super_admin.users` while the ERP app
+    primarily queries `prawn_erp.users`. Store raw client + names so login/session can fall back.
+    """
+    global _motor_client, _erp_database_name, _super_admin_database_name
+    _motor_client = motor_client
+    _erp_database_name = erp_database
+    _super_admin_database_name = super_admin_database
+
 
 def set_feature_service(service):
     """Set the feature flag service so we can invalidate cache when features are updated"""
@@ -46,6 +85,12 @@ def set_feature_service(service):
 # ══════════════════════════════════════════════════════════════════════════════
 # Pydantic Models
 # ══════════════════════════════════════════════════════════════════════════════
+
+class SuperAdminLogin(BaseModel):
+    """JSON body for POST /api/super-admin/auth/login (must not use bare `dict` — FastAPI would not bind the body)."""
+    email: EmailStr
+    password: str
+
 
 class SuperAdminCreate(BaseModel):
     email: EmailStr
@@ -93,18 +138,70 @@ def hash_password(password: str) -> str:
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
+
+async def _find_super_admin_user_by_email(email_raw: str) -> Optional[dict]:
+    """Resolve super_admin user from primary ERP DB or dedicated super-admin DB."""
+    if not email_raw or not str(email_raw).strip():
+        return None
+    email_key = str(email_raw).strip().lower()
+    regex_q = {"email": {"$regex": f"^{re.escape(str(email_raw).strip())}$", "$options": "i"}}
+
+    async def _one(coll) -> Optional[dict]:
+        u = await coll.find_one({"email": email_key, "role": "super_admin"}, {"_id": 0})
+        if u:
+            return u
+        u = await coll.find_one({**regex_q, "role": "super_admin"}, {"_id": 0})
+        return u
+
+    # Prefer module `db` (same as rest of super_admin routes)
+    if db is not None:
+        u = await _one(db.users)
+        if u:
+            return u
+    if _motor_client and _erp_database_name and _super_admin_database_name:
+        u = await _one(_motor_client[_erp_database_name].users)
+        if u:
+            return u
+        u = await _one(_motor_client[_super_admin_database_name].users)
+        if u:
+            return u
+    return None
+
+
+async def lookup_user_doc_cross_db(email_key: str) -> Optional[dict]:
+    """
+    Find a user document when TenantAware routing missed (e.g. super_admin only in platform DB).
+    Used by main ERP /auth/login and /auth/me.
+    """
+    if not _motor_client or not _erp_database_name or not _super_admin_database_name:
+        return None
+    e = (email_key or "").strip().lower()
+    if not e:
+        return None
+    regex_q = {"email": {"$regex": f"^{re.escape((email_key or '').strip())}$", "$options": "i"}}
+    for name in (_erp_database_name, _super_admin_database_name):
+        coll = _motor_client[name].users
+        u = await coll.find_one({"email": e}, {"_id": 0})
+        if u:
+            return u
+        u = await coll.find_one(regex_q, {"_id": 0})
+        if u:
+            return u
+    return None
+
+
 async def get_current_super_admin(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """Verify JWT token and ensure user is super_admin"""
     try:
         token = credentials.credentials
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = _decode_super_admin_jwt(token)
         email = payload.get("sub")
         
         if not email:
             raise HTTPException(status_code=401, detail="Invalid token")
-        
-        user = await db.users.find_one({"email": email}, {"_id": 0})
-        if not user or user.get("role") != "super_admin":
+
+        user = await _find_super_admin_user_by_email(email)
+        if not user or str(user.get("role", "")).strip().lower() != "super_admin":
             raise HTTPException(status_code=403, detail="Super admin access required")
         
         return user
@@ -118,22 +215,23 @@ async def get_current_super_admin(credentials: HTTPAuthorizationCredentials = De
 # ══════════════════════════════════════════════════════════════════════════════
 
 @super_admin_router.post("/auth/login")
-async def super_admin_login(credentials: dict):
+async def super_admin_login(credentials: SuperAdminLogin):
     """
     Super Admin login endpoint.
     Accepts email/password and returns JWT if the user has super_admin role.
     """
-    email = credentials.get("email", "")
-    password = credentials.get("password", "")
+    email = str(credentials.email).strip()
+    password = credentials.password
 
     if not email or not password:
         raise HTTPException(status_code=400, detail="Email and password required")
 
-    user = await db.users.find_one({"email": email}, {"_id": 0})
-    if not user or user.get("role") != "super_admin":
+    user = await _find_super_admin_user_by_email(email)
+    if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials or insufficient permissions")
 
-    if not verify_password(password, user.get("password", "")):
+    stored = user.get("password") or user.get("password_hash") or ""
+    if not stored or not verify_password(password, stored):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     if not user.get("is_active", True):
@@ -146,7 +244,7 @@ async def super_admin_login(credentials: dict):
         "tenant_id": user.get("tenant_id"),
         "exp": int(exp.timestamp()),
     }
-    access_token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
+    access_token = jwt.encode(token_data, _jwt_signing_key(), algorithm=ALGORITHM)
 
     user_response = {k: v for k, v in user.items() if k != "password"}
     return {

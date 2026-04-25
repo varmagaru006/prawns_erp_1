@@ -9,14 +9,18 @@ import { toast } from 'sonner';
 import { Plus, Pencil, Trash2, Search, Users, X } from 'lucide-react';
 import { useSortableTable } from '../hooks/useSortableTable';
 import SortableTableHead from '../components/SortableTableHead';
+import RiskTimelinePanel from '../components/RiskTimelinePanel';
 
 const Parties = () => {
   const [parties, setParties] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [showDrawer, setShowDrawer] = useState(false);
+  const [showRiskDrawer, setShowRiskDrawer] = useState(false);
+  const [riskParty, setRiskParty] = useState(null);
   const [editingParty, setEditingParty] = useState(null);
   const [insights, setInsights] = useState(null);
+  const [riskByParty, setRiskByParty] = useState({});
   const [formData, setFormData] = useState({
     party_name: '',
     party_alias: '',
@@ -47,6 +51,13 @@ const Parties = () => {
         axios.get(`${API}/parties?${params}`, { timeout: 10000 }),
         axios.get(`${API}/parties/insights`, { timeout: 10000 }),
       ]);
+      let riskRows = [];
+      try {
+        const riskRes = await axios.get(`${API}/purchase-risk-alerts`, { params: { is_active: true } });
+        riskRows = Array.isArray(riskRes.data) ? riskRes.data : [];
+      } catch (_err) {
+        riskRows = [];
+      }
       const partyRows = partiesRes.data || [];
       const byParty = insightsRes.data?.by_party || [];
       const kgMap = new Map(byParty.map((x) => [x.party_id, x.fy_kg || 0]));
@@ -56,6 +67,16 @@ const Parties = () => {
       }));
       setParties(merged);
       setInsights(insightsRes.data || null);
+      const sevRank = { info: 1, warning: 2, critical: 3 };
+      const riskMap = {};
+      riskRows.forEach((r) => {
+        const k = (r.party_name || '').trim().toLowerCase();
+        if (!k) return;
+        const prev = riskMap[k] || 'info';
+        const next = (r.severity || 'warning').toLowerCase();
+        if ((sevRank[next] || 0) >= (sevRank[prev] || 0)) riskMap[k] = next;
+      });
+      setRiskByParty(riskMap);
     } catch (error) {
       if (error.code === 'ECONNABORTED') {
         toast.error('Request timed out');
@@ -105,6 +126,11 @@ const Parties = () => {
   const closeDrawer = () => {
     setShowDrawer(false);
     resetForm();
+  };
+
+  const openRiskDrawer = (party) => {
+    setRiskParty(party);
+    setShowRiskDrawer(true);
   };
 
   const handleSubmit = async (e) => {
@@ -256,6 +282,7 @@ const Parties = () => {
                     onSort={requestSort} 
                     getSortIcon={getSortIcon} 
                   />
+                  <TableHead>Risk</TableHead>
                   <SortableTableHead 
                     label="Alias" 
                     sortKey="party_alias" 
@@ -301,6 +328,21 @@ const Parties = () => {
                 {sortedData.map((party) => (
                   <TableRow key={party.id} data-testid={`party-row-${party.id}`}>
                     <TableCell className="font-medium">{party.party_name}</TableCell>
+                    <TableCell>
+                      {riskByParty[(party.party_name || '').trim().toLowerCase()] ? (
+                        <span className={`px-2 py-1 rounded text-xs font-semibold ${
+                          riskByParty[(party.party_name || '').trim().toLowerCase()] === 'critical'
+                            ? 'bg-red-100 text-red-700'
+                            : riskByParty[(party.party_name || '').trim().toLowerCase()] === 'warning'
+                              ? 'bg-amber-100 text-amber-700'
+                              : 'bg-slate-100 text-slate-700'
+                        }`}>
+                          {riskByParty[(party.party_name || '').trim().toLowerCase()]}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-gray-400">none</span>
+                      )}
+                    </TableCell>
                     <TableCell className="text-gray-600">{party.party_alias || '-'}</TableCell>
                     <TableCell>
                       <span className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs font-mono">
@@ -333,6 +375,9 @@ const Parties = () => {
                       <div className="flex gap-1">
                         <Button size="sm" variant="outline" onClick={() => openDrawer(party)}>
                           <Pencil className="h-3 w-3" />
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => openRiskDrawer(party)}>
+                          Risk
                         </Button>
                         <Button size="sm" variant="outline" onClick={() => handleDelete(party)}>
                           <Trash2 className="h-3 w-3" />
@@ -453,6 +498,25 @@ const Parties = () => {
                   </Button>
                 </div>
               </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRiskDrawer && riskParty && (
+        <div className="fixed inset-0 z-50 overflow-hidden">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setShowRiskDrawer(false)} />
+          <div className="absolute right-0 top-0 h-full w-full max-w-3xl bg-white shadow-xl">
+            <div className="h-full flex flex-col">
+              <div className="flex items-center justify-between px-6 py-4 border-b bg-amber-50">
+                <h2 className="text-xl font-bold text-amber-900">Risk - {riskParty.party_name}</h2>
+                <Button variant="ghost" size="sm" onClick={() => setShowRiskDrawer(false)}>
+                  <X className="h-5 w-5" />
+                </Button>
+              </div>
+              <div className="p-6 overflow-y-auto">
+                <RiskTimelinePanel entityType="party" entityName={riskParty.party_name} entityId={riskParty.id} />
+              </div>
             </div>
           </div>
         </div>

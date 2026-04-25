@@ -1,0 +1,19 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Copy only dependency manifests first for better layer caching.
+COPY package.json yarn.lock* package-lock* ./
+
+RUN if [ -f yarn.lock ]; then \
+      corepack enable && yarn install --frozen-lockfile --network-timeout 600000; \
+    elif [ -f package-lock.json ]; then \
+      npm ci; \
+    else \
+      npm install; \
+    fi
+
+# Source will be mounted in docker-compose.dev.yml
+EXPOSE 3000
+
+CMD ["sh", "-c", "if [ -f yarn.lock ]; then yarn start; else npm run start; fi"]

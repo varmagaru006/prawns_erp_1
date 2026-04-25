@@ -28,6 +28,7 @@ const WageBillDetail = lazy(() => import('./pages/WageBillDetail'));
 const AuditTrail = lazy(() => import('./pages/AuditTrail'));
 const PurchaseInvoices = lazy(() => import('./pages/PurchaseInvoices'));
 const PurchaseInvoiceForm = lazy(() => import('./pages/PurchaseInvoiceForm'));
+const PurchaseRiskAlerts = lazy(() => import('./pages/PurchaseRiskAlerts'));
 const CompanySettings = lazy(() => import('./pages/CompanySettings'));
 const Parties = lazy(() => import('./pages/Parties'));
 const PartyLedger = lazy(() => import('./pages/PartyLedger'));
@@ -115,6 +116,8 @@ function AppRoutes() {
         <Route path="purchase-invoices" element={<PurchaseInvoices />} />
         <Route path="purchase-invoices/create" element={<PurchaseInvoiceForm />} />
         <Route path="purchase-invoices/edit/:id" element={<PurchaseInvoiceForm />} />
+        <Route path="purchase-risk-alerts" element={<PurchaseRiskAlerts />} />
+        <Route path="risk-area-insights" element={<Navigate to="/purchase-risk-alerts?tab=insights" replace />} />
         <Route path="parties" element={<Parties />} />
         <Route path="party-ledger" element={<PartyLedger />} />
         <Route path="party-ledger/:partyId" element={<PartyLedger />} />

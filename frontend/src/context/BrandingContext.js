@@ -3,8 +3,9 @@ import axios from 'axios';
 
 const BrandingContext = createContext(null);
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
-const API = `${BACKEND_URL}/api`;
+// Match AuthContext: empty env → same-origin `/api` (nginx / dev proxy). Avoid localhost:8000 in Docker.
+const rawBackend = (process.env.REACT_APP_BACKEND_URL || '').trim().replace(/\/+$/, '');
+const API = rawBackend ? `${rawBackend}/api` : '/api';
 
 // Default branding config
 const DEFAULT_BRANDING = {

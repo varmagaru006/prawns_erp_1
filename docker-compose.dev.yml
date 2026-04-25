@@ -1,0 +1,30 @@
+services:
+  backend:
+    command: uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - backend_uploads:/app/uploads
+    environment:
+      MONGO_URL: mongodb://prawn_erp_user:prawn_erp_dev_password@mongo:27017
+      DB_NAME: prawn_erp
+      SECRET_KEY: dev-secret-key-change-me
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
+      WDS_SOCKET_PORT: "3000"
+      REACT_APP_BACKEND_URL: "http://localhost:8000"
+
+volumes:
+  frontend_node_modules:

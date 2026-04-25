@@ -25,8 +25,6 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: prawns_erp_backend
-    ports:
-      - "8000:8000"
     environment:
       MONGO_URL: mongodb://prawn_erp_user:prawn_erp_dev_password@mongo:27017
       DB_NAME: prawn_erp
@@ -37,19 +35,30 @@ services:
       mongo:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        REACT_APP_BACKEND_URL: http://localhost:8000
+        REACT_APP_BACKEND_URL: ""
     container_name: prawns_erp_frontend
     ports:
       - "3000:3000"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
 
 volumes:
   mongo_data:

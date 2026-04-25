@@ -35,7 +35,14 @@ import re
 from services.multi_tenant import tenant_context, FeatureFlagService, tenant_middleware
 
 # Super Admin module (integrated tenant management) - follows the 3-Feature Upgrade Guide
-from super_admin import super_admin_router, set_database as set_super_admin_db, set_feature_service as set_super_admin_feature_service, create_indexes as create_super_admin_indexes
+from super_admin import (
+    super_admin_router,
+    set_database as set_super_admin_db,
+    set_feature_service as set_super_admin_feature_service,
+    create_indexes as create_super_admin_indexes,
+    configure_super_admin_storage,
+    lookup_user_doc_cross_db,
+)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -177,6 +184,7 @@ class UserRole(str, Enum):
     super_admin = "super_admin"
     admin = "admin"
     owner = "owner"
+    risk_reviewer = "risk_reviewer"
     procurement_manager = "procurement_manager"
     production_supervisor = "production_supervisor"
     cold_storage_incharge = "cold_storage_incharge"
@@ -772,6 +780,63 @@ class NoteCreate(BaseModel):
     note_text: str
     is_pinned: bool = False
 
+class PurchaseRiskAlert(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    entity_type: str = "farmer"  # farmer | party | agent | purchase_supervisor
+    entity_id: Optional[str] = None
+    farmer_name: Optional[str] = None
+    party_name: Optional[str] = None
+    agent_name: Optional[str] = None
+    purchase_supervisor_name: Optional[str] = None
+    area_name: Optional[str] = None
+    note_text: str = ""
+    severity: str = "warning"  # info | warning | critical
+    category: str = "other"  # quality | payment | quantity_mismatch | fraud_suspected | other
+    linked_invoice_id: Optional[str] = None
+    linked_purchase_id: Optional[str] = None
+    edit_history: List[Dict[str, Any]] = []
+    resolved_at: Optional[datetime] = None
+    resolved_by: Optional[str] = None
+    resolved_by_name: Optional[str] = None
+    resolve_reason: Optional[str] = None
+    is_active: bool = True
+    created_by: str = ""
+    created_by_name: str = "Unknown"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class PurchaseRiskAlertCreate(BaseModel):
+    entity_type: Optional[str] = None
+    entity_id: Optional[str] = None
+    farmer_name: Optional[str] = None
+    party_name: Optional[str] = None
+    agent_name: Optional[str] = None
+    purchase_supervisor_name: Optional[str] = None
+    area_name: Optional[str] = None
+    note_text: str
+    severity: str = "warning"
+    category: str = "other"
+    linked_invoice_id: Optional[str] = None
+    linked_purchase_id: Optional[str] = None
+
+class PurchaseRiskAlertUpdate(BaseModel):
+    note_text: Optional[str] = None
+    severity: Optional[str] = None
+    category: Optional[str] = None
+    purchase_supervisor_name: Optional[str] = None
+    linked_invoice_id: Optional[str] = None
+    linked_purchase_id: Optional[str] = None
+
+class PurchaseRiskAlertResolve(BaseModel):
+    reason: Optional[str] = None
+
+class RiskAlertCheckResponse(BaseModel):
+    has_blocking_critical: bool
+    requires_ack_reason: bool
+    alerts: List[PurchaseRiskAlert]
+    summary: Dict[str, Any]
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Purchase Invoice Models (Amendment A4)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -790,6 +855,7 @@ class PurchaseInvoiceLine(BaseModel):
     count_value: str
     custom_variety_notes: Optional[str] = None
     custom_count_notes: Optional[str] = None
+    packing_trays_packed: Optional[int] = None
     quantity_kg: float
     rate: float
     amount: float = 0.0  # Computed: quantity_kg × rate
@@ -800,6 +866,7 @@ class PurchaseInvoiceLineCreate(BaseModel):
     count_value: str
     custom_variety_notes: Optional[str] = None
     custom_count_notes: Optional[str] = None
+    packing_trays_packed: Optional[int] = None
     quantity_kg: float
     rate: float
 
@@ -816,6 +883,9 @@ class PurchaseInvoice(BaseModel):
     farmer_location: Optional[str] = None
     agent_ref_name: Optional[str] = None
     weighment_slip_no: Optional[str] = None
+    driver_name: Optional[str] = None
+    seal_no: Optional[str] = None
+    purchase_supervisor_name: Optional[str] = None
     weighment_slip_file_url: Optional[str] = None  # e.g. /uploads/weighment_slip_*.jpg (compressed JPEG)
     weighment_slip_mime_type: Optional[str] = None
     
@@ -869,6 +939,9 @@ class PurchaseInvoiceCreate(BaseModel):
     farmer_location: Optional[str] = None
     agent_ref_name: Optional[str] = None
     weighment_slip_no: Optional[str] = None
+    driver_name: Optional[str] = None
+    seal_no: Optional[str] = None
+    purchase_supervisor_name: Optional[str] = None
     weighment_slip_file_url: Optional[str] = None
     weighment_slip_mime_type: Optional[str] = None
     custom_field_1_label: Optional[str] = None
@@ -887,6 +960,7 @@ class PurchaseInvoiceCreate(BaseModel):
 
 class PushInvoiceRequest(BaseModel):
     apply_digital_signature: bool = False
+    fraud_feedback: Optional[str] = None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1420,6 +1494,11 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
             {"email": {"$regex": f"^{re.escape((email or '').strip())}$", "$options": "i"}},
             {"_id": 0},
         )
+    if user_doc is None:
+        try:
+            user_doc = await lookup_user_doc_cross_db(email_lookup)
+        except Exception as e:
+            logger.debug("get_current_user cross-db lookup failed for %s: %s", email_lookup, e)
     _m["user_lookup_ms"] = round((time.perf_counter() - _t_user) * 1000, 1)
     if user_doc is None:
         _m["total_ms"] = round((time.perf_counter() - _t0) * 1000, 1)
@@ -1443,7 +1522,8 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     role_raw = user_doc.get('role', UserRole.worker.value)
     if isinstance(role_raw, str):
         try:
-            user_doc['role'] = UserRole(role_raw)
+            # DB / imports may use "Admin" or "ADMIN"; enum values are lowercase
+            user_doc['role'] = UserRole(role_raw.strip().lower())
         except ValueError:
             user_doc['role'] = UserRole.worker
     try:
@@ -1610,6 +1690,341 @@ async def create_audit_log(user_id: str, action: str, module: str, details: dict
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
     await db.audit_logs.insert_one(log)
+
+
+class RiskService:
+    SEVERITY_ORDER = {"info": 0, "warning": 1, "critical": 2}
+    LEGACY_SEVERITY_MAP = {"low": "info", "medium": "warning", "high": "critical"}
+    ALLOWED_ENTITY_TYPES = {"farmer", "party", "agent", "purchase_supervisor"}
+    ALLOWED_CATEGORIES = {"quality", "payment", "quantity_mismatch", "fraud_suspected", "other"}
+
+    def __init__(self, db_conn):
+        self.db = db_conn
+
+    @staticmethod
+    def _normalize_severity(raw: Optional[str]) -> str:
+        value = (raw or "warning").strip().lower()
+        value = RiskService.LEGACY_SEVERITY_MAP.get(value, value)
+        if value not in RiskService.SEVERITY_ORDER:
+            return "warning"
+        return value
+
+    @staticmethod
+    def _normalize_category(raw: Optional[str]) -> str:
+        value = (raw or "other").strip().lower()
+        return value if value in RiskService.ALLOWED_CATEGORIES else "other"
+
+    @staticmethod
+    def _to_dt(value: Any) -> Optional[datetime]:
+        if not value:
+            return None
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value)
+            except Exception:
+                return None
+        return None
+
+    @staticmethod
+    def _to_iso(value: Any) -> Optional[str]:
+        dtv = RiskService._to_dt(value)
+        return dtv.isoformat() if dtv else None
+
+    @staticmethod
+    def _normalize_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
+        doc = dict(doc)
+        for key in ("created_at", "updated_at", "resolved_at"):
+            if isinstance(doc.get(key), str):
+                try:
+                    doc[key] = datetime.fromisoformat(doc[key])
+                except Exception:
+                    pass
+        doc["severity"] = RiskService._normalize_severity(doc.get("severity"))
+        doc["category"] = RiskService._normalize_category(doc.get("category"))
+        doc["edit_history"] = list(doc.get("edit_history") or [])
+        return doc
+
+    async def is_feature_enabled(self, user: User, flag_code: str = "risk_comments_v2") -> bool:
+        # Keep risk APIs available even when feature flag propagation is stale.
+        # We still keep UI feature flag usage, but API should not hard-block operations.
+        return True
+
+    @staticmethod
+    def can_write(user: User) -> bool:
+        r = getattr(user, "role", None)
+        if r is None:
+            return False
+        if isinstance(r, UserRole):
+            role_s = r.value
+        else:
+            role_s = str(r).strip().lower()
+        return role_s in {"admin", "owner", "risk_reviewer"}
+
+    @staticmethod
+    def _derive_entity_type(payload: PurchaseRiskAlertCreate) -> str:
+        et = (payload.entity_type or "").strip().lower()
+        if et in RiskService.ALLOWED_ENTITY_TYPES:
+            return et
+        if payload.party_name:
+            return "party"
+        if payload.agent_name:
+            return "agent"
+        if payload.purchase_supervisor_name:
+            return "purchase_supervisor"
+        return "farmer"
+
+    async def create_comment(self, payload: PurchaseRiskAlertCreate, current_user: User) -> PurchaseRiskAlert:
+        entity_type = self._derive_entity_type(payload)
+        comment = PurchaseRiskAlert(
+            entity_type=entity_type,
+            entity_id=(payload.entity_id or "").strip() or None,
+            farmer_name=(payload.farmer_name or "").strip() or None,
+            party_name=(payload.party_name or "").strip() or None,
+            agent_name=(payload.agent_name or "").strip() or None,
+            purchase_supervisor_name=(payload.purchase_supervisor_name or "").strip() or None,
+            area_name=(payload.area_name or "").strip() or None,
+            note_text=(payload.note_text or "").strip(),
+            severity=self._normalize_severity(payload.severity),
+            category=self._normalize_category(payload.category),
+            linked_invoice_id=(payload.linked_invoice_id or "").strip() or None,
+            linked_purchase_id=(payload.linked_purchase_id or "").strip() or None,
+            created_by=current_user.id,
+            created_by_name=getattr(current_user, "name", "") or "Unknown",
+        )
+        if not comment.note_text:
+            raise HTTPException(status_code=400, detail="Risk comment text is required")
+        if not (comment.farmer_name or comment.party_name or comment.agent_name or comment.purchase_supervisor_name or comment.entity_id):
+            raise HTTPException(status_code=400, detail="At least one target is required")
+        doc = comment.model_dump()
+        doc["created_at"] = self._to_iso(doc["created_at"])
+        doc["updated_at"] = self._to_iso(doc["updated_at"])
+        doc["resolved_at"] = None
+        await self.db.purchase_risk_alerts.insert_one(doc)
+        try:
+            await create_audit_log(current_user.id, "RISK_COMMENT_CREATE", "risk", {"risk_comment_id": comment.id})
+        except Exception:
+            # Never fail the API if audit logging is unavailable
+            pass
+        return comment
+
+    async def edit_comment(self, alert_id: str, payload: PurchaseRiskAlertUpdate, current_user: User) -> PurchaseRiskAlert:
+        existing = await self.db.purchase_risk_alerts.find_one({"id": alert_id}, {"_id": 0})
+        if not existing:
+            raise HTTPException(status_code=404, detail="Risk comment not found")
+        patch: Dict[str, Any] = {}
+        if payload.note_text is not None:
+            note_text = payload.note_text.strip()
+            if not note_text:
+                raise HTTPException(status_code=400, detail="Risk comment text cannot be empty")
+            patch["note_text"] = note_text
+        if payload.severity is not None:
+            patch["severity"] = self._normalize_severity(payload.severity)
+        if payload.category is not None:
+            patch["category"] = self._normalize_category(payload.category)
+        if payload.purchase_supervisor_name is not None:
+            patch["purchase_supervisor_name"] = (payload.purchase_supervisor_name or "").strip() or None
+        if payload.linked_invoice_id is not None:
+            patch["linked_invoice_id"] = (payload.linked_invoice_id or "").strip() or None
+        if payload.linked_purchase_id is not None:
+            patch["linked_purchase_id"] = (payload.linked_purchase_id or "").strip() or None
+        if not patch:
+            raise HTTPException(status_code=400, detail="No editable fields provided")
+
+        history = list(existing.get("edit_history") or [])
+        history.append({
+            "edited_at": datetime.now(timezone.utc).isoformat(),
+            "edited_by": current_user.id,
+            "edited_by_name": getattr(current_user, "name", "") or "Unknown",
+            "before": {
+                "note_text": existing.get("note_text"),
+                "severity": existing.get("severity"),
+                "category": existing.get("category"),
+                "purchase_supervisor_name": existing.get("purchase_supervisor_name"),
+                "linked_invoice_id": existing.get("linked_invoice_id"),
+                "linked_purchase_id": existing.get("linked_purchase_id"),
+            },
+            "after": patch,
+        })
+        patch["edit_history"] = history
+        patch["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await self.db.purchase_risk_alerts.update_one({"id": alert_id}, {"$set": patch})
+        await create_audit_log(current_user.id, "RISK_COMMENT_EDIT", "risk", {"risk_comment_id": alert_id})
+        updated = await self.db.purchase_risk_alerts.find_one({"id": alert_id}, {"_id": 0})
+        return PurchaseRiskAlert(**self._normalize_doc(updated or {}))
+
+    async def set_resolved(self, alert_id: str, current_user: User, resolve: bool, reason: Optional[str] = None) -> PurchaseRiskAlert:
+        existing = await self.db.purchase_risk_alerts.find_one({"id": alert_id}, {"_id": 0})
+        if not existing:
+            raise HTTPException(status_code=404, detail="Risk comment not found")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        patch: Dict[str, Any] = {"updated_at": now_iso}
+        if resolve:
+            patch.update({
+                "resolved_at": now_iso,
+                "resolved_by": current_user.id,
+                "resolved_by_name": getattr(current_user, "name", "") or "Unknown",
+                "resolve_reason": (reason or "").strip() or None,
+                "is_active": False,
+            })
+            action = "RISK_COMMENT_RESOLVE"
+        else:
+            patch.update({
+                "resolved_at": None,
+                "resolved_by": None,
+                "resolved_by_name": None,
+                "resolve_reason": None,
+                "is_active": True,
+            })
+            action = "RISK_COMMENT_REOPEN"
+        await self.db.purchase_risk_alerts.update_one({"id": alert_id}, {"$set": patch})
+        await create_audit_log(current_user.id, action, "risk", {"risk_comment_id": alert_id})
+        updated = await self.db.purchase_risk_alerts.find_one({"id": alert_id}, {"_id": 0})
+        return PurchaseRiskAlert(**self._normalize_doc(updated or {}))
+
+    async def list_comments(self, is_active: Optional[bool] = None, search: Optional[str] = None) -> List[PurchaseRiskAlert]:
+        query: Dict[str, Any] = {}
+        if is_active is not None:
+            query["is_active"] = bool(is_active)
+        if search and search.strip():
+            s = re.escape(search.strip())
+            query["$or"] = [
+                {"farmer_name": {"$regex": s, "$options": "i"}},
+                {"party_name": {"$regex": s, "$options": "i"}},
+                {"agent_name": {"$regex": s, "$options": "i"}},
+                {"purchase_supervisor_name": {"$regex": s, "$options": "i"}},
+                {"area_name": {"$regex": s, "$options": "i"}},
+                {"note_text": {"$regex": s, "$options": "i"}},
+            ]
+        docs = await self.db.purchase_risk_alerts.find(query, {"_id": 0}).sort([("is_active", -1), ("created_at", -1)]).to_list(500)
+        out: List[PurchaseRiskAlert] = []
+        for d in docs:
+            try:
+                out.append(PurchaseRiskAlert(**self._normalize_doc(d)))
+            except Exception:
+                # Ignore malformed legacy rows instead of failing entire list API.
+                continue
+        return out
+
+    async def get_matches(self, farmer_name: Optional[str], party_name: Optional[str], agent_name: Optional[str], area_name: Optional[str]) -> List[PurchaseRiskAlert]:
+        clauses = []
+        if farmer_name and farmer_name.strip():
+            clauses.append({"farmer_name": {"$regex": f"^{re.escape(farmer_name.strip())}$", "$options": "i"}})
+        if party_name and party_name.strip():
+            clauses.append({"party_name": {"$regex": f"^{re.escape(party_name.strip())}$", "$options": "i"}})
+        if agent_name and agent_name.strip():
+            clauses.append({"agent_name": {"$regex": f"^{re.escape(agent_name.strip())}$", "$options": "i"}})
+        if area_name and area_name.strip():
+            clauses.append({"area_name": {"$regex": f"^{re.escape(area_name.strip())}$", "$options": "i"}})
+        if not clauses:
+            return []
+        docs = await self.db.purchase_risk_alerts.find({"is_active": True, "$or": clauses}, {"_id": 0}).sort([("created_at", -1)]).to_list(200)
+        comments: List[PurchaseRiskAlert] = []
+        for d in docs:
+            try:
+                comments.append(PurchaseRiskAlert(**self._normalize_doc(d)))
+            except Exception:
+                continue
+        def _sort_key(x: PurchaseRiskAlert):
+            ca = x.created_at
+            ts = ca.timestamp() if isinstance(ca, datetime) else 0.0
+            return (self.SEVERITY_ORDER.get(x.severity, 0), ts)
+
+        comments.sort(key=_sort_key, reverse=True)
+        return comments
+
+    async def get_alert_check(self, farmer_name: Optional[str], party_name: Optional[str], agent_name: Optional[str], area_name: Optional[str], from_date: Optional[datetime] = None, to_date: Optional[datetime] = None) -> Dict[str, Any]:
+        comments = await self.get_matches(farmer_name, party_name, agent_name, area_name)
+        config = await self.db.risk_config.find_one({"key": "defaults"}, {"_id": 0})
+        bad_purchase_threshold = int((config or {}).get("bad_purchase_threshold", 2))
+        lookback_months = int((config or {}).get("lookback_months", 6))
+        lookback_dt = datetime.now(timezone.utc) - timedelta(days=30 * lookback_months)
+        unresolved_warning_or_critical = [c for c in comments if c.is_active and c.resolved_at is None and c.severity in {"warning", "critical"}]
+        recent_bad_purchase = [
+            c for c in comments
+            if c.category in {"quality", "payment", "quantity_mismatch", "fraud_suspected"}
+            and (c.created_at or datetime.now(timezone.utc)) >= lookback_dt
+        ]
+        has_blocking_critical = any(c.severity == "critical" for c in unresolved_warning_or_critical)
+        return {
+            "has_blocking_critical": has_blocking_critical,
+            "requires_ack_reason": has_blocking_critical,
+            "alerts": comments,
+            "summary": {
+                "unresolved_warning_or_critical_count": len(unresolved_warning_or_critical),
+                "recent_bad_purchase_count": len(recent_bad_purchase),
+                "bad_purchase_threshold": bad_purchase_threshold,
+                "lookback_months": lookback_months,
+                "threshold_triggered": len(recent_bad_purchase) >= bad_purchase_threshold,
+            },
+        }
+
+    async def get_area_insights(self, from_date: Optional[datetime] = None, to_date: Optional[datetime] = None, area_name: Optional[str] = None) -> Dict[str, Any]:
+        now = datetime.now(timezone.utc)
+        current_end = to_date or now
+        current_start = from_date or (current_end - timedelta(days=90))
+        period_days = max(1, (current_end - current_start).days)
+        prev_end = current_start
+        prev_start = prev_end - timedelta(days=period_days)
+
+        async def _scan_range(start: datetime, end: datetime) -> List[Dict[str, Any]]:
+            q: Dict[str, Any] = {"created_at": {"$gte": start.isoformat(), "$lt": end.isoformat()}}
+            if area_name and area_name.strip():
+                q["area_name"] = {"$regex": f"^{re.escape(area_name.strip())}$", "$options": "i"}
+            return await self.db.purchase_risk_alerts.find(
+                q,
+                {"_id": 0}
+            ).to_list(5000)
+
+        current_docs = [_ for _ in await _scan_range(current_start, current_end)]
+        prev_docs = [_ for _ in await _scan_range(prev_start, prev_end)]
+
+        def _area(doc: Dict[str, Any]) -> str:
+            return (doc.get("area_name") or "Unspecified").strip() or "Unspecified"
+
+        category_counts: Dict[str, int] = {}
+        area_rows: Dict[str, Dict[str, Any]] = {}
+        for d in current_docs:
+            d = self._normalize_doc(d)
+            area = _area(d)
+            row = area_rows.setdefault(area, {"area_name": area, "critical_last_90_days": 0, "total_comments": 0, "top_categories": {}, "risky_entities": {}})
+            row["total_comments"] += 1
+            if d.get("severity") == "critical":
+                row["critical_last_90_days"] += 1
+            cat = d.get("category") or "other"
+            category_counts[cat] = category_counts.get(cat, 0) + 1
+            row["top_categories"][cat] = row["top_categories"].get(cat, 0) + 1
+            key = d.get("party_name") or d.get("farmer_name") or d.get("agent_name") or d.get("entity_id") or "unknown"
+            row["risky_entities"][key] = row["risky_entities"].get(key, 0) + self.SEVERITY_ORDER.get(d.get("severity"), 0) + 1
+
+        prev_critical = sum(1 for d in prev_docs if self._normalize_doc(d).get("severity") == "critical")
+        curr_critical = sum(1 for d in current_docs if self._normalize_doc(d).get("severity") == "critical")
+        trend_delta = curr_critical - prev_critical
+
+        areas = []
+        for area_name, row in area_rows.items():
+            top_categories = sorted(row["top_categories"].items(), key=lambda x: x[1], reverse=True)[:3]
+            risky_entities = sorted(row["risky_entities"].items(), key=lambda x: x[1], reverse=True)[:10]
+            areas.append({
+                "area_name": area_name,
+                "critical_last_90_days": row["critical_last_90_days"],
+                "total_comments": row["total_comments"],
+                "top_categories": [{"category": c, "count": cnt} for c, cnt in top_categories],
+                "risky_entities": [{"name": n, "score": s} for n, s in risky_entities],
+            })
+        areas.sort(key=lambda x: (x["critical_last_90_days"], x["total_comments"]), reverse=True)
+        top_categories_overall = sorted(category_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+        return {
+            "total_active_alerts": await self.db.purchase_risk_alerts.count_documents({"is_active": True}),
+            "critical_comments_last_90_days": curr_critical,
+            "trend_vs_previous_period": trend_delta,
+            "top_categories": [{"category": c, "count": cnt} for c, cnt in top_categories_overall],
+            "areas": areas[:20],
+        }
+
+
+risk_service = RiskService(db)
 
 
 def generate_inspection_code() -> str:
@@ -2199,6 +2614,12 @@ async def login(credentials: UserLogin):
         except Exception as e:
             logger.warning("Cross-tenant login lookup failed for %s: %s", email_key, e)
     if not user_doc:
+        # Super-admin (or legacy seed) may exist only in prawn_erp_super_admin.users
+        try:
+            user_doc = await lookup_user_doc_cross_db(email_key)
+        except Exception as e:
+            logger.debug("login cross-db user lookup failed for %s: %s", email_key, e)
+    if not user_doc:
         _metrics["total_ms"] = round((time.perf_counter() - _t0) * 1000, 1)
         logger.info("login failed metrics email=%s metrics=%s", email_key, _metrics)
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -2227,7 +2648,7 @@ async def login(credentials: UserLogin):
     role_raw = user_data.get('role', UserRole.worker.value)
     if isinstance(role_raw, str):
         try:
-            user_data['role'] = UserRole(role_raw)
+            user_data['role'] = UserRole(role_raw.strip().lower())
         except ValueError:
             user_data['role'] = UserRole.worker
 
@@ -3593,6 +4014,9 @@ async def create_purchase_invoice(
         farmer_location=invoice_data.farmer_location,
         agent_ref_name=invoice_data.agent_ref_name,
         weighment_slip_no=invoice_data.weighment_slip_no,
+        driver_name=invoice_data.driver_name,
+        seal_no=invoice_data.seal_no,
+        purchase_supervisor_name=invoice_data.purchase_supervisor_name,
         weighment_slip_file_url=invoice_data.weighment_slip_file_url,
         weighment_slip_mime_type=invoice_data.weighment_slip_mime_type,
         custom_field_1_label=invoice_data.custom_field_1_label,
@@ -3644,6 +4068,7 @@ async def create_purchase_invoice(
             count_value=line_data.count_value,
             custom_variety_notes=line_data.custom_variety_notes,
             custom_count_notes=line_data.custom_count_notes,
+            packing_trays_packed=line_data.packing_trays_packed,
             quantity_kg=line_data.quantity_kg,
             rate=line_data.rate,
             amount=round(line_data.quantity_kg * line_data.rate, 2)
@@ -3664,6 +4089,7 @@ async def create_purchase_invoice(
             count_value=line_data.count_value,
             custom_variety_notes=line_data.custom_variety_notes,
             custom_count_notes=line_data.custom_count_notes,
+            packing_trays_packed=line_data.packing_trays_packed,
             quantity_kg=line_data.quantity_kg,
             rate=line_data.rate,
             amount=round(line_data.quantity_kg * line_data.rate, 2)
@@ -3976,6 +4402,9 @@ async def update_purchase_invoice(
         "farmer_location": invoice_data.farmer_location,
         "agent_ref_name": invoice_data.agent_ref_name,
         "weighment_slip_no": invoice_data.weighment_slip_no,
+        "driver_name": invoice_data.driver_name,
+        "seal_no": invoice_data.seal_no,
+        "purchase_supervisor_name": invoice_data.purchase_supervisor_name,
         "weighment_slip_file_url": invoice_data.weighment_slip_file_url,
         "weighment_slip_mime_type": invoice_data.weighment_slip_mime_type,
         "custom_field_1_label": invoice_data.custom_field_1_label,
@@ -4038,6 +4467,7 @@ async def update_purchase_invoice(
             count_value=line_data.count_value,
             custom_variety_notes=line_data.custom_variety_notes,
             custom_count_notes=line_data.custom_count_notes,
+            packing_trays_packed=line_data.packing_trays_packed,
             quantity_kg=line_data.quantity_kg,
             rate=line_data.rate,
             amount=round(line_data.quantity_kg * line_data.rate, 2)
@@ -4119,6 +4549,7 @@ async def push_invoice_to_procurement(
         raise HTTPException(status_code=400, detail="Invoice already pushed")
 
     apply_digital_signature = bool(payload.apply_digital_signature) if payload else False
+    fraud_feedback = (payload.fraud_feedback or "").strip() if payload else ""
     if apply_digital_signature and current_user.role != UserRole.admin:
         raise HTTPException(status_code=403, detail="Only admin can apply digital signature")
     
@@ -4258,14 +4689,83 @@ async def push_invoice_to_procurement(
             # Log but don't fail the push
             print(f"Warning: Could not create ledger entry: {e}")
     
-    await create_audit_log(current_user.id, "PUSH_PURCHASE_INVOICE", "procurement",
-                          {"invoice_id": invoice_id, "lot_id": lot['id'], "lot_number": lot_number})
+    created_risk_alert_ids: List[str] = []
+    if fraud_feedback:
+        feedback_note = f"[Push Fraud Feedback] {fraud_feedback}"
+        # Auto-create linked fraud alerts for all key counterparties from this invoice.
+        # Purchase supervisor is tracked under `agent_name` with a clear prefix so it appears in existing UI.
+        targets = [
+            {
+                "entity_type": "farmer",
+                "farmer_name": (invoice.get("farmer_name") or "").strip() or None,
+                "party_name": None,
+                "agent_name": None,
+            },
+            {
+                "entity_type": "party",
+                "farmer_name": None,
+                "party_name": (invoice.get("party_name_text") or "").strip() or None,
+                "agent_name": None,
+            },
+            {
+                "entity_type": "agent",
+                "farmer_name": None,
+                "party_name": None,
+                "agent_name": (invoice.get("agent_ref_name") or "").strip() or None,
+                "purchase_supervisor_name": None,
+            },
+            {
+                "entity_type": "purchase_supervisor",
+                "farmer_name": None,
+                "party_name": None,
+                "agent_name": None,
+                "purchase_supervisor_name": (invoice.get("purchase_supervisor_name") or "").strip() or None,
+            },
+        ]
+        for t in targets:
+            if not (t.get("farmer_name") or t.get("party_name") or t.get("agent_name") or t.get("purchase_supervisor_name")):
+                continue
+            try:
+                alert = await risk_service.create_comment(
+                    PurchaseRiskAlertCreate(
+                        entity_type=t["entity_type"],
+                        farmer_name=t.get("farmer_name"),
+                        party_name=t.get("party_name"),
+                        agent_name=t.get("agent_name"),
+                        purchase_supervisor_name=t.get("purchase_supervisor_name"),
+                        area_name=(invoice.get("farmer_location") or "").strip() or None,
+                        note_text=feedback_note,
+                        severity="critical",
+                        category="fraud_suspected",
+                        linked_invoice_id=invoice_id,
+                    ),
+                    current_user,
+                )
+                created_risk_alert_ids.append(alert.id)
+            except Exception as e:
+                # Do not block push flow if risk alert automation fails for one target.
+                print(f"Warning: Could not create auto fraud risk alert for invoice {invoice_id}: {e}")
+
+    await create_audit_log(
+        current_user.id,
+        "PUSH_PURCHASE_INVOICE",
+        "procurement",
+        {
+            "invoice_id": invoice_id,
+            "lot_id": lot['id'],
+            "lot_number": lot_number,
+            "fraud_feedback_added": bool(fraud_feedback),
+            "risk_alerts_created_count": len(created_risk_alert_ids),
+            "risk_alert_ids": created_risk_alert_ids,
+        },
+    )
     
     return {
         "status": "success",
         "message": "Invoice pushed to procurement",
         "lot_id": lot['id'],
-        "lot_number": lot_number
+        "lot_number": lot_number,
+        "risk_alerts_created": len(created_risk_alert_ids),
     }
 
 @api_router.post("/purchase-invoices/{invoice_id}/sync-ledger")
@@ -5650,6 +6150,124 @@ async def get_notes(entity_type: str, entity_id: str, current_user: User = Depen
         if isinstance(note.get('created_at'), str):
             note['created_at'] = datetime.fromisoformat(note['created_at'])
     return notes
+
+@api_router.post("/purchase-risk-alerts", response_model=PurchaseRiskAlert)
+async def create_purchase_risk_alert(
+    alert_data: PurchaseRiskAlertCreate,
+    current_user: User = Depends(get_current_user)
+):
+    if not await risk_service.is_feature_enabled(current_user):
+        raise HTTPException(status_code=403, detail="risk_comments_v2 is disabled")
+    if not risk_service.can_write(current_user):
+        raise HTTPException(status_code=403, detail="Only admin/owner/risk_reviewer can create risk comments")
+    return await risk_service.create_comment(alert_data, current_user)
+
+@api_router.get("/purchase-risk-alerts/match", response_model=List[PurchaseRiskAlert])
+async def get_purchase_risk_alert_matches(
+    farmer_name: Optional[str] = None,
+    party_name: Optional[str] = None,
+    agent_name: Optional[str] = None,
+    area_name: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    if not await risk_service.is_feature_enabled(current_user):
+        return []
+    return await risk_service.get_matches(farmer_name, party_name, agent_name, area_name)
+
+
+@api_router.get("/purchase-risk-alerts/check", response_model=RiskAlertCheckResponse)
+async def check_purchase_risk_alerts(
+    farmer_name: Optional[str] = None,
+    party_name: Optional[str] = None,
+    agent_name: Optional[str] = None,
+    area_name: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+):
+    if not await risk_service.is_feature_enabled(current_user):
+        return RiskAlertCheckResponse(
+            has_blocking_critical=False,
+            requires_ack_reason=False,
+            alerts=[],
+            summary={"disabled": True},
+        )
+    result = await risk_service.get_alert_check(farmer_name, party_name, agent_name, area_name)
+    return RiskAlertCheckResponse(**result)
+
+@api_router.get("/purchase-risk-alerts/insights")
+async def get_purchase_risk_alert_insights(
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
+    area_name: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+):
+    if not await risk_service.is_feature_enabled(current_user):
+        return {"disabled": True, "areas": [], "top_categories": [], "total_active_alerts": 0}
+    from_dt = datetime.combine(from_date, datetime.min.time(), tzinfo=timezone.utc) if from_date else None
+    to_dt = datetime.combine(to_date, datetime.max.time(), tzinfo=timezone.utc) if to_date else None
+    return await risk_service.get_area_insights(from_date=from_dt, to_date=to_dt, area_name=area_name)
+
+@api_router.get("/purchase-risk-alerts", response_model=List[PurchaseRiskAlert])
+async def list_purchase_risk_alerts(
+    is_active: Optional[bool] = None,
+    search: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    if not await risk_service.is_feature_enabled(current_user):
+        return []
+    return await risk_service.list_comments(is_active=is_active, search=search)
+
+@api_router.patch("/purchase-risk-alerts/{alert_id}/active")
+async def set_purchase_risk_alert_active(
+    alert_id: str,
+    payload: Dict[str, Any],
+    current_user: User = Depends(get_current_user)
+):
+    if not await risk_service.is_feature_enabled(current_user):
+        raise HTTPException(status_code=403, detail="risk_comments_v2 is disabled")
+    if not risk_service.can_write(current_user):
+        raise HTTPException(status_code=403, detail="Only admin/owner/risk_reviewer can update risk comments")
+    is_active = bool(payload.get("is_active"))
+    comment = await risk_service.set_resolved(alert_id, current_user, resolve=not is_active, reason=payload.get("reason"))
+    return {"status": "success", "message": "Risk alert updated", "risk_comment": comment.model_dump()}
+
+
+@api_router.patch("/purchase-risk-alerts/{alert_id}", response_model=PurchaseRiskAlert)
+async def update_purchase_risk_alert(
+    alert_id: str,
+    payload: PurchaseRiskAlertUpdate,
+    current_user: User = Depends(get_current_user),
+):
+    if not await risk_service.is_feature_enabled(current_user):
+        raise HTTPException(status_code=403, detail="risk_comments_v2 is disabled")
+    if not risk_service.can_write(current_user):
+        raise HTTPException(status_code=403, detail="Only admin/owner/risk_reviewer can update risk comments")
+    return await risk_service.edit_comment(alert_id, payload, current_user)
+
+
+@api_router.post("/purchase-risk-alerts/{alert_id}/resolve", response_model=PurchaseRiskAlert)
+async def resolve_purchase_risk_alert(
+    alert_id: str,
+    payload: PurchaseRiskAlertResolve,
+    current_user: User = Depends(get_current_user),
+):
+    if not await risk_service.is_feature_enabled(current_user):
+        raise HTTPException(status_code=403, detail="risk_comments_v2 is disabled")
+    if not risk_service.can_write(current_user):
+        raise HTTPException(status_code=403, detail="Only admin/owner/risk_reviewer can resolve risk comments")
+    return await risk_service.set_resolved(alert_id, current_user, resolve=True, reason=payload.reason)
+
+
+@api_router.post("/purchase-risk-alerts/{alert_id}/reopen", response_model=PurchaseRiskAlert)
+async def reopen_purchase_risk_alert(
+    alert_id: str,
+    payload: PurchaseRiskAlertResolve,
+    current_user: User = Depends(get_current_user),
+):
+    if not await risk_service.is_feature_enabled(current_user):
+        raise HTTPException(status_code=403, detail="risk_comments_v2 is disabled")
+    if not risk_service.can_write(current_user):
+        raise HTTPException(status_code=403, detail="Only admin/owner/risk_reviewer can reopen risk comments")
+    return await risk_service.set_resolved(alert_id, current_user, resolve=False, reason=payload.reason)
 
 
 
@@ -9003,6 +9621,12 @@ async def ensure_erp_indexes():
         await db.attachments.create_index("created_at")
         await db.notes.create_index([("entity_type", 1), ("entity_id", 1)])
         await db.notes.create_index("created_at")
+        await db.purchase_risk_alerts.create_index([("entity_type", 1), ("entity_id", 1), ("created_at", -1)])
+        await db.purchase_risk_alerts.create_index([("severity", 1), ("resolved_at", 1)])
+        await db.purchase_risk_alerts.create_index([("is_active", 1), ("created_at", -1)])
+        await db.purchase_risk_alerts.create_index([("area_name", 1), ("created_at", -1)])
+        await db.purchase_risk_alerts.create_index("id", unique=True)
+        await db.risk_config.create_index("key", unique=True)
 
         # Tenant config
         await db.tenant_config.create_index("key")
@@ -9034,25 +9658,41 @@ async def ensure_erp_indexes():
 @app.on_event("startup")
 async def startup_event():
     """Initialize super admin module, create indexes, and seed default client admin if needed"""
+    configure_super_admin_storage(client, DEFAULT_DB_NAME, SUPER_ADMIN_DB_NAME)
     set_super_admin_db(db)
     set_super_admin_feature_service(feature_service)
-    await create_super_admin_indexes()
+    try:
+        await create_super_admin_indexes()
+    except Exception:
+        # Do not fail app boot if indexes already conflict with historical data.
+        logger.exception("Super admin index creation failed; continuing startup")
+
     await ensure_erp_indexes()
-    # Ensure default client ERP admin exists (by email) so login always works
-    existing_admin = await db.users.find_one({"email": DEFAULT_CLIENT_ADMIN_EMAIL})
-    if not existing_admin:
-        await db.users.insert_one({
-            "id": str(uuid.uuid4()),
-            "email": DEFAULT_CLIENT_ADMIN_EMAIL,
-            "name": "Admin User",
-            "role": UserRole.admin.value,
-            "phone": None,
-            "password": get_password_hash(DEFAULT_CLIENT_ADMIN_PASSWORD),
-            "is_active": True,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "tenant_id": DEFAULT_TENANT_ID,
-        })
-        logger.info("Seeded default client ERP admin: %s / %s", DEFAULT_CLIENT_ADMIN_EMAIL, DEFAULT_CLIENT_ADMIN_PASSWORD)
+    await db.risk_config.update_one(
+        {"key": "defaults"},
+        {"$setOnInsert": {"key": "defaults", "bad_purchase_threshold": 2, "lookback_months": 6, "created_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+
+    # Ensure default client ERP admin exists (by email) so login always works.
+    try:
+        existing_admin = await db.users.find_one({"email": DEFAULT_CLIENT_ADMIN_EMAIL})
+        if not existing_admin:
+            await db.users.insert_one({
+                "id": str(uuid.uuid4()),
+                "email": DEFAULT_CLIENT_ADMIN_EMAIL,
+                "name": "Admin User",
+                "role": UserRole.admin.value,
+                "phone": None,
+                "password": get_password_hash(DEFAULT_CLIENT_ADMIN_PASSWORD),
+                "is_active": True,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "tenant_id": DEFAULT_TENANT_ID,
+            })
+            logger.info("Seeded default client ERP admin: %s / %s", DEFAULT_CLIENT_ADMIN_EMAIL, DEFAULT_CLIENT_ADMIN_PASSWORD)
+    except Exception:
+        logger.exception("Default admin seed check failed; continuing startup")
+
     logger.info("Super Admin module initialized with database indexes")
 
 @app.on_event("shutdown")
