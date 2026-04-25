@@ -8,11 +8,15 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { toast } from 'sonner';
 import { Plus, Users, Phone, CreditCard } from 'lucide-react';
+import RiskTimelinePanel from '../components/RiskTimelinePanel';
 
 const Agents = () => {
   const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [riskByAgent, setRiskByAgent] = useState({});
   const [open, setOpen] = useState(false);
+  const [riskOpen, setRiskOpen] = useState(false);
+  const [selectedAgent, setSelectedAgent] = useState(null);
   const [formData, setFormData] = useState({
     agent_code: '',
     name: '',
@@ -31,8 +35,21 @@ const Agents = () => {
 
   const fetchAgents = async () => {
     try {
-      const response = await axios.get(`${API}/agents`);
+      const [response, riskRes] = await Promise.all([
+        axios.get(`${API}/agents`),
+        axios.get(`${API}/purchase-risk-alerts`, { params: { is_active: true } }).catch(() => ({ data: [] })),
+      ]);
       setAgents(response.data);
+      const sevRank = { info: 1, warning: 2, critical: 3 };
+      const map = {};
+      (Array.isArray(riskRes.data) ? riskRes.data : []).forEach((r) => {
+        const key = (r.agent_name || '').trim().toLowerCase();
+        if (!key) return;
+        const prev = map[key] || 'info';
+        const next = (r.severity || 'warning').toLowerCase();
+        if ((sevRank[next] || 0) >= (sevRank[prev] || 0)) map[key] = next;
+      });
+      setRiskByAgent(map);
     } catch (error) {
       toast.error('Failed to load agents');
     } finally {
@@ -61,6 +78,11 @@ const Agents = () => {
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to add agent');
     }
+  };
+
+  const openRisk = (agent) => {
+    setSelectedAgent(agent);
+    setRiskOpen(true);
   };
 
   return (
@@ -208,6 +230,22 @@ const Agents = () => {
                   <Phone size={16} className="text-slate-500" />
                   <span data-testid={`agent-phone-${agent.id}`}>{agent.phone}</span>
                 </div>
+                <div className="text-sm">
+                  <span className="text-slate-600">Risk: </span>
+                  {riskByAgent[(agent.name || '').trim().toLowerCase()] ? (
+                    <span className={`px-2 py-1 rounded text-xs font-semibold ${
+                      riskByAgent[(agent.name || '').trim().toLowerCase()] === 'critical'
+                        ? 'bg-red-100 text-red-700'
+                        : riskByAgent[(agent.name || '').trim().toLowerCase()] === 'warning'
+                          ? 'bg-amber-100 text-amber-700'
+                          : 'bg-slate-100 text-slate-700'
+                    }`}>
+                      {riskByAgent[(agent.name || '').trim().toLowerCase()]}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-gray-400">none</span>
+                  )}
+                </div>
                 {agent.gst && (
                   <div className="flex items-center gap-2 text-sm">
                     <CreditCard size={16} className="text-slate-500" />
@@ -225,6 +263,9 @@ const Agents = () => {
                     Bank: {agent.bank_name}
                   </div>
                 )}
+                <Button size="sm" variant="outline" onClick={() => openRisk(agent)}>
+                  Risk
+                </Button>
               </CardContent>
             </Card>
           ))}
@@ -239,6 +280,17 @@ const Agents = () => {
           </CardContent>
         </Card>
       )}
+
+      <Dialog open={riskOpen} onOpenChange={setRiskOpen}>
+        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Risk - {selectedAgent?.name || ''}</DialogTitle>
+          </DialogHeader>
+          {selectedAgent && (
+            <RiskTimelinePanel entityType="agent" entityName={selectedAgent.name} entityId={selectedAgent.id} />
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

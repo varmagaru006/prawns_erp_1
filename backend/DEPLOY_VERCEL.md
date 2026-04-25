@@ -1,6 +1,8 @@
-# Backend deploy on Vercel
+# Backend deploy on Vercel (Frontend-only reference)
 
-Use this guide to deploy `backend` on Vercel without losing data or settings.
+Vercel is not suitable for this repository's full-stack persistent runtime (backend + mongo).
+Use this path only when Vercel hosts frontend assets and backend/database are hosted elsewhere.
+For single-stack deployment, use `../DEPLOY_DOCKER_SINGLE_STACK.md`.
 
 ## 1) Vercel project settings
 

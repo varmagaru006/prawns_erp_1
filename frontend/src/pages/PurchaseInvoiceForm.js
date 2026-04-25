@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { API, BACKEND_URL } from '../context/AuthContext';
+import { API, BACKEND_URL, useAuth } from '../context/AuthContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
@@ -12,6 +12,7 @@ const PurchaseInvoiceForm = () => {
   const navigate = useNavigate();
   const { id } = useParams();
   const isEdit = !!id;
+  const { user } = useAuth();
 
   const [formData, setFormData] = useState({
     invoice_date: new Date().toISOString().split('T')[0],
@@ -20,6 +21,9 @@ const PurchaseInvoiceForm = () => {
     farmer_location: '',
     agent_ref_name: '',
     weighment_slip_no: '',
+    driver_name: '',
+    seal_no: '',
+    purchase_supervisor_name: '',
     custom_field_1_label: '',
     custom_field_1_value: '',
     custom_field_2_label: '',
@@ -44,7 +48,7 @@ const PurchaseInvoiceForm = () => {
   const weighmentFileInputRef = useRef(null);
 
   const [lineItems, setLineItems] = useState([
-    { line_no: 1, variety: 'Vannamei', count_value: '', quantity_kg: 0, rate: 0, custom_variety_notes: '', custom_count_notes: '' }
+    { line_no: 1, variety: 'Vannamei', count_value: '', packing_trays_packed: '', quantity_kg: 0, rate: 0, custom_variety_notes: '', custom_count_notes: '' }
   ]);
 
   const [totals, setTotals] = useState({
@@ -55,6 +59,13 @@ const PurchaseInvoiceForm = () => {
     grand_total: 0,
     balance_due: 0
   });
+  const [riskAlerts, setRiskAlerts] = useState([]);
+  const [riskAlertsLoading, setRiskAlertsLoading] = useState(false);
+  const [riskNoteText, setRiskNoteText] = useState('');
+  const [riskSeverity, setRiskSeverity] = useState('warning');
+  const [riskRequiresAck, setRiskRequiresAck] = useState(false);
+  const [riskAckReason, setRiskAckReason] = useState('');
+  const isAdminUser = ['admin', 'owner', 'risk_reviewer'].includes((user?.role || '').toLowerCase());
 
   useEffect(() => {
     fetchParties();
@@ -66,6 +77,76 @@ const PurchaseInvoiceForm = () => {
   useEffect(() => {
     calculateTotals();
   }, [lineItems, formData.tds_rate_pct, formData.advance_paid]);
+
+  useEffect(() => {
+    const farmer = (formData.farmer_name || '').trim();
+    const party = (formData.party_name_text || '').trim();
+    const agent = (formData.agent_ref_name || '').trim();
+    const area = (formData.farmer_location || '').trim();
+    if (!farmer && !party && !agent && !area) {
+      setRiskAlerts([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      try {
+        setRiskAlertsLoading(true);
+        const res = await axios.get(`${API}/purchase-risk-alerts/check`, {
+          params: {
+            farmer_name: farmer || undefined,
+            party_name: party || undefined,
+            agent_name: agent || undefined,
+            area_name: area || undefined
+          }
+        });
+        const rows = Array.isArray(res.data?.alerts) ? res.data.alerts : [];
+        setRiskAlerts(rows);
+        setRiskRequiresAck(Boolean(res.data?.requires_ack_reason));
+      } catch (error) {
+        setRiskAlerts([]);
+        setRiskRequiresAck(false);
+      } finally {
+        setRiskAlertsLoading(false);
+      }
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [formData.farmer_name, formData.party_name_text, formData.agent_ref_name, formData.farmer_location]);
+
+  const handleCreateRiskAlert = async () => {
+    const note = (riskNoteText || '').trim();
+    if (!note) {
+      toast.error('Risk alert comment is required');
+      return;
+    }
+    if (!isAdminUser) {
+      toast.error('Only admin/owner can add risk alerts');
+      return;
+    }
+    try {
+      await axios.post(`${API}/purchase-risk-alerts`, {
+        farmer_name: formData.farmer_name || null,
+        party_name: formData.party_name_text || null,
+        agent_name: formData.agent_ref_name || null,
+        area_name: formData.farmer_location || null,
+        note_text: note,
+        category: 'other',
+        severity: riskSeverity
+      });
+      toast.success('Risk alert saved for future purchases');
+      setRiskNoteText('');
+      const res = await axios.get(`${API}/purchase-risk-alerts/check`, {
+        params: {
+          farmer_name: formData.farmer_name || undefined,
+          party_name: formData.party_name_text || undefined,
+          agent_name: formData.agent_ref_name || undefined,
+          area_name: formData.farmer_location || undefined
+        }
+      });
+      setRiskAlerts(Array.isArray(res.data?.alerts) ? res.data.alerts : []);
+      setRiskRequiresAck(Boolean(res.data?.requires_ack_reason));
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to save risk alert');
+    }
+  };
 
   const fetchParties = async () => {
     try {
@@ -126,6 +207,9 @@ const PurchaseInvoiceForm = () => {
         farmer_location: inv.farmer_location || '',
         agent_ref_name: inv.agent_ref_name || '',
         weighment_slip_no: inv.weighment_slip_no || '',
+        driver_name: inv.driver_name || '',
+        seal_no: inv.seal_no || '',
+        purchase_supervisor_name: inv.purchase_supervisor_name || '',
         custom_field_1_label: inv.custom_field_1_label || '',
         custom_field_1_value: inv.custom_field_1_value || '',
         custom_field_2_label: inv.custom_field_2_label || '',
@@ -191,6 +275,7 @@ const PurchaseInvoiceForm = () => {
       line_no: lineItems.length + 1,
       variety: 'Vannamei',
       count_value: '',
+      packing_trays_packed: '',
       quantity_kg: 0,
       rate: 0,
       custom_variety_notes: '',
@@ -262,6 +347,11 @@ const PurchaseInvoiceForm = () => {
       return;
     }
 
+    if (riskRequiresAck && !riskAckReason.trim()) {
+      toast.error('Critical risk requires acknowledge reason before saving');
+      return;
+    }
+
     const payload = {
       ...formData,
       farmer_mobile: formData.farmer_mobile || null,
@@ -271,11 +361,13 @@ const PurchaseInvoiceForm = () => {
         line_no: line.line_no,
         variety: line.variety,
         count_value: line.count_value,
+        packing_trays_packed: line.packing_trays_packed === '' ? null : (parseInt(line.packing_trays_packed, 10) || 0),
         quantity_kg: parseFloat(line.quantity_kg) || 0,
         rate: parseFloat(line.rate) || 0,
         custom_variety_notes: line.custom_variety_notes,
         custom_count_notes: line.custom_count_notes
-      }))
+      })),
+      risk_acknowledged_reason: riskAckReason.trim() || null
     };
 
     try {
@@ -316,6 +408,62 @@ const PurchaseInvoiceForm = () => {
           <CardTitle>Invoice Details</CardTitle>
         </CardHeader>
         <CardContent>
+          {(riskAlertsLoading || riskAlerts.length > 0) && (
+            <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 p-3">
+              <p className="text-sm font-semibold text-amber-900">
+                Purchase Risk Alerts {riskAlertsLoading ? '(checking...)' : `(${riskAlerts.length})`}
+              </p>
+              {riskAlerts.map((alert) => (
+                <div key={alert.id} className="mt-2 rounded border border-amber-200 bg-white px-3 py-2 text-sm">
+                  <p className="font-medium text-amber-900">
+                    [{(alert.severity || 'warning').toUpperCase()}] {alert.note_text}
+                  </p>
+                  <p className="text-xs text-gray-600 mt-1">
+                    Farmer: {alert.farmer_name || '-'} | Party: {alert.party_name || '-'} | Agent: {alert.agent_name || '-'} | Area: {alert.area_name || '-'}
+                  </p>
+                </div>
+              ))}
+              {riskRequiresAck && (
+                <div className="mt-3 rounded border border-red-200 bg-red-50 p-3">
+                  <p className="text-sm font-semibold text-red-800">Critical alert requires acknowledge reason</p>
+                  <Input
+                    className="mt-2"
+                    value={riskAckReason}
+                    onChange={(e) => setRiskAckReason(e.target.value)}
+                    placeholder="Reason for proceeding with critical counterparty risk"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+          {isAdminUser && (
+            <div className="mb-4 rounded-md border border-blue-200 bg-blue-50 p-3">
+              <p className="text-sm font-semibold text-blue-900">Admin Caution Note (creates future alert)</p>
+              <div className="mt-2 grid grid-cols-1 md:grid-cols-4 gap-2">
+                <div className="md:col-span-3">
+                  <Input
+                    value={riskNoteText}
+                    onChange={(e) => setRiskNoteText(e.target.value)}
+                    placeholder="Add caution comment for farmer/party/agent/area"
+                  />
+                </div>
+                <select
+                  value={riskSeverity}
+                  onChange={(e) => setRiskSeverity(e.target.value)}
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                >
+                  <option value="info">Info</option>
+                  <option value="warning">Warning</option>
+                  <option value="critical">Critical</option>
+                </select>
+              </div>
+              <div className="mt-2">
+                <Button type="button" size="sm" variant="outline" onClick={handleCreateRiskAlert}>
+                  Save Risk Alert
+                </Button>
+              </div>
+            </div>
+          )}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium mb-2">Farmer Name *</label>
@@ -465,6 +613,33 @@ const PurchaseInvoiceForm = () => {
               />
             </div>
 
+            <div>
+              <label className="block text-sm font-medium mb-2">Driver Name</label>
+              <Input
+                value={formData.driver_name}
+                onChange={(e) => setFormData({ ...formData, driver_name: e.target.value })}
+                placeholder="Enter driver name"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-2">Seal No</label>
+              <Input
+                value={formData.seal_no}
+                onChange={(e) => setFormData({ ...formData, seal_no: e.target.value })}
+                placeholder="Enter seal number"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-2">Purchase Supervisor Name</label>
+              <Input
+                value={formData.purchase_supervisor_name}
+                onChange={(e) => setFormData({ ...formData, purchase_supervisor_name: e.target.value })}
+                placeholder="Enter supervisor name"
+              />
+            </div>
+
             <div className="md:col-span-2">
               <label className="block text-sm font-medium mb-2">Weighment slip (photo)</label>
               <p className="text-xs text-gray-500 mb-2">
@@ -559,6 +734,7 @@ const PurchaseInvoiceForm = () => {
                   <th className="p-2 text-left text-sm font-medium">S.NO</th>
                   <th className="p-2 text-left text-sm font-medium">Variety</th>
                   <th className="p-2 text-left text-sm font-medium">Count</th>
+                  <th className="p-2 text-left text-sm font-medium">Packing Trays</th>
                   <th className="p-2 text-left text-sm font-medium">Qty (kg)</th>
                   <th className="p-2 text-left text-sm font-medium">Rate (₹)</th>
                   <th className="p-2 text-right text-sm font-medium">Amount (₹)</th>
@@ -584,6 +760,17 @@ const PurchaseInvoiceForm = () => {
                           value={line.count_value}
                           onChange={(e) => handleLineChange(index, 'count_value', e.target.value)}
                           placeholder="86/90"
+                          className="h-8"
+                        />
+                      </td>
+                      <td className="p-2">
+                        <Input
+                          type="number"
+                          step="1"
+                          min="0"
+                          value={line.packing_trays_packed ?? ''}
+                          onChange={(e) => handleLineChange(index, 'packing_trays_packed', e.target.value)}
+                          placeholder="Optional"
                           className="h-8"
                         />
                       </td>

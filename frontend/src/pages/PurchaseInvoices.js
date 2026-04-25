@@ -5,6 +5,7 @@ import { useFeatureFlags } from '../context/FeatureFlagContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
+import { Textarea } from '../components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
@@ -54,6 +55,8 @@ const PurchaseInvoices = () => {
   
   const [invoices, setInvoices] = useState([]);
   const [metrics, setMetrics] = useState(null);
+  const [riskInsights, setRiskInsights] = useState(null);
+  const [riskBadgeMap, setRiskBadgeMap] = useState({ farmer: {}, party: {}, agent: {} });
   const [loading, setLoading] = useState(true);
   const [agentOptions, setAgentOptions] = useState([]);
   const [partyOptions, setPartyOptions] = useState([]);
@@ -71,6 +74,7 @@ const PurchaseInvoices = () => {
   const [showPushModal, setShowPushModal] = useState(false);
   const [pushInvoiceId, setPushInvoiceId] = useState(null);
   const [applyDigitalSignature, setApplyDigitalSignature] = useState(false);
+  const [fraudFeedback, setFraudFeedback] = useState('');
   const [pushing, setPushing] = useState(false);
   const [activeInvoiceSubTab, setActiveInvoiceSubTab] = useState('pending');
 
@@ -95,6 +99,7 @@ const PurchaseInvoices = () => {
 
   useEffect(() => {
     fetchFilterOptions();
+    fetchRiskInsights();
   }, []);
 
   const goToInvoiceSubTab = (tab) => {
@@ -110,6 +115,34 @@ const PurchaseInvoices = () => {
     } catch (error) {
       setAgentOptions([]);
       setPartyOptions([]);
+    }
+  };
+
+  const fetchRiskInsights = async () => {
+    try {
+      const [res, listRes] = await Promise.all([
+        axios.get(`${API}/purchase-risk-alerts/insights`),
+        axios.get(`${API}/purchase-risk-alerts`, { params: { is_active: true } }).catch(() => ({ data: [] })),
+      ]);
+      setRiskInsights(res.data || null);
+      const rank = { info: 1, warning: 2, critical: 3 };
+      const maps = { farmer: {}, party: {}, agent: {} };
+      (Array.isArray(listRes.data) ? listRes.data : []).forEach((r) => {
+        const sev = (r.severity || 'warning').toLowerCase();
+        const apply = (bucket, key) => {
+          const k = (key || '').trim().toLowerCase();
+          if (!k) return;
+          const prev = maps[bucket][k] || 'info';
+          if ((rank[sev] || 0) >= (rank[prev] || 0)) maps[bucket][k] = sev;
+        };
+        apply('farmer', r.farmer_name);
+        apply('party', r.party_name);
+        apply('agent', r.agent_name);
+      });
+      setRiskBadgeMap(maps);
+    } catch (error) {
+      setRiskInsights(null);
+      setRiskBadgeMap({ farmer: {}, party: {}, agent: {} });
     }
   };
 
@@ -153,7 +186,10 @@ const PurchaseInvoices = () => {
         setMetrics(null);
       }
     } catch (error) {
-      toast.error('Failed to load invoices');
+      const detail = formatFastApiDetail(error.response?.data?.detail);
+      const msg = detail ? `Failed to load invoices: ${detail}` : 'Failed to load invoices';
+      console.error('purchase-invoices list failed', error.response?.status, error.response?.data || error.message);
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -209,6 +245,7 @@ const PurchaseInvoices = () => {
   const openPushModal = (invoiceId) => {
     setPushInvoiceId(invoiceId);
     setApplyDigitalSignature(false);
+    setFraudFeedback('');
     setShowPushModal(true);
   };
 
@@ -218,14 +255,20 @@ const PurchaseInvoices = () => {
     try {
       const response = await axios.post(
         `${API}/purchase-invoices/${pushInvoiceId}/push-to-procurement`,
-        { apply_digital_signature: user?.role === 'admin' ? applyDigitalSignature : false }
+        {
+          apply_digital_signature: user?.role === 'admin' ? applyDigitalSignature : false,
+          fraud_feedback: user?.role === 'admin' && fraudFeedback.trim() ? fraudFeedback.trim() : undefined,
+        }
       );
+      const riskCreated = Number(response.data?.risk_alerts_created || 0);
       toast.success(
-        `Pushed! Lot ${response.data.lot_number} created${applyDigitalSignature ? ' (digitally signed)' : ''}`
+        `Pushed! Lot ${response.data.lot_number} created${applyDigitalSignature ? ' (digitally signed)' : ''}${riskCreated > 0 ? ` • ${riskCreated} fraud risk alert(s) created` : ''}`
       );
       setShowPushModal(false);
       setPushInvoiceId(null);
+      setFraudFeedback('');
       fetchInvoices();
+      fetchRiskInsights();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to push invoice');
     } finally {
@@ -332,13 +375,16 @@ const PurchaseInvoices = () => {
       }
 
       // Build CSV
-      const headers = ['Invoice No', 'Date', 'Farmer Name', 'Mobile', 'Location', 'Total Qty (kg)', 'Subtotal', 'TDS', 'Grand Total', 'Advance', 'Balance Due', 'Status', 'Manual Audit'];
+      const headers = ['Invoice No', 'Date', 'Farmer Name', 'Mobile', 'Location', 'Driver Name', 'Seal No', 'Purchase Supervisor', 'Total Qty (kg)', 'Subtotal', 'TDS', 'Grand Total', 'Advance', 'Balance Due', 'Status', 'Manual Audit'];
       const rows = data.map(inv => [
         inv.invoice_no,
         inv.invoice_date,
         inv.farmer_name,
         inv.farmer_mobile || '',
         inv.farmer_location || '',
+        inv.driver_name || '',
+        inv.seal_no || '',
+        inv.purchase_supervisor_name || '',
         inv.total_quantity_kg?.toFixed(3) || '0',
         inv.subtotal?.toFixed(2) || '0',
         inv.tds_amount?.toFixed(2) || '0',
@@ -389,7 +435,7 @@ const PurchaseInvoices = () => {
       }
 
       // Create simple HTML table for Excel
-      const headers = ['Invoice No', 'Date', 'Farmer Name', 'Mobile', 'Location', 'Total Qty (kg)', 'Subtotal', 'TDS', 'Grand Total', 'Advance', 'Balance Due', 'Status', 'Manual Audit'];
+      const headers = ['Invoice No', 'Date', 'Farmer Name', 'Mobile', 'Location', 'Driver Name', 'Seal No', 'Purchase Supervisor', 'Total Qty (kg)', 'Subtotal', 'TDS', 'Grand Total', 'Advance', 'Balance Due', 'Status', 'Manual Audit'];
       let tableHTML = '<table border="1"><tr>' + headers.map(h => `<th style="background:#0d47a1;color:white;padding:8px">${h}</th>`).join('') + '</tr>';
       
       data.forEach(inv => {
@@ -399,6 +445,9 @@ const PurchaseInvoices = () => {
         tableHTML += `<td>${inv.farmer_name || ''}</td>`;
         tableHTML += `<td>${inv.farmer_mobile || ''}</td>`;
         tableHTML += `<td>${inv.farmer_location || ''}</td>`;
+        tableHTML += `<td>${inv.driver_name || ''}</td>`;
+        tableHTML += `<td>${inv.seal_no || ''}</td>`;
+        tableHTML += `<td>${inv.purchase_supervisor_name || ''}</td>`;
         tableHTML += `<td style="text-align:right">${inv.total_quantity_kg?.toFixed(3) || '0'}</td>`;
         tableHTML += `<td style="text-align:right">${inv.subtotal?.toFixed(2) || '0'}</td>`;
         tableHTML += `<td style="text-align:right">${inv.tds_amount?.toFixed(2) || '0'}</td>`;
@@ -669,6 +718,28 @@ const PurchaseInvoices = () => {
       )}
 
       {/* Invoices Table */}
+      {riskInsights && (
+        <Card className="mb-6 border-amber-200">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Area Risk Insights</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-gray-600 mb-2">
+              Active caution alerts: <span className="font-semibold text-amber-700">{riskInsights.total_active_alerts ?? 0}</span>
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              {(riskInsights.areas || []).slice(0, 6).map((row) => (
+                <div key={row.area_name} className="rounded border bg-amber-50 px-3 py-2 text-sm">
+                  <p className="font-medium text-gray-900">{row.area_name || 'Unspecified'}</p>
+                  <p className="text-gray-700">Total alerts: {row.total_alerts || row.total_comments || 0}</p>
+                  <p className="text-red-700">Critical alerts: {row.high_alerts || row.critical_last_90_days || 0}</p>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <Card className="min-w-0">
         <CardHeader>
           <CardTitle>Invoices</CardTitle>
@@ -707,6 +778,9 @@ const PurchaseInvoices = () => {
                 <SortableTableHead label="Party" sortKey="party_name_text" onSort={requestSort} getSortIcon={getSortIcon} />
                 <SortableTableHead label="Short Code" sortKey="party_short_code" onSort={requestSort} getSortIcon={getSortIcon} />
                 <SortableTableHead label="Location" sortKey="farmer_location" onSort={requestSort} getSortIcon={getSortIcon} />
+                <SortableTableHead label="Driver" sortKey="driver_name" onSort={requestSort} getSortIcon={getSortIcon} />
+                <SortableTableHead label="Seal No" sortKey="seal_no" onSort={requestSort} getSortIcon={getSortIcon} />
+                <SortableTableHead label="Supervisor" sortKey="purchase_supervisor_name" onSort={requestSort} getSortIcon={getSortIcon} />
                 <SortableTableHead label="Total Qty (kg)" sortKey="total_quantity_kg" onSort={requestSort} getSortIcon={getSortIcon} className="text-right" />
                 <SortableTableHead label="Grand Total" sortKey="grand_total" onSort={requestSort} getSortIcon={getSortIcon} className="text-right" />
                 <SortableTableHead label="Advance Paid" sortKey="advance_paid" onSort={requestSort} getSortIcon={getSortIcon} className="text-right" />
@@ -720,11 +794,11 @@ const PurchaseInvoices = () => {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={15} className="text-center">Loading...</TableCell>
+                  <TableCell colSpan={18} className="text-center">Loading...</TableCell>
                 </TableRow>
               ) : sortedInvoices.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={15} className="text-center text-gray-500">
+                  <TableCell colSpan={18} className="text-center text-gray-500">
                     No invoices found in this sub-tab
                   </TableCell>
                 </TableRow>
@@ -733,7 +807,22 @@ const PurchaseInvoices = () => {
                   <TableRow key={invoice.id}>
                     <TableCell className="font-mono">{invoice.invoice_no}</TableCell>
                     <TableCell>{invoice.invoice_date}</TableCell>
-                    <TableCell>{invoice.farmer_name}</TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <span>{invoice.farmer_name}</span>
+                        {(() => {
+                          const sev = riskBadgeMap.farmer[(invoice.farmer_name || '').trim().toLowerCase()];
+                          if (!sev) return null;
+                          return (
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                              sev === 'critical' ? 'bg-red-100 text-red-700' : sev === 'warning' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-700'
+                            }`}>
+                              {sev}
+                            </span>
+                          );
+                        })()}
+                      </div>
+                    </TableCell>
                     <TableCell>
                       {invoice.farmer_mobile ? (
                         <a href={`tel:${invoice.farmer_mobile}`} className="text-blue-600 hover:underline">
@@ -743,7 +832,22 @@ const PurchaseInvoices = () => {
                         <span className="text-gray-400">-</span>
                       )}
                     </TableCell>
-                    <TableCell>{invoice.party_name_text || '-'}</TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <span>{invoice.party_name_text || '-'}</span>
+                        {(() => {
+                          const sev = riskBadgeMap.party[(invoice.party_name_text || '').trim().toLowerCase()];
+                          if (!sev) return null;
+                          return (
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                              sev === 'critical' ? 'bg-red-100 text-red-700' : sev === 'warning' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-700'
+                            }`}>
+                              {sev}
+                            </span>
+                          );
+                        })()}
+                      </div>
+                    </TableCell>
                     <TableCell>
                       {invoice.party_short_code ? (
                         <span className="inline-block px-2 py-1 bg-blue-100 text-blue-800 text-xs font-semibold rounded">
@@ -752,6 +856,9 @@ const PurchaseInvoices = () => {
                       ) : '-'}
                     </TableCell>
                     <TableCell>{invoice.farmer_location || '-'}</TableCell>
+                    <TableCell>{invoice.driver_name || '-'}</TableCell>
+                    <TableCell>{invoice.seal_no || '-'}</TableCell>
+                    <TableCell>{invoice.purchase_supervisor_name || '-'}</TableCell>
                     <TableCell className="text-right">{invoice.total_quantity_kg?.toFixed(3)}</TableCell>
                     <TableCell className="text-right font-medium">₹{invoice.grand_total?.toLocaleString('en-IN')}</TableCell>
                     <TableCell className="text-right font-medium text-green-700">₹{(invoice.advance_paid ?? 0).toLocaleString('en-IN')}</TableCell>
@@ -908,6 +1015,18 @@ const PurchaseInvoices = () => {
                       <span className="text-gray-500">Date:</span>
                       <p className="font-medium">{previewInvoice.invoice_date}</p>
                     </div>
+                    <div>
+                      <span className="text-gray-500">Driver Name:</span>
+                      <p className="font-medium">{previewInvoice.driver_name || '-'}</p>
+                    </div>
+                    <div>
+                      <span className="text-gray-500">Seal No:</span>
+                      <p className="font-medium">{previewInvoice.seal_no || '-'}</p>
+                    </div>
+                    <div>
+                      <span className="text-gray-500">Supervisor:</span>
+                      <p className="font-medium">{previewInvoice.purchase_supervisor_name || '-'}</p>
+                    </div>
                   </div>
                 </div>
 
@@ -948,6 +1067,7 @@ const PurchaseInvoices = () => {
                           <th className="px-3 py-2 text-left">#</th>
                           <th className="px-3 py-2 text-left">Variety</th>
                           <th className="px-3 py-2 text-left">Count</th>
+                          <th className="px-3 py-2 text-right">Packing Trays</th>
                           <th className="px-3 py-2 text-right">Qty (kg)</th>
                           <th className="px-3 py-2 text-right">Rate</th>
                           <th className="px-3 py-2 text-right">Amount</th>
@@ -959,6 +1079,7 @@ const PurchaseInvoices = () => {
                             <td className="px-3 py-2">{line.line_no}</td>
                             <td className="px-3 py-2">{line.variety}</td>
                             <td className="px-3 py-2">{line.count_value || '-'}</td>
+                            <td className="px-3 py-2 text-right">{line.packing_trays_packed ?? '-'}</td>
                             <td className="px-3 py-2 text-right">{line.quantity_kg?.toFixed(3)}</td>
                             <td className="px-3 py-2 text-right">₹{line.rate?.toFixed(2)}</td>
                             <td className="px-3 py-2 text-right font-medium">₹{line.amount?.toFixed(2)}</td>
@@ -1067,6 +1188,7 @@ const PurchaseInvoices = () => {
           if (!open) {
             setPushInvoiceId(null);
             setApplyDigitalSignature(false);
+            setFraudFeedback('');
           }
         }
       }}>
@@ -1081,21 +1203,39 @@ const PurchaseInvoices = () => {
             </p>
 
             {user?.role === 'admin' && (
-              <div className="flex items-start gap-3 rounded-md border p-3 bg-gray-50">
-                <input
-                  id="apply-digital-signature"
-                  type="checkbox"
-                  checked={applyDigitalSignature}
-                  onChange={(e) => setApplyDigitalSignature(e.target.checked)}
-                  className="mt-1 h-4 w-4"
-                />
+              <div className="space-y-3 rounded-md border p-3 bg-gray-50">
+                <div className="flex items-start gap-3">
+                  <input
+                    id="apply-digital-signature"
+                    type="checkbox"
+                    checked={applyDigitalSignature}
+                    onChange={(e) => setApplyDigitalSignature(e.target.checked)}
+                    className="mt-1 h-4 w-4"
+                  />
+                  <div>
+                    <Label htmlFor="apply-digital-signature" className="font-medium">
+                      Apply digital signature to invoice PDF
+                    </Label>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Optional. If unchecked, this invoice will not get a cryptographic seal, and the company
+                      signature image from settings will not appear on the PDF footer for this pushed invoice.
+                    </p>
+                  </div>
+                </div>
+
                 <div>
-                  <Label htmlFor="apply-digital-signature" className="font-medium">
-                    Apply digital signature to invoice PDF
+                  <Label htmlFor="fraud-feedback" className="font-medium">
+                    Fraud feedback (optional)
                   </Label>
+                  <Textarea
+                    id="fraud-feedback"
+                    value={fraudFeedback}
+                    onChange={(e) => setFraudFeedback(e.target.value)}
+                    placeholder="If you suspect fraud, add feedback here. On push, linked critical risk alerts will be auto-created for farmer, party, agent, and purchase supervisor."
+                    className="mt-2 min-h-[90px]"
+                  />
                   <p className="text-xs text-gray-500 mt-1">
-                    Optional. If unchecked, this invoice will not get a cryptographic seal, and the company
-                    signature image from settings will not appear on the PDF footer for this pushed invoice.
+                    When filled, this note auto-creates fraud alerts in Risk Alerts tab for all related parties.
                   </p>
                 </div>
               </div>
@@ -1109,6 +1249,7 @@ const PurchaseInvoices = () => {
                   setShowPushModal(false);
                   setPushInvoiceId(null);
                   setApplyDigitalSignature(false);
+                  setFraudFeedback('');
                 }}
               >
                 Cancel

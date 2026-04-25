@@ -20,6 +20,7 @@ FEATURE_REGISTRY: List[Dict[str, Any]] = [
     {"code": "purchaseInvoiceDashboard", "name": "Purchase Invoice Dashboard", "description": "Invoice metrics, quick preview, and bulk export", "module": "Finance", "default_enabled": True},
     {"code": "parties", "name": "Party Master", "description": "Party/vendor master data and management", "module": "Finance", "default_enabled": True},
     {"code": "partyLedger", "name": "Party Ledger", "description": "Party ledger and FY-wise accounts", "module": "Finance", "default_enabled": True},
+    {"code": "risk_comments_v2", "name": "Risk Comments V2", "description": "Entity risk commentary, alerts, and area insights", "module": "Risk", "default_enabled": True},
     {"code": "wastageDashboard", "name": "Wastage Dashboard", "description": "Yield tracking and revenue loss monitoring", "module": "Analytics", "default_enabled": False},
     {"code": "yieldBenchmarks", "name": "Yield Benchmarks", "description": "Configure wastage thresholds", "module": "Analytics", "default_enabled": False},
     {"code": "marketRates", "name": "Market Rates", "description": "Configure pricing for revenue calculations", "module": "Analytics", "default_enabled": False},

@@ -2,8 +2,16 @@ import { useState, useMemo, useRef, useEffect } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { useSortableTable } from '../hooks/useSortableTable';
+import { API } from '../context/AuthContext';
 
-const API = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
+function getCurrentFinancialYear() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth() + 1; // 1-12
+  const startYear = month >= 4 ? year : year - 1;
+  const endYear = startYear + 1;
+  return `${String(startYear).slice(-2)}-${String(endYear).slice(-2)}`;
+}
 
 // Compute running balance
 function computeBalances(entries, opening) {
@@ -229,7 +237,7 @@ export default function PartyLedgerModule() {
   const isAdmin = String(currentUser?.role || "").toLowerCase() === "admin";
   const [view, setView]           = useState("list");
   const [selectedParty, setParty] = useState(null);
-  const [selectedFY, setFY]       = useState("25-26");
+  const [selectedFY, setFY]       = useState(getCurrentFinancialYear);
   const [showPreview, setPreview] = useState(false);
   const [showPayModal, setPayModal] = useState(false);
   const [showAddParty, setAddParty] = useState(false);
@@ -248,7 +256,13 @@ export default function PartyLedgerModule() {
   const [obForm, setObForm] = useState({ amount: "" });
   const [tenantConfig, setTenantConfig] = useState(null);
 
-  const ALL_FY = ["24-25", "25-26", "26-27"];
+  const [availableFYs, setAvailableFYs] = useState([]);
+
+  const ALL_FY = useMemo(() => {
+    const current = getCurrentFinancialYear();
+    const merged = Array.from(new Set([current, ...availableFYs]));
+    return merged.sort((a, b) => (a < b ? 1 : -1));
+  }, [availableFYs]);
 
   // Filter parties by search
   const filteredParties = parties.filter(p => 
@@ -288,10 +302,30 @@ export default function PartyLedgerModule() {
     fetchParties();
   }, [selectedFY]);
 
+  useEffect(() => {
+    fetchAvailableFYs();
+  }, []);
+
+  async function fetchAvailableFYs() {
+    try {
+      const response = await axios.get(`${API}/party-ledger/available-fys`);
+      const list = Array.isArray(response.data) ? response.data : [];
+      setAvailableFYs(list);
+      const current = getCurrentFinancialYear();
+      if (list.includes(current)) {
+        setFY(current);
+      } else if (list.length > 0) {
+        setFY(current);
+      }
+    } catch (error) {
+      console.error("Failed to fetch available financial years", error);
+    }
+  }
+
   async function fetchParties() {
     setLoading(true);
     try {
-      const response = await axios.get(`${API}/api/party-ledger/parties?fy=${selectedFY}`);
+      const response = await axios.get(`${API}/party-ledger/parties?fy=${selectedFY}`);
       setParties(response.data);
     } catch (error) {
       toast.error("Failed to fetch parties");
@@ -305,7 +339,7 @@ export default function PartyLedgerModule() {
   async function fetchLedgerDetail(partyId, fy) {
     setLoading(true);
     try {
-      const response = await axios.get(`${API}/api/party-ledger/parties/${partyId}/ledger?fy=${fy}`);
+      const response = await axios.get(`${API}/party-ledger/parties/${partyId}/ledger?fy=${fy}`);
       setLedgerData(prev => ({
         ...prev,
         [partyId]: {
@@ -340,7 +374,7 @@ export default function PartyLedgerModule() {
     }
     
     try {
-      await axios.post(`${API}/api/party-ledger/parties/${selectedParty.id}/payments`, {
+      await axios.post(`${API}/party-ledger/parties/${selectedParty.id}/payments`, {
         financial_year: selectedFY,
         payment_date: payForm.date,
         payment_amount: parseFloat(payForm.amount),
@@ -367,7 +401,7 @@ export default function PartyLedgerModule() {
     }
     
     try {
-      await axios.post(`${API}/api/party-ledger/parties/${selectedParty.id}/manual-entry`, {
+      await axios.post(`${API}/party-ledger/parties/${selectedParty.id}/manual-entry`, {
         financial_year: selectedFY,
         entry_date: manualForm.date,
         entry_type: showAddManual === "debit" ? "manual_debit" : "manual_credit",
@@ -392,7 +426,7 @@ export default function PartyLedgerModule() {
     }
     
     try {
-      await axios.post(`${API}/api/party-ledger/parties/${selectedParty.id}/opening-balance`, {
+      await axios.post(`${API}/party-ledger/parties/${selectedParty.id}/opening-balance`, {
         financial_year: selectedFY,
         opening_balance: parseFloat(obForm.amount)
       });
@@ -414,7 +448,7 @@ export default function PartyLedgerModule() {
         return;
       }
       const response = await axios.get(
-        `${API}/api/party-ledger/parties/${selectedParty.id}/export?fy=${selectedFY}&format=${format}`,
+        `${API}/party-ledger/parties/${selectedParty.id}/export?fy=${selectedFY}&format=${format}`,
         {
           responseType: 'blob',
           headers: { Authorization: `Bearer ${token}` }
@@ -456,7 +490,7 @@ export default function PartyLedgerModule() {
     setCarryForwarding(true);
     try {
       const response = await axios.post(
-        `${API}/api/party-ledger/carry-forward`,
+        `${API}/party-ledger/carry-forward`,
         null,
         { params: { from_fy: fromFY } }
       );
@@ -476,7 +510,7 @@ export default function PartyLedgerModule() {
     if (!entryId) return;
     if (!window.confirm("Delete this ledger entry? This will recompute balances.")) return;
     try {
-      await axios.delete(`${API}/api/party-ledger/entry/${entryId}`);
+      await axios.delete(`${API}/party-ledger/entry/${entryId}`);
       toast.success("Ledger entry deleted");
       fetchLedgerDetail(selectedParty.id, selectedFY);
     } catch (error) {
@@ -508,7 +542,7 @@ export default function PartyLedgerModule() {
       payload.payment_date = dateRaw;
     }
     try {
-      await axios.put(`${API}/api/party-ledger/entry/${entry.id}`, payload);
+      await axios.put(`${API}/party-ledger/entry/${entry.id}`, payload);
       toast.success("Ledger entry updated");
       fetchLedgerDetail(selectedParty.id, selectedFY);
     } catch (error) {

@@ -6,7 +6,7 @@ WORKDIR /app
 
 # Install dependencies (use yarn if present, else npm)
 COPY package.json yarn.lock* package-lock* ./
-RUN if [ -f yarn.lock ]; then corepack enable && yarn install --frozen-lockfile; else npm ci; fi
+RUN if [ -f yarn.lock ]; then corepack enable && yarn install --frozen-lockfile --network-timeout 600000; else npm ci; fi
 
 COPY . .
 

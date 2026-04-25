@@ -35,7 +35,7 @@ import {
 
 const Layout = () => {
   const { user, logout, isImpersonating, endImpersonation } = useAuth();
-  const { isEnabled, refreshFeatures, loading: featuresLoading, features } = useFeatureFlags();
+  const { isEnabled, refreshFeatures, features } = useFeatureFlags();
   const { branding } = useBranding();
   const location = useLocation();
   const navigate = useNavigate();
@@ -89,6 +89,8 @@ const Layout = () => {
     { name: 'Sales & Dispatch', path: '/sales', icon: 'Ship', moduleKey: 'sales', featureCode: 'sales' },
     { name: 'Accounts', path: '/accounts', icon: 'Receipt', moduleKey: 'accounts', featureCode: 'accounts' },
     { name: 'Material Purchase', path: '/purchase-invoices', icon: 'FileText', moduleKey: 'procurement', featureCode: 'purchaseInvoiceDashboard' },
+    // Use `admin` feature so access matches Admin Panel; do not gate on risk_comments_v2 (tenant DB can have it off).
+    { name: 'Purchase Risk Alerts', path: '/purchase-risk-alerts', icon: 'Shield', moduleKey: 'admin', featureCode: 'admin' },
     { name: 'Party Master', path: '/parties', icon: 'Users', moduleKey: 'procurement', featureCode: 'parties' },
     { name: 'Party Ledger', path: '/party-ledger', icon: 'BookOpen', moduleKey: 'partyLedger', featureCode: 'partyLedger' },
     { name: 'Wastage Dashboard', path: '/admin/wastage-dashboard', icon: 'TrendingDown', moduleKey: 'wastageDashboard', featureCode: 'wastageDashboard' },
@@ -114,6 +116,7 @@ const Layout = () => {
     '/sales': 'sales',
     '/accounts': 'accounts',
     '/purchase-invoices': 'purchaseInvoiceDashboard',
+    '/purchase-risk-alerts': 'admin',
     '/parties': 'parties',
     '/party-ledger': 'partyLedger',
     '/admin/wastage-dashboard': 'wastageDashboard',
@@ -134,11 +137,12 @@ const Layout = () => {
         .sort((a, b) => b.length - a.length)[0];
   const featureForPath = matchedKey ? pathToFeature[matchedKey] : null;
   const hasFeatures = Object.keys(features).length > 0;
-  // Don't block while flags are loading (avoid showing "not enabled" before /auth/me returns)
-  // If flags never loaded (empty after load), allow access so user isn't locked out
+  // Apply Super Admin toggles whenever we have a non-empty flag map (from /auth/me or localStorage cache).
+  // Cache is hydrated on refresh so we don't briefly show all role-allowed tabs while /auth/me is in flight.
+  const flagsGateActive = hasFeatures;
+  // If flags never loaded (empty map), allow access so user isn't locked out.
   // Super admin always passes through so they can reach the /platform-admin redirect page
   const featureBlocked =
-    !featuresLoading &&
     hasFeatures &&
     featureForPath &&
     !isEnabled(featureForPath) &&
@@ -148,11 +152,12 @@ const Layout = () => {
   const visibleNav = navigation.filter((item) => {
     if (item.moduleKey === 'dashboard') {
       if (!canAccessDashboard(user?.role)) return false;
-      return item.featureCode ? isEnabled(item.featureCode) : true;
+      if (item.featureCode && flagsGateActive && !isEnabled(item.featureCode)) return false;
+      return true;
     }
     if (!item.moduleKey) return true;
     if (!isModuleAccessible(item.moduleKey, user?.role)) return false;
-    if (item.featureCode && !isEnabled(item.featureCode)) return false;
+    if (item.featureCode && flagsGateActive && !isEnabled(item.featureCode)) return false;
     return true;
   });
 

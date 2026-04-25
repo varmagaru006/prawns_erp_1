@@ -1,10 +1,88 @@
 import React, { createContext, useState, useContext, useEffect } from 'react';
 import axios from 'axios';
+import { FEATURE_FLAGS_STORAGE_KEY } from '../constants/storageKeys';
 
 const AuthContext = createContext(null);
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
-const API = `${BACKEND_URL}/api`;
+const rawBackendUrl = (process.env.REACT_APP_BACKEND_URL || '').trim();
+const BACKEND_URL = rawBackendUrl ? rawBackendUrl.replace(/\/+$/, '') : '';
+const API = BACKEND_URL ? `${BACKEND_URL}/api` : '/api';
+
+/**
+ * React 18 runs child useEffects before parent useEffects. Axios interceptors were only
+ * registered in AuthProvider's effect, so the first API calls (e.g. purchase invoices) could
+ * run without Authorization → 401 and "Failed to load invoices". Install interceptors and
+ * sync defaults once at module load (browser only).
+ */
+function syncAxiosAuthHeaderFromStorage() {
+  if (typeof window === 'undefined') return;
+  try {
+    const t = localStorage.getItem('token');
+    if (t) {
+      axios.defaults.headers.common.Authorization = `Bearer ${t}`;
+    } else {
+      delete axios.defaults.headers.common.Authorization;
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+function handleAxios401(error) {
+  const url = error.config?.url || '';
+  if (url.includes('/auth/login')) {
+    return;
+  }
+  try {
+    if (window.location.pathname === '/login' || window.location.pathname.endsWith('/login')) {
+      return;
+    }
+  } catch {
+    /* ignore */
+  }
+  localStorage.removeItem('token');
+  localStorage.removeItem('user');
+  localStorage.removeItem('isImpersonation');
+  localStorage.removeItem(FEATURE_FLAGS_STORAGE_KEY);
+  syncAxiosAuthHeaderFromStorage();
+  window.location.href = '/login';
+}
+
+let _axiosAuthInterceptorsInstalled = false;
+function installAxiosAuthInterceptors() {
+  if (typeof window === 'undefined' || _axiosAuthInterceptorsInstalled) return;
+  _axiosAuthInterceptorsInstalled = true;
+  syncAxiosAuthHeaderFromStorage();
+
+  axios.interceptors.request.use(
+    (config) => {
+      const token = localStorage.getItem('token');
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
+      if ((config.url || '').includes('/auth/login')) {
+        const hintedTenant = localStorage.getItem('tenant_id_hint');
+        if (hintedTenant) {
+          config.headers['X-Tenant-ID'] = hintedTenant;
+        }
+      }
+      return config;
+    },
+    (error) => Promise.reject(error)
+  );
+
+  axios.interceptors.response.use(
+    (response) => response,
+    (error) => {
+      if (error.response?.status === 401) {
+        handleAxios401(error);
+      }
+      return Promise.reject(error);
+    }
+  );
+}
+
+installAxiosAuthInterceptors();
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
@@ -41,62 +119,9 @@ export const AuthProvider = ({ children }) => {
       const userData = JSON.parse(savedUser);
       setUser(userData);
       setIsImpersonating(userData.is_impersonated || false);
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+      syncAxiosAuthHeaderFromStorage();
     }
     setLoading(false);
-  }, []);
-
-  // Setup axios interceptor to add token to every request
-  useEffect(() => {
-    const requestInterceptor = axios.interceptors.request.use(
-      (config) => {
-        const token = localStorage.getItem('token');
-        if (token) {
-          config.headers.Authorization = `Bearer ${token}`;
-        }
-        // Ensure login gets tenant routing hint before token exists.
-        if ((config.url || '').includes('/auth/login')) {
-          const hintedTenant = localStorage.getItem('tenant_id_hint');
-          if (hintedTenant) {
-            config.headers['X-Tenant-ID'] = hintedTenant;
-          }
-        }
-        return config;
-      },
-      (error) => {
-        return Promise.reject(error);
-      }
-    );
-
-    // Response interceptor to handle 401 errors
-    const responseInterceptor = axios.interceptors.response.use(
-      (response) => response,
-      (error) => {
-        if (error.response?.status === 401) {
-          const url = error.config?.url || '';
-          // Don't reset session on failed login attempt or while already on login screen
-          if (url.includes('/auth/login')) {
-            return Promise.reject(error);
-          }
-          try {
-            if (window.location.pathname === '/login' || window.location.pathname.endsWith('/login')) {
-              return Promise.reject(error);
-            }
-          } catch {
-            /* ignore */
-          }
-          logout();
-          window.location.href = '/login';
-        }
-        return Promise.reject(error);
-      }
-    );
-
-    // Cleanup interceptors on unmount
-    return () => {
-      axios.interceptors.request.eject(requestInterceptor);
-      axios.interceptors.response.eject(responseInterceptor);
-    };
   }, []);
 
   const handleImpersonationLogin = async (token) => {
@@ -105,7 +130,7 @@ export const AuthProvider = ({ children }) => {
       // Set the token
       localStorage.setItem('token', token);
       localStorage.setItem('isImpersonation', 'true');
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+      syncAxiosAuthHeaderFromStorage();
       
       // Fetch user info
       const response = await axios.get(`${API}/auth/me`);
@@ -130,6 +155,8 @@ export const AuthProvider = ({ children }) => {
       localStorage.removeItem('token');
       localStorage.removeItem('user');
       localStorage.removeItem('isImpersonation');
+      localStorage.removeItem(FEATURE_FLAGS_STORAGE_KEY);
+      syncAxiosAuthHeaderFromStorage();
       setLoading(false);
     }
   };
@@ -139,7 +166,7 @@ export const AuthProvider = ({ children }) => {
       // Set the token
       localStorage.setItem('token', token);
       localStorage.setItem('isImpersonation', 'true');
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+      syncAxiosAuthHeaderFromStorage();
       
       // Fetch user info
       const response = await axios.get(`${API}/auth/me`);
@@ -163,6 +190,8 @@ export const AuthProvider = ({ children }) => {
       localStorage.removeItem('token');
       localStorage.removeItem('user');
       localStorage.removeItem('isImpersonation');
+      localStorage.removeItem(FEATURE_FLAGS_STORAGE_KEY);
+      syncAxiosAuthHeaderFromStorage();
       throw err;
     }
   };
@@ -181,7 +210,7 @@ export const AuthProvider = ({ children }) => {
     localStorage.setItem('user', JSON.stringify(normalizedUser));
     localStorage.removeItem('tenant_id_hint');
     localStorage.removeItem('isImpersonation');
-    axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
+    syncAxiosAuthHeaderFromStorage();
     setUser(normalizedUser);
     setIsImpersonating(false);
     
@@ -215,7 +244,8 @@ export const AuthProvider = ({ children }) => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     localStorage.removeItem('isImpersonation');
-    delete axios.defaults.headers.common['Authorization'];
+    localStorage.removeItem(FEATURE_FLAGS_STORAGE_KEY);
+    syncAxiosAuthHeaderFromStorage();
     setUser(null);
     setIsImpersonating(false);
   };
