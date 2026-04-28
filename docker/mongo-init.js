@@ -15,8 +15,9 @@ admin.createUser({
   user: appUser,
   pwd: appPassword,
   roles: [
-    { role: "readWrite", db: "prawn_erp" },
-    { role: "readWrite", db: "prawn_erp_super_admin" },
+    // readWriteAnyDatabase allows the app user to create and write to per-tenant
+    // databases (e.g. prawn_erp_<tenant_id>) when ENABLE_MULTI_DB_ROUTING=true.
+    { role: "readWriteAnyDatabase", db: "admin" },
   ],
 });
 

@@ -1,8 +1,7 @@
-/**
- * Format API error for display. Use in catch blocks so toasts show why the request failed.
- * @param {Error} error - axios error or similar
- * @returns {string} - Short reason, e.g. "Network Error", "401", "500"
- */
+export function isRequestCanceled(error) {
+  return error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError' || error?.name === 'AbortError';
+}
+
 export function getApiErrorReason(error) {
   if (!error) return '';
   if (error.response?.status) return `${error.response.status}`;
@@ -11,9 +10,6 @@ export function getApiErrorReason(error) {
   return '';
 }
 
-/**
- * Build toast message: "Failed to load X (reason)" so user can tell if it's backend/network/auth.
- */
 export function formatLoadErrorMessage(fallbackMessage, error) {
   const reason = getApiErrorReason(error);
   return reason ? `${fallbackMessage} (${reason})` : fallbackMessage;

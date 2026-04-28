@@ -52,6 +52,11 @@ FEATURE_REGISTRY = [
     {"code": "admin", "name": "Admin Panel", "description": "Company settings, audit trail, attachments", "module": "Admin", "default_enabled": True},
     {"code": "notifications", "name": "Notifications", "description": "System notifications", "module": "Core", "default_enabled": True},
     {"code": "superAdmin", "name": "Super Admin", "description": "Platform-wide tenant and feature management", "module": "Admin", "default_enabled": False},
+    {"code": "risk_comments_v2", "name": "Risk Comments V2", "description": "Entity risk commentary, alerts, and area insights", "module": "Risk", "default_enabled": True},
+    {"code": "dashboardAlerts", "name": "Dashboard: Business Alerts", "description": "Real-time alert feed — overdue payments, cold storage temp deviations, QC holds, yield breaches", "module": "Dashboard", "default_enabled": True},
+    {"code": "dashboardBICharts", "name": "Dashboard: BI Charts", "description": "Month-over-month comparison, species trend, revenue waterfall, top party balances, processing efficiency", "module": "Dashboard", "default_enabled": True},
+    {"code": "dashboardFraudSignals", "name": "Dashboard: Fraud Signals", "description": "Statistical anomaly detection — ice weight fraud, rate outliers, agent concentration risk", "module": "Dashboard", "default_enabled": False},
+    {"code": "dashboardMarketIntelligence", "name": "Dashboard: Market Intelligence", "description": "Internal rate trends, price vs cost margins, and external seafood news feed", "module": "Dashboard", "default_enabled": False},
 ]
 
 
@@ -106,7 +111,13 @@ async def _push_features_to_client_erp(tenant_id: str, client: dict) -> None:
         )
         push_url = f"{base_url}/internal/saas-hook/features"
         async with httpx.AsyncClient(timeout=10.0) as http:
-            await http.post(push_url, json={"tenant_id": tenant_id, "features": features})
+            # X-Tenant-ID tells the backend middleware which tenant DB to route to,
+            # so the upserts land in prawn_erp_{tenant_id} not the shared default DB.
+            await http.post(
+                push_url,
+                json={"tenant_id": tenant_id, "features": features},
+                headers={"X-Tenant-ID": tenant_id},
+            )
     except Exception:
         pass  # Don't fail the toggle if push fails (e.g. client ERP not running)
 
@@ -122,8 +133,13 @@ client_db = mongo_client[os.getenv("MONGO_DB_NAME", "prawn_erp")]
 ENABLE_MULTI_DB_ROUTING = os.getenv("ENABLE_MULTI_DB_ROUTING", "false").lower() in ("1", "true", "yes", "on")
 
 
+SHARED_DB_NAME = os.getenv("MONGO_DB_NAME", "prawn_erp")
+_SHARED_TENANTS = {"cli_001", "default"}
+
 def _default_client_db_name(tenant_id: str) -> str:
     safe = "".join(ch for ch in tenant_id if ch.isalnum() or ch in ("_", "-")).strip() or "client"
+    if safe in _SHARED_TENANTS:
+        return SHARED_DB_NAME
     return f"prawn_erp_{safe}"
 
 
@@ -444,7 +460,8 @@ async def create_client(client_data: ClientCreate, current_admin = Depends(get_c
     
     # Calculate subscription end date
     subscription_to = datetime.now(timezone.utc) + timedelta(days=30 * client_data.subscription_months)
-    target_db_name = client_data.client_db_name or _default_client_db_name(client_data.tenant_id)
+    # Always derive DB name from tenant_id so backend routing stays consistent
+    target_db_name = _default_client_db_name(client_data.tenant_id)
     
     client = {
         "id": str(uuid.uuid4()),
@@ -498,9 +515,87 @@ async def create_client(client_data: ClientCreate, current_admin = Depends(get_c
     }
     await db.activity_logs.insert_one(activity_log)
     
+    # Auto-bootstrap: provision the client's isolated DB immediately on creation
+    boot_now = datetime.now(timezone.utc).isoformat()
+    bootstrap_target_db = _get_client_erp_db(client)
+    tenant_id_val = client_data.tenant_id
+
+    # Create indexes in the client's target database
+    await bootstrap_target_db.users.create_index("id", unique=True)
+    await bootstrap_target_db.users.create_index("email")
+    await bootstrap_target_db.users.create_index([("tenant_id", 1), ("email", 1)])
+    await bootstrap_target_db.feature_flags.create_index(
+        [("tenant_id", 1), ("feature_code", 1)], unique=True
+    )
+    await bootstrap_target_db.tenant_config.create_index("key", unique=True)
+    await bootstrap_target_db.procurement_lots.create_index("id", unique=True)
+
+    # Seed tenant_config
+    await bootstrap_target_db.tenant_config.update_one(
+        {"key": "tenant_id"},
+        {"$set": {"key": "tenant_id", "value": tenant_id_val}},
+        upsert=True,
+    )
+    await bootstrap_target_db.tenant_config.update_one(
+        {"key": "company_name"},
+        {"$set": {"key": "company_name", "value": client_data.business_name}},
+        upsert=True,
+    )
+
+    # Create default admin user (one-time temp password)
+    temp_password = f"Tmp@{uuid.uuid4().hex[:8]}"
+    existing_admin = await bootstrap_target_db.users.find_one(
+        {"tenant_id": tenant_id_val, "role": "admin", "is_active": True}, {"_id": 0}
+    )
+    if not existing_admin:
+        await bootstrap_target_db.users.insert_one({
+            "id": str(uuid.uuid4()),
+            "email": client_data.owner_email,
+            "name": client_data.owner_name,
+            "role": "admin",
+            "tenant_id": tenant_id_val,
+            "password_hash": pwd_context.hash(temp_password),
+            "phone": None,
+            "is_active": True,
+            "created_at": boot_now,
+            "provisioned_by_super_admin": True,
+        })
+    else:
+        temp_password = None  # Admin already existed; don't expose a new password
+
+    # Mark client as bootstrapped and linked-ready
+    await db.clients.update_one(
+        {"id": client["id"]},
+        {"$set": {
+            "link_status": "linked",
+            "bootstrapped_at": boot_now,
+            "linked_at": boot_now,
+            "updated_at": boot_now,
+        }},
+    )
+
+    # Log bootstrap action
+    await db.activity_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "admin_id": current_admin["id"],
+        "admin_email": current_admin["email"],
+        "action": "AUTO_BOOTSTRAP",
+        "entity_type": "client",
+        "entity_id": client["id"],
+        "details": {"tenant_id": tenant_id_val, "client_db_name": target_db_name},
+        "timestamp": boot_now,
+    })
+
     return {
         "client": client,
-        "api_key": api_key  # Return once for client to save
+        "api_key": api_key,  # Return once for client to save
+        "bootstrap": {
+            "status": "completed",
+            "client_db_name": target_db_name,
+            "admin_email": client_data.owner_email,
+            "admin_password": temp_password,  # None if admin already existed
+            "message": "DB provisioned automatically. Save the admin password — shown once only.",
+        },
     }
 
 @app.get("/clients/{client_id}")
@@ -596,6 +691,63 @@ async def launch_client(client_id: str, current_admin = Depends(get_current_supe
     }
 
 
+@app.post("/clients/{client_id}/open-session")
+async def open_client_session(client_id: str, current_admin = Depends(get_current_super_admin)):
+    """Generate a short-lived session token and return a direct login URL for the client ERP."""
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    if not client.get("is_active", True):
+        raise HTTPException(status_code=400, detail="Client is suspended")
+
+    tenant_id = client["tenant_id"]
+    target_db = _get_client_erp_db(client)
+
+    admin_user = await target_db.users.find_one(
+        {"tenant_id": tenant_id, "role": "admin", "is_active": True}, {"_id": 0}
+    )
+    if not admin_user:
+        admin_user = await target_db.users.find_one(
+            {"tenant_id": tenant_id, "is_active": True}, {"_id": 0}
+        )
+    if not admin_user:
+        raise HTTPException(
+            status_code=404,
+            detail="No active user found for this tenant. Re-bootstrap the client first."
+        )
+
+    shared_secret = os.getenv("CLIENT_ERP_SECRET_KEY") or os.getenv("SECRET_KEY") or "dev-secret-key-change-me"
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+    token = jwt.encode({
+        "sub": admin_user["email"],
+        "tenant_id": tenant_id,
+        "session_id": str(uuid.uuid4()),
+        "is_impersonation": True,
+        "impersonator": current_admin["email"],
+        "impersonator_name": current_admin.get("name", "Super Admin"),
+        "exp": expires_at,
+    }, shared_secret, algorithm="HS256")
+
+    ui_url = (client.get("client_ui_url") or "").strip() or "http://localhost:3000"
+    session_url = f"{ui_url}/login?token={token}&tenant_id={tenant_id}"
+
+    await db.activity_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "admin_id": current_admin["id"],
+        "admin_email": current_admin["email"],
+        "action": "OPEN_SESSION",
+        "entity_type": "client",
+        "entity_id": client_id,
+        "details": {"tenant_id": tenant_id, "target_user": admin_user["email"]},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+
+    return {
+        "session_url": session_url,
+        "tenant_id": tenant_id,
+        "expires_at": expires_at.isoformat(),
+    }
+
 @app.get("/clients/{client_id}/health")
 async def client_health(client_id: str, current_admin = Depends(get_current_super_admin)):
     """Compatibility endpoint used by super-admin frontend."""
@@ -634,15 +786,17 @@ async def update_client_branding(client_id: str, branding: BrandingUpdate, curre
     )
 
     pushed_to_erp = False
-    if client.get("link_status") == "linked":
-        target_db = _get_client_erp_db(client)
-        # Push to client ERP MongoDB only if linked.
-        await target_db.tenant_config.update_one(
-            {"tenant_id": client["tenant_id"]},
-            {"$set": {"branding": branding_data, "updated_at": datetime.now(timezone.utc).isoformat()}},
-            upsert=True
-        )
-        pushed_to_erp = True
+    target_db = _get_client_erp_db(client)
+    # Always write to client DB (whether linked or not) using individual key:value docs
+    # that the backend's /api/public-config endpoint expects.
+    for key, value in branding_data.items():
+        if value is not None:
+            await target_db.tenant_config.update_one(
+                {"key": key},
+                {"$set": {"key": key, "value": value}},
+                upsert=True
+            )
+    pushed_to_erp = client.get("link_status") == "linked"
     
     # Log activity
     await db.activity_logs.insert_one({
@@ -786,11 +940,28 @@ async def bulk_toggle_features(
 
 @app.post("/clients/{client_id}/push-features")
 async def push_features_now(client_id: str, current_admin = Depends(get_current_super_admin)):
-    """Compatibility endpoint used by super-admin frontend."""
+    """Sync flags from super-admin DB → client DB, then push to client ERP via HTTP."""
     client_doc = await db.clients.find_one({"id": client_id}, {"_id": 0})
     if not client_doc:
         raise HTTPException(status_code=404, detail="Client not found")
     tenant_id = client_doc.get("tenant_id")
+
+    # Authoritative flag states live in prawn_erp_super_admin.feature_flags.
+    # Upsert them into the client's own DB first so _push_features_to_client_erp
+    # sends the correct set (handles the case where client DB is empty or stale).
+    sa_flags = await db.feature_flags.find(
+        {"client_id": client_id}, {"_id": 0, "feature_code": 1, "is_enabled": 1}
+    ).to_list(1000)
+    if sa_flags:
+        target_db = _get_client_erp_db(client_doc)
+        for flag in sa_flags:
+            await target_db.feature_flags.update_one(
+                {"tenant_id": tenant_id, "feature_code": flag["feature_code"]},
+                {"$set": {"tenant_id": tenant_id, "feature_code": flag["feature_code"], "is_enabled": flag["is_enabled"]}},
+                upsert=True,
+            )
+
+    _invalidate_client_flags_cache(tenant_id)
     await _push_features_to_client_erp(tenant_id, client_doc)
     return {"status": "success", "message": "Features pushed", "tenant_id": tenant_id}
 
@@ -1439,13 +1610,11 @@ async def impersonate_client(
         "exp": expires_at
     }
     
-    # Sign with client-ERP JWT key (must match backend API verification key).
+    # Sign with the shared CLIENT_ERP_SECRET_KEY (must match backend's verification key).
     client_jwt_secret = (
-        os.getenv("CLIENT_ERP_JWT_SECRET")
-        or os.getenv("BACKEND_SECRET_KEY")
-        or _backend_env_secret
-        or os.getenv("JWT_SECRET_KEY")
-        or "your-secret-key-change-in-production"
+        os.getenv("CLIENT_ERP_SECRET_KEY")
+        or os.getenv("SECRET_KEY")
+        or "dev-secret-key-change-me"
     )
     token = jwt.encode(token_data, client_jwt_secret, algorithm="HS256")
     
@@ -1649,24 +1818,10 @@ async def get_activity_logs(
 
 @app.get("/feature-registry")
 async def get_feature_registry(current_admin = Depends(get_current_super_admin)):
-    """Get list of available features"""
-    # This would typically come from a registry or config
-    features = [
-        {"code": "procurement", "name": "Procurement Module", "description": "Manage prawn procurement", "module": "Procurement"},
-        {"code": "preprocessing", "name": "Pre-Processing", "description": "Processing operations", "module": "Processing"},
-        {"code": "coldStorage", "name": "Cold Storage", "description": "Cold storage management", "module": "Storage"},
-        {"code": "production", "name": "Production", "description": "Production tracking", "module": "Production"},
-        {"code": "qualityControl", "name": "Quality Control", "description": "Quality checks", "module": "Quality"},
-        {"code": "sales", "name": "Sales & Dispatch", "description": "Sales and dispatch", "module": "Sales"},
-        {"code": "accounts", "name": "Accounts & Billing", "description": "Financial management", "module": "Finance"},
-        {"code": "wastageDashboard", "name": "Wastage Dashboard", "description": "Track wastage", "module": "Analytics"},
-        {"code": "yieldBenchmarks", "name": "Yield Benchmarks", "description": "Yield tracking", "module": "Analytics"},
-        {"code": "marketRates", "name": "Market Rates", "description": "Market price tracking", "module": "Analytics"},
-        {"code": "purchaseInvoiceDashboard", "name": "Purchase Invoice Dashboard", "description": "Purchase invoice management with metrics, quick preview, and bulk export", "module": "Finance"},
-        {"code": "partyLedger", "name": "Party Ledger", "description": "Party master and ledger management", "module": "Finance"},
-        {"code": "admin", "name": "Admin Panel", "description": "Administrative functions", "module": "Admin"}
-    ]
-    return features
+    """Get list of available features from the shared registry."""
+    return [{"code": f["code"], "name": f["name"], "description": f["description"],
+             "module": f["module"], "default_enabled": f.get("default_enabled", False)}
+            for f in FEATURE_REGISTRY]
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Health Check

@@ -8,8 +8,10 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { toast } from 'sonner';
 import { Receipt, DollarSign, TrendingUp, Plus, Filter, Eye, CheckCircle, X } from 'lucide-react';
+import { useAlert } from '../context/AlertContext';
 
 const Accounts = () => {
+  const { confirm } = useAlert();
   const navigate = useNavigate();
   const [wageBills, setWageBills] = useState([]);
   const [filteredBills, setFilteredBills] = useState([]);
@@ -83,7 +85,8 @@ const Accounts = () => {
   };
 
   const handleMarkPaid = async (billId) => {
-    if (!window.confirm('Mark this bill as paid?')) return;
+    const ok = await confirm({ title: 'Mark bill as paid?', description: 'This will update the payment status to paid.', confirmLabel: 'Mark Paid', variant: 'success' });
+    if (!ok) return;
 
     try {
       await axios.post(`${API}/wage-bills/${billId}/mark-paid`);

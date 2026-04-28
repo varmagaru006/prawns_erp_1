@@ -35,6 +35,7 @@ const PartyLedger = lazy(() => import('./pages/PartyLedger'));
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { FeatureFlagProvider } from './context/FeatureFlagContext';
 import { BrandingProvider } from './context/BrandingContext';
+import { AlertProvider } from './context/AlertContext';
 import { Toaster } from './components/ui/sonner';
 import { canAccessDashboard } from './config/moduleConfig';
 import './App.css';
@@ -135,9 +136,11 @@ function App() {
       <BrandingProvider>
         <AuthProvider>
           <FeatureFlagProvider>
-            <AppRoutes />
-            <Toaster position="top-right" />
-            <ToastContainer position="top-right" autoClose={3000} hideProgressBar={false} />
+            <AlertProvider>
+              <AppRoutes />
+              <Toaster position="top-right" />
+              <ToastContainer position="top-right" autoClose={3000} hideProgressBar={false} />
+            </AlertProvider>
           </FeatureFlagProvider>
         </AuthProvider>
       </BrandingProvider>

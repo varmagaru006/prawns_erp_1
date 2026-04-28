@@ -21,7 +21,7 @@ api.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401) {
       localStorage.removeItem('sa_token');
-      window.location.href = '/login';
+      window.location.href = '/super-admin/login';
     }
     return Promise.reject(error);
   }
@@ -87,6 +87,11 @@ export const clientAPI = {
 
   bootstrapTenant: async (clientId, data = {}) => {
     const response = await api.post(`/clients/${clientId}/bootstrap`, data);
+    return response.data;
+  },
+
+  openSession: async (clientId) => {
+    const response = await api.post(`/clients/${clientId}/open-session`);
     return response.data;
   },
 

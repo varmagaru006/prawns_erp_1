@@ -10,6 +10,9 @@ services:
       MONGO_URL: mongodb://prawn_erp_user:prawn_erp_dev_password@mongo:27017
       DB_NAME: prawn_erp
       SECRET_KEY: dev-secret-key-change-me
+      CLIENT_ERP_SECRET_KEY: dev-secret-key-change-me
+      ENABLE_MULTI_DB_ROUTING: "true"
+      SUPER_ADMIN_DB_NAME: prawn_erp_super_admin
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
 
@@ -25,6 +28,22 @@ services:
       WATCHPACK_POLLING: "true"
       WDS_SOCKET_PORT: "3000"
       REACT_APP_BACKEND_URL: "http://localhost:8000"
+
+  super-admin-api:
+    command: uvicorn main:app --host 0.0.0.0 --port 8002 --reload
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./super-admin-api:/app
+      - ./backend/mongo_utils.py:/backend/mongo_utils.py:ro
+    environment:
+      MONGO_URL: mongodb://prawn_erp_user:prawn_erp_dev_password@mongo:27017
+      MONGO_DB_NAME: prawn_erp
+      SECRET_KEY: super-admin-secret-key-change-in-production
+      CLIENT_ERP_SECRET_KEY: dev-secret-key-change-me
+      ENABLE_MULTI_DB_ROUTING: "true"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
 
 volumes:
   frontend_node_modules:

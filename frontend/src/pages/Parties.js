@@ -7,11 +7,13 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { toast } from 'sonner';
 import { Plus, Pencil, Trash2, Search, Users, X } from 'lucide-react';
+import { useAlert } from '../context/AlertContext';
 import { useSortableTable } from '../hooks/useSortableTable';
 import SortableTableHead from '../components/SortableTableHead';
 import RiskTimelinePanel from '../components/RiskTimelinePanel';
 
 const Parties = () => {
+  const { confirm } = useAlert();
   const [parties, setParties] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -156,7 +158,8 @@ const Parties = () => {
   };
 
   const handleDelete = async (party) => {
-    if (!window.confirm(`Are you sure you want to delete "${party.party_name}"?`)) return;
+    const ok = await confirm({ title: `Delete "${party.party_name}"?`, description: 'This party and all associated data will be permanently removed.', confirmLabel: 'Delete', variant: 'destructive' });
+    if (!ok) return;
     
     try {
       await axios.delete(`${API}/parties/${party.id}`);

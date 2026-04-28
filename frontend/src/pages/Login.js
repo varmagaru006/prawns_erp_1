@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useBranding } from '../context/BrandingContext';
+import { FEATURE_FLAGS_STORAGE_KEY } from '../constants/storageKeys';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -43,7 +44,7 @@ const Login = () => {
   const [loading, setLoading] = useState(false);
   const [floatingElements, setFloatingElements] = useState([]);
   
-  const { login, register, user, loading: authLoading } = useAuth();
+  const { login, register, loginWithToken, user } = useAuth();
   const { branding } = useBranding();
   const navigate = useNavigate();
 
@@ -59,7 +60,46 @@ const Login = () => {
     setFloatingElements(elements);
   }, []);
   
-  // Handle redirect after impersonation login
+  // Auto-login from super-admin session token
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const sessionToken = params.get('token');
+    const tenantId = params.get('tenant_id');
+    if (!sessionToken) return;
+
+    setLoading(true);
+    const backendUrl = process.env.REACT_APP_BACKEND_URL || '';
+    fetch(`${backendUrl}/api/auth/exchange-token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(tenantId ? { 'X-Tenant-ID': tenantId } : {}),
+      },
+      body: JSON.stringify({ token: sessionToken }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.access_token) {
+          // Clear stale feature flags from previous tenant before logging in
+          localStorage.removeItem(FEATURE_FLAGS_STORAGE_KEY);
+          return loginWithToken(data.access_token).then(() => {
+            window.history.replaceState({}, '', '/');
+            // Defer by one tick so React flushes tokenChanged state updates
+            // (features + user) before Layout renders the nav — no flash of all tabs
+            setTimeout(() => navigate('/'), 0);
+          });
+        } else {
+          toast.error('Session link expired. Please log in manually.');
+          setLoading(false);
+        }
+      })
+      .catch(() => {
+        toast.error('Could not open session. Please log in manually.');
+        setLoading(false);
+      });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Handle redirect after login
   useEffect(() => {
     if (user && !loading) {
       navigate('/');
@@ -100,6 +140,17 @@ const Login = () => {
     { name: 'Head On Body Peel Tail On (Semi IQF)', image: '/assets/sunbitess/product03.jpg' },
     { name: 'Peeled and Deveined Tail On', image: '/assets/sunbitess/product08-1.jpg' }
   ];
+
+  if (loading && new URLSearchParams(window.location.search).get('token')) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: branding.login_bg_color || '#0f1117' }}>
+        <div className="text-center text-white">
+          <Loader2 className="h-12 w-12 animate-spin mx-auto mb-4" />
+          <p className="text-lg font-medium">Opening your session…</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen relative overflow-hidden" style={{ background: branding.login_bg_color || 'linear-gradient(to bottom right, #2563eb, #7c3aed, #ec4899)' }}>
@@ -152,8 +203,8 @@ const Login = () => {
                 </div>
               )}
               <div>
-                <h1 className="text-5xl font-bold">{branding.company_name || 'Sun Bitess'}</h1>
-                <p className="text-blue-100 text-lg">{branding.sidebar_label || 'Vannamei Shrimp Export ERP'}</p>
+                <h1 className="text-5xl font-bold">{branding.company_name || 'Prawn ERP'}</h1>
+                <p className="text-blue-100 text-lg">{branding.sidebar_label || 'Seafood Export Operations'}</p>
               </div>
             </div>
 

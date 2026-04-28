@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { clientAPI, impersonationAPI } from '../api/auth';
-import { Users, Search, ExternalLink, CheckCircle, XCircle, Plus, Edit2, Power, PowerOff, UserCheck, Loader2 } from 'lucide-react';
+import { clientAPI } from '../api/auth';
+import { Users, Search, ExternalLink, CheckCircle, XCircle, Plus, Loader2 } from 'lucide-react';
 import CreateClientModal from '../components/CreateClientModal';
 import EditClientModal from '../components/EditClientModal';
 
@@ -13,7 +13,7 @@ export default function Dashboard() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [selectedClient, setSelectedClient] = useState(null);
-  const [impersonating, setImpersonating] = useState(null);
+  const [opening, setOpening] = useState(null);
   const [notification, setNotification] = useState(null);
 
   useEffect(() => {
@@ -49,42 +49,19 @@ export default function Dashboard() {
     }
   };
 
-  const handleImpersonate = async (client) => {
-    if (!client.is_active) {
-      setNotification({ message: 'Cannot impersonate suspended client', type: 'error' });
-      setTimeout(() => setNotification(null), 3000);
-      return;
-    }
-    
-    setImpersonating(client.id);
+  const handleOpenERP = async (client) => {
+    setOpening(client.id);
     try {
-      const result = await impersonationAPI.start(client.id, {
-        reason: 'Admin access via Super Admin Portal',
-        duration_mins: 60
-      });
-      
-      // Redirect to the client-specific UI URL if configured.
-      const clientErpUrl = (client.client_ui_url || '').trim() || window.location.origin;
-      const tenantParam = encodeURIComponent(client.tenant_id || '');
-      const redirectUrl = `${clientErpUrl}/login?impersonation_token=${encodeURIComponent(result.token)}&tenant_id=${tenantParam}`;
-      
-      // Open in new tab
-      window.open(redirectUrl, '_blank');
-      
-      setNotification({ 
-        message: `Impersonating ${client.business_name} - opened in new tab`, 
-        type: 'success' 
-      });
-      setTimeout(() => setNotification(null), 5000);
-      
+      const result = await clientAPI.openSession(client.id);
+      window.open(result.session_url, '_blank');
     } catch (err) {
-      setNotification({ 
-        message: err.response?.data?.detail || 'Failed to start impersonation', 
-        type: 'error' 
+      setNotification({
+        message: err.response?.data?.detail || 'Failed to open client ERP',
+        type: 'error'
       });
       setTimeout(() => setNotification(null), 3000);
     } finally {
-      setImpersonating(null);
+      setOpening(null);
     }
   };
 
@@ -226,22 +203,22 @@ export default function Dashboard() {
                   <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                     <div className="flex items-center justify-end space-x-2">
                       <button
-                        onClick={() => handleImpersonate(client)}
-                        disabled={impersonating === client.id || !client.is_active}
+                        onClick={() => handleOpenERP(client)}
+                        disabled={opening === client.id || !client.is_active}
                         className={`inline-flex items-center px-2 py-1 text-xs font-medium rounded ${
                           client.is_active
-                            ? 'text-purple-600 hover:bg-purple-50'
+                            ? 'text-green-600 hover:bg-green-50'
                             : 'text-gray-400 cursor-not-allowed'
                         }`}
-                        title={client.is_active ? 'Login as this client' : 'Cannot impersonate suspended client'}
-                        data-testid={`impersonate-${client.id}`}
+                        title={client.is_active ? 'Open client ERP' : 'Cannot open suspended client'}
+                        data-testid={`open-erp-${client.id}`}
                       >
-                        {impersonating === client.id ? (
+                        {opening === client.id ? (
                           <Loader2 className="h-4 w-4 animate-spin" />
                         ) : (
-                          <UserCheck className="h-4 w-4" />
+                          <ExternalLink className="h-4 w-4" />
                         )}
-                        <span className="ml-1">Impersonate</span>
+                        <span className="ml-1">Open ERP</span>
                       </button>
                       <Link
                         to={`/clients/${client.id}`}

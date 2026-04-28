@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { announcementAPI, clientAPI } from '../api/auth';
 import { Megaphone, Plus, Trash2, AlertCircle, Info, AlertTriangle, X, Check, Users, Globe } from 'lucide-react';
+import { useAlert } from '../contexts/AlertContext';
 
 export default function Announcements() {
+  const { confirm } = useAlert();
   const [announcements, setAnnouncements] = useState([]);
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -34,7 +36,8 @@ export default function Announcements() {
   };
 
   const handleDelete = async (id) => {
-    if (!confirm('Are you sure you want to delete this announcement?')) return;
+    const ok = await confirm({ title: 'Delete announcement?', description: 'This announcement will be removed from all tenants immediately.', confirmLabel: 'Delete', variant: 'destructive' });
+    if (!ok) return;
     
     try {
       await announcementAPI.delete(id);

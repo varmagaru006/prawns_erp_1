@@ -5,7 +5,7 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../components/ui/card';
 import { toast } from 'sonner';
-import { formatLoadErrorMessage } from '../utils/apiError';
+import { formatLoadErrorMessage, isRequestCanceled } from '../utils/apiError';
 import { 
   Shield, 
   Building2, 
@@ -101,7 +101,7 @@ const SuperAdminPanel = () => {
       } catch (error) {
         if (!cancelled && error.name !== 'CanceledError') {
           console.error('Failed to load data:', error);
-          toast.error(formatLoadErrorMessage('Failed to load data', error));
+          if (!isRequestCanceled(error)) toast.error(formatLoadErrorMessage('Failed to load data', error));
         }
       } finally {
         if (!cancelled) {

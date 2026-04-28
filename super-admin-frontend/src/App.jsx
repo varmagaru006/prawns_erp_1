@@ -1,6 +1,7 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
+import { AlertProvider } from './contexts/AlertContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import Layout from './components/Layout';
 import Login from './pages/Login';
@@ -12,6 +13,7 @@ import './index.css';
 function App() {
   return (
     <AuthProvider>
+      <AlertProvider>
       <BrowserRouter basename="/super-admin" future={{v7_startTransition: true}}>
         <Routes>
           {/* Public Routes */}
@@ -36,6 +38,7 @@ function App() {
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </BrowserRouter>
+      </AlertProvider>
     </AuthProvider>
   );
 }

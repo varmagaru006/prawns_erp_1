@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { userProvisioningAPI } from '../api/auth';
 import { UserPlus, Users, Loader2, Check, AlertTriangle, Edit3, Shield, X, Copy, Eye, EyeOff, KeyRound, UserX, UserCheck, CheckCircle, XCircle } from 'lucide-react';
+import { useAlert } from '../contexts/AlertContext';
 
 export default function UsersTab({ client, isLinked }) {
+  const { confirm } = useAlert();
   const [users, setUsers] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
   const [auditFilter, setAuditFilter] = useState('all');
@@ -107,7 +109,8 @@ export default function UsersTab({ client, isLinked }) {
   };
 
   const handleResetPassword = async (user) => {
-    if (!confirm(`Reset password for ${user.full_name} (${user.email})?`)) return;
+    const ok = await confirm({ title: 'Reset password?', description: `A new temporary password will be generated for ${user.full_name} (${user.email}).`, confirmLabel: 'Reset', variant: 'warning' });
+    if (!ok) return;
     setResetting((p) => ({ ...p, [user.id]: true }));
     try {
       const result = await userProvisioningAPI.resetPassword(client.id, user.id);
@@ -123,7 +126,13 @@ export default function UsersTab({ client, isLinked }) {
 
   const handleToggleActive = async (user) => {
     const action = user.is_active ? 'disable' : 'enable';
-    if (!confirm(`${action.charAt(0).toUpperCase() + action.slice(1)} user ${user.full_name}?`)) return;
+    const ok = await confirm({
+      title: `${action.charAt(0).toUpperCase() + action.slice(1)} user?`,
+      description: `${user.full_name} will be ${action === 'disable' ? 'prevented from logging in' : 'allowed to log in again'}.`,
+      confirmLabel: action.charAt(0).toUpperCase() + action.slice(1),
+      variant: action === 'disable' ? 'destructive' : 'success',
+    });
+    if (!ok) return;
     setToggling((p) => ({ ...p, [user.id]: true }));
     try {
       const result = await userProvisioningAPI.toggleActive(client.id, user.id);
@@ -142,7 +151,8 @@ export default function UsersTab({ client, isLinked }) {
       showNotif('No active users to disable', 'error');
       return;
     }
-    if (!confirm(`Disable ${activeUsers.length} active users for this client?`)) return;
+    const ok = await confirm({ title: `Disable all ${activeUsers.length} active users?`, description: 'All active users for this client will be prevented from logging in.', confirmLabel: 'Disable All', variant: 'destructive' });
+    if (!ok) return;
     try {
       await Promise.all(activeUsers.map((u) => userProvisioningAPI.deleteUser(client.id, u.user_id || u.id)));
       showNotif(`Disabled ${activeUsers.length} users successfully`);

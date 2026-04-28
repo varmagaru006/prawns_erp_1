@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Run the full Prawn ERP stack locally (MongoDB, Backend, Super Admin API, Frontend).
+# Run the full Prawn ERP stack locally (MongoDB, Backend, Super Admin API, Super Admin Frontend, Frontend).
 # Use this after pulling changes or editing code to start everything with one command.
 # Press Ctrl+C to stop all services.
 #
@@ -11,12 +11,14 @@ cd "$ROOT"
 
 BACKEND_PID=""
 SUPER_ADMIN_PID=""
+SUPER_ADMIN_FRONTEND_PID=""
 
 cleanup() {
   echo ""
   echo "Stopping services..."
-  [ -n "$BACKEND_PID" ]     && kill "$BACKEND_PID" 2>/dev/null || true
-  [ -n "$SUPER_ADMIN_PID" ] && kill "$SUPER_ADMIN_PID" 2>/dev/null || true
+  [ -n "$BACKEND_PID" ]               && kill "$BACKEND_PID" 2>/dev/null || true
+  [ -n "$SUPER_ADMIN_PID" ]           && kill "$SUPER_ADMIN_PID" 2>/dev/null || true
+  [ -n "$SUPER_ADMIN_FRONTEND_PID" ]  && kill "$SUPER_ADMIN_FRONTEND_PID" 2>/dev/null || true
   exit 0
 }
 trap cleanup INT TERM
@@ -55,6 +57,8 @@ if [ ! -f "$ROOT/backend/.env" ]; then
 MONGO_URL=mongodb://prawn_erp_user:prawn_erp_dev_password@localhost:27017
 DB_NAME=prawn_erp
 SECRET_KEY=dev-secret-key-change-me
+ENABLE_MULTI_DB_ROUTING=true
+SUPER_ADMIN_DB_NAME=prawn_erp_super_admin
 EOF
 fi
 if [ ! -f "$ROOT/frontend/.env" ]; then
@@ -71,13 +75,20 @@ if [ ! -f "$ROOT/super-admin-api/.env" ]; then
 MONGO_URL=mongodb://prawn_erp_user:prawn_erp_dev_password@localhost:27017
 MONGO_DB_NAME=prawn_erp
 SECRET_KEY=super-admin-secret-key-change-in-production
+ENABLE_MULTI_DB_ROUTING=true
+EOF
+fi
+if [ ! -f "$ROOT/super-admin-frontend/.env" ]; then
+  echo "Creating super-admin-frontend/.env..."
+  cat > "$ROOT/super-admin-frontend/.env" << 'EOF'
+VITE_API_URL=http://localhost:8002
 EOF
 fi
 
 # --- 1. MongoDB ---
 MONGO_PORT=27017
 if command -v docker >/dev/null 2>&1; then
-  echo "[1/4] Starting MongoDB (Docker)..."
+  echo "[1/5] Starting MongoDB (Docker)..."
   if docker compose up -d mongo 2>/dev/null; then
     MONGO_PORT=27018
     echo "      Waiting for MongoDB to be ready..."
@@ -89,7 +100,7 @@ if command -v docker >/dev/null 2>&1; then
   fi
 fi
 if [ "$MONGO_PORT" = "27017" ]; then
-  echo "[1/4] Using local MongoDB (port 27017)."
+  echo "[1/5] Using local MongoDB (port 27017)."
   if ! (mongosh --quiet --eval "db.runCommand({ping:1})" "mongodb://localhost:27017" 2>/dev/null); then
     echo ""
     echo "  MongoDB is not running on port 27017."
@@ -103,7 +114,7 @@ if [ "$MONGO_PORT" = "27017" ]; then
 fi
 
 # --- 2. Backend ---
-echo "[2/4] Starting Backend (port 8000)..."
+echo "[2/5] Starting Backend (port 8000)..."
 if [ ! -d "$ROOT/backend/.venv" ]; then
   "$PY_BIN" -m venv "$ROOT/backend/.venv"
 fi
@@ -113,13 +124,23 @@ BACKEND_PID=$!
 sleep 2
 
 # --- 3. Super Admin API ---
-echo "[3/4] Starting Super Admin API (port 8002)..."
+echo "[3/5] Starting Super Admin API (port 8002)..."
 (cd "$ROOT/super-admin-api" && "$ROOT/backend/.venv/bin/python" -m uvicorn main:app --reload --host 0.0.0.0 --port 8002) &
 SUPER_ADMIN_PID=$!
 sleep 2
 
-# --- 4. Frontend ---
-echo "[4/4] Starting Frontend (port 3000)..."
+# --- 4. Super Admin Frontend ---
+echo "[4/5] Starting Super Admin Frontend (port 3001)..."
+if [ ! -d "$ROOT/super-admin-frontend/node_modules" ]; then
+  echo "      Installing super-admin-frontend dependencies..."
+  (cd "$ROOT/super-admin-frontend" && npm install --silent 2>/dev/null || npm install)
+fi
+(cd "$ROOT/super-admin-frontend" && npm run dev) &
+SUPER_ADMIN_FRONTEND_PID=$!
+sleep 2
+
+# --- 5. Frontend ---
+echo "[5/5] Starting Frontend (port 3000)..."
 if ! command -v yarn >/dev/null 2>&1; then
   echo "Error: yarn not found. Install Node.js and yarn, then run this script again."
   cleanup
@@ -128,13 +149,13 @@ cd "$ROOT/frontend"
 yarn install --silent 2>/dev/null || yarn install
 echo ""
 echo "=== Stack running ==="
-echo "  Client ERP:    http://localhost:3000"
-echo "  Super Admin:   http://localhost:3000/super-admin/login"
-echo "  Backend API:   http://localhost:8000"
-echo "  Super Admin API: http://localhost:8002"
+echo "  Client ERP:           http://localhost:3000"
+echo "  Super Admin Portal:   http://localhost:3001/super-admin/login"
+echo "  Backend API:          http://localhost:8000"
+echo "  Super Admin API:      http://localhost:8002"
 echo ""
-echo "  Client ERP login:    admin@prawnexport.com / admin123"
-echo "  Super Admin login:   superadmin@prawnrp.com / admin123"
+echo "  Client ERP login:     admin@prawnexport.com / admin123"
+echo "  Super Admin login:    superadmin@prawnrp.com / admin123"
 echo ""
 echo "Press Ctrl+C to stop all services."
 echo ""

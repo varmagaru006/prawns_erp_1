@@ -7,14 +7,14 @@ const BrandingContext = createContext(null);
 const rawBackend = (process.env.REACT_APP_BACKEND_URL || '').trim().replace(/\/+$/, '');
 const API = rawBackend ? `${rawBackend}/api` : '/api';
 
-// Default branding config
+// Default branding config — only structural defaults, no hardcoded brand names/images
 const DEFAULT_BRANDING = {
-  company_name: 'Sun Bitess',
-  sidebar_label: 'Sun Bitess ERP',
+  company_name: '',
+  sidebar_label: '',
   primary_color: '#0f5ea8',
   login_bg_color: 'linear-gradient(135deg, #0b2a4a 0%, #0f5ea8 55%, #1f7fbd 100%)',
-  logo_url: '/assets/sunbitess/logo.png',
-  favicon_url: '/assets/sunbitess/favicon.ico'
+  logo_url: '',
+  favicon_url: ''
 };
 
 export const BrandingProvider = ({ children }) => {
@@ -22,24 +22,39 @@ export const BrandingProvider = ({ children }) => {
   const [loading, setLoading] = useState(false); // Don't block first paint; fetch in background
 
   useEffect(() => {
-    // Defer fetch so login form can paint immediately with defaults
-    const t = setTimeout(() => { fetchBranding(); }, 0);
-    return () => clearTimeout(t);
-  }, []);
+    const params = new URLSearchParams(window.location.search);
+    const tenantId = params.get('tenant_id');
+    const t = setTimeout(() => { fetchBranding(tenantId); }, 0);
 
-  const fetchBranding = async () => {
+    // Re-fetch branding when tenant changes (e.g. super-admin opens client ERP via loginWithToken)
+    const handleTokenChanged = () => { fetchBranding(null); };
+    window.addEventListener('tokenChanged', handleTokenChanged);
+
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener('tokenChanged', handleTokenChanged);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const fetchBranding = async (tenantId) => {
     try {
-      const response = await axios.get(`${API}/public-config`);
+      // Prefer the JWT from localStorage (authenticated) so the backend can derive
+      // the correct tenant. Fall back to X-Tenant-ID when no token is present yet.
+      const storedToken = localStorage.getItem('token');
+      const headers = storedToken
+        ? { Authorization: `Bearer ${storedToken}` }
+        : tenantId ? { 'X-Tenant-ID': tenantId } : {};
+      const response = await axios.get(`${API}/public-config`, { headers });
       const config = response.data;
       
       // Merge with defaults
       const newBranding = {
-        company_name: config.company_name || DEFAULT_BRANDING.company_name,
-        sidebar_label: config.sidebar_label || config.company_name || DEFAULT_BRANDING.sidebar_label,
+        company_name: config.company_name || '',
+        sidebar_label: config.sidebar_label || config.company_name || '',
         primary_color: config.primary_color || DEFAULT_BRANDING.primary_color,
         login_bg_color: config.login_bg_color || DEFAULT_BRANDING.login_bg_color,
-        logo_url: config.logo_url || DEFAULT_BRANDING.logo_url,
-        favicon_url: config.favicon_url || DEFAULT_BRANDING.favicon_url
+        logo_url: config.logo_url || '',
+        favicon_url: config.favicon_url || ''
       };
       
       setBranding(newBranding);
@@ -90,8 +105,8 @@ export const BrandingProvider = ({ children }) => {
     }
   };
 
-  const refreshBranding = async () => {
-    await fetchBranding();
+  const refreshBranding = async (tenantId) => {
+    await fetchBranding(tenantId || null);
   };
 
   return (

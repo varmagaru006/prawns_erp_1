@@ -74,6 +74,10 @@ function installAxiosAuthInterceptors() {
   axios.interceptors.response.use(
     (response) => response,
     (error) => {
+      // Silently drop requests cancelled on component unmount
+      if (axios.isCancel(error) || error.code === 'ERR_CANCELED') {
+        return Promise.reject(error);
+      }
       if (error.response?.status === 401) {
         handleAxios401(error);
       }
@@ -163,27 +167,32 @@ export const AuthProvider = ({ children }) => {
 
   const loginWithToken = async (token) => {
     try {
-      // Set the token
       localStorage.setItem('token', token);
       localStorage.setItem('isImpersonation', 'true');
       syncAxiosAuthHeaderFromStorage();
-      
-      // Fetch user info
+
       const response = await axios.get(`${API}/auth/me`);
       const userData = {
         ...response.data,
-        token: token,
+        token,
         tenant_id: response.data.tenant_id || localStorage.getItem('tenant_id_hint') || null,
-        is_impersonated: response.data.is_impersonated || true
+        is_impersonated: true,
       };
-      
+
       localStorage.setItem('user', JSON.stringify(userData));
       setUser(userData);
       setIsImpersonating(true);
-      
-      // Dispatch custom event to refresh features
-      window.dispatchEvent(new CustomEvent('tokenChanged'));
-      
+
+      // Pass features directly so FeatureFlagContext applies them immediately
+      // (no second /auth/me round-trip, no flash of all-tabs-visible)
+      window.dispatchEvent(new CustomEvent('tokenChanged', {
+        detail: {
+          features: response.data.features || {},
+          tenant_id: response.data.tenant_id,
+          lot_number_prefix: response.data.lot_number_prefix,
+        },
+      }));
+
       return userData;
     } catch (err) {
       console.error('Token login failed:', err);

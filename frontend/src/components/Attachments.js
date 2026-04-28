@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Upload, File, Trash2, Download, Image, FileText, X, Loader2, Paperclip } from 'lucide-react';
 import { Button } from './ui/button';
 import { toast } from 'sonner';
+import { useAlert } from '../context/AlertContext';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
 
@@ -28,6 +29,7 @@ const formatFileSize = (sizeKb) => {
 };
 
 export default function Attachments({ entityType, entityId, readOnly = false }) {
+  const { confirm } = useAlert();
   const [attachments, setAttachments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -105,7 +107,8 @@ export default function Attachments({ entityType, entityId, readOnly = false }) 
   };
 
   const handleDelete = async (attachmentId) => {
-    if (!window.confirm('Delete this attachment?')) return;
+    const ok = await confirm({ title: 'Delete attachment?', description: 'This cannot be undone.', confirmLabel: 'Delete', variant: 'destructive' });
+    if (!ok) return;
 
     try {
       const token = localStorage.getItem('token');

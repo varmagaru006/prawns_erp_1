@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { toast } from 'sonner';
-import { formatLoadErrorMessage } from '../utils/apiError';
+import { formatLoadErrorMessage, isRequestCanceled } from '../utils/apiError';
 import { Plus, Factory } from 'lucide-react';
 
 const Production = () => {
@@ -41,24 +41,24 @@ const Production = () => {
       ]);
       setOrders(ordersRes.data);
       setBatches(batchesRes.data);
-      
-      // Fetch wastage data for each production order
-      const wastagePromises = ordersRes.data.map(order => 
-        axios.get(`${API}/lot-stage-wastage/${order.id}`).catch(() => ({ data: [] }))
-      );
-      const wastageResults = await Promise.all(wastagePromises);
-      
-      const wastageMap = {};
-      ordersRes.data.forEach((order, index) => {
-        const productionWastage = wastageResults[index].data.find(
-          w => w.stage_name === 'production'
-        );
-        wastageMap[order.id] = productionWastage || null;
-      });
-      setWastageData(wastageMap);
-      
+
+      // Fetch wastage for all orders in a single batch request instead of N individual calls
+      if (ordersRes.data.length > 0) {
+        const lotIds = ordersRes.data.map(o => o.id).join(',');
+        const wastageRes = await axios.get(`${API}/lot-stage-wastage/batch`, {
+          params: { lot_ids: lotIds, stage_name: 'production' }
+        }).catch(() => ({ data: {} }));
+        const wastageByLot = wastageRes.data || {};
+        const wastageMap = {};
+        ordersRes.data.forEach(order => {
+          const records = wastageByLot[order.id] || [];
+          wastageMap[order.id] = records[0] || null;
+        });
+        setWastageData(wastageMap);
+      }
+
     } catch (error) {
-      toast.error(formatLoadErrorMessage('Failed to load data', error));
+      if (!isRequestCanceled(error)) toast.error(formatLoadErrorMessage('Failed to load data', error));
     } finally {
       setLoading(false);
     }
