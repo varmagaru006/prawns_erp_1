@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { toast } from 'sonner';
-import { formatLoadErrorMessage } from '../utils/apiError';
+import { formatLoadErrorMessage, isRequestCanceled } from '../utils/apiError';
 import { Plus, Download, Package, UserPlus } from 'lucide-react';
 
 const Procurement = () => {
@@ -71,7 +71,7 @@ const Procurement = () => {
       setPartyLotCounts(partyCountRes.data);
       // Wastage data is now loaded on demand per lot to keep initial load fast
     } catch (error) {
-      toast.error(formatLoadErrorMessage('Failed to load data', error));
+      if (!isRequestCanceled(error)) toast.error(formatLoadErrorMessage('Failed to load data', error));
     } finally {
       setLoading(false);
     }
@@ -250,7 +250,7 @@ const Procurement = () => {
       setWastageData(prev => ({ ...prev, [lot.id]: wastage }));
       setSelectedLotWastage({ lot, wastage });
     } catch (error) {
-      toast.error(formatLoadErrorMessage('Failed to load data', error));
+      if (!isRequestCanceled(error)) toast.error(formatLoadErrorMessage('Failed to load data', error));
       setSelectedLotWastage({ lot, wastage: [] });
     } finally {
       setWastageLoading(false);

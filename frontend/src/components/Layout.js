@@ -35,7 +35,7 @@ import {
 
 const Layout = () => {
   const { user, logout, isImpersonating, endImpersonation } = useAuth();
-  const { isEnabled, refreshFeatures, features } = useFeatureFlags();
+  const { isEnabled, refreshFeatures, features, loading: featuresLoading } = useFeatureFlags();
   const { branding } = useBranding();
   const location = useLocation();
   const navigate = useNavigate();
@@ -137,18 +137,21 @@ const Layout = () => {
         .sort((a, b) => b.length - a.length)[0];
   const featureForPath = matchedKey ? pathToFeature[matchedKey] : null;
   const hasFeatures = Object.keys(features).length > 0;
-  // Apply Super Admin toggles whenever we have a non-empty flag map (from /auth/me or localStorage cache).
-  // Cache is hydrated on refresh so we don't briefly show all role-allowed tabs while /auth/me is in flight.
-  const flagsGateActive = hasFeatures;
-  // If flags never loaded (empty map), allow access so user isn't locked out.
-  // Super admin always passes through so they can reach the /platform-admin redirect page
+  // Gate is active once we have any flag data (from event, cache, or /auth/me).
+  // When featuresLoading=true and hasFeatures=false we're mid-load — treat as gate active to
+  // prevent flashing all tabs. Super admin bypasses gating entirely.
+  const flagsGateActive = hasFeatures || (featuresLoading && !hasFeatures);
   const featureBlocked =
-    hasFeatures &&
+    flagsGateActive &&
     featureForPath &&
     !isEnabled(featureForPath) &&
     user?.role !== 'super_admin';
 
-  // Filter navigation: role (moduleKey) + feature flag (featureCode) from super admin — only show tabs enabled in Super Admin
+  // Per-user page overrides: if page_permissions is set, it acts as an explicit allowlist
+  const userPagePermissions = user?.page_permissions;
+  const hasPageOverrides = Array.isArray(userPagePermissions) && userPagePermissions.length > 0;
+
+  // Filter navigation: role (moduleKey) + feature flag (featureCode) + per-user page_permissions
   const visibleNav = navigation.filter((item) => {
     if (item.moduleKey === 'dashboard') {
       if (!canAccessDashboard(user?.role)) return false;
@@ -156,7 +159,12 @@ const Layout = () => {
       return true;
     }
     if (!item.moduleKey) return true;
-    if (!isModuleAccessible(item.moduleKey, user?.role)) return false;
+    // Per-user allowlist overrides role-based access (admin/owner always see everything)
+    if (hasPageOverrides && user?.role !== 'admin' && user?.role !== 'owner') {
+      if (!userPagePermissions.includes(item.moduleKey)) return false;
+    } else {
+      if (!isModuleAccessible(item.moduleKey, user?.role)) return false;
+    }
     if (item.featureCode && flagsGateActive && !isEnabled(item.featureCode)) return false;
     return true;
   });

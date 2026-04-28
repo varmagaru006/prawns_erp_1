@@ -119,3 +119,22 @@ export const isModuleAccessible = (moduleKey, userRole) => {
   if (module.roles === '*') return true;
   return module.roles.includes(userRole);
 };
+
+// Ordered list of pages that can be granted/revoked per user.
+// key matches moduleKey in the Layout.js navigation array.
+export const ALL_PAGES = [
+  { key: 'procurement', name: 'Procurement', group: 'Procurement' },
+  { key: 'agents', name: 'Agents & Vendors', group: 'Procurement' },
+  { key: 'preprocessing', name: 'Pre-Processing', group: 'Processing' },
+  { key: 'production', name: 'Production', group: 'Processing' },
+  { key: 'qc', name: 'Quality Control', group: 'Processing' },
+  { key: 'coldStorage', name: 'Cold Storage', group: 'Storage' },
+  { key: 'finishedGoods', name: 'Finished Goods', group: 'Storage' },
+  { key: 'sales', name: 'Sales & Dispatch', group: 'Sales' },
+  { key: 'accounts', name: 'Accounts', group: 'Finance' },
+  { key: 'partyLedger', name: 'Party Ledger', group: 'Finance' },
+  { key: 'wastageDashboard', name: 'Wastage Dashboard', group: 'Analytics' },
+  { key: 'yieldBenchmarks', name: 'Yield Benchmarks', group: 'Analytics' },
+  { key: 'marketRates', name: 'Market Rates', group: 'Analytics' },
+  { key: 'admin', name: 'Admin Panel', group: 'Admin' },
+];

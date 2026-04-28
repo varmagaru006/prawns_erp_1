@@ -3,7 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { clientAPI } from '../api/auth';
 import LinkBrandingTab from '../components/LinkBrandingTab';
 import UsersTab from '../components/UsersTab';
-import { ArrowLeft, Building2, Package, ToggleLeft, ToggleRight, Check, AlertCircle, Zap, Link2, Users, Settings, Eye, EyeOff } from 'lucide-react';
+import { ArrowLeft, Building2, Package, ToggleLeft, ToggleRight, Check, AlertCircle, Zap, Link2, Users, Settings, Eye, EyeOff, ExternalLink, Loader2, Pencil, X } from 'lucide-react';
 
 export default function ClientDetail() {
   const { id } = useParams();
@@ -13,6 +13,7 @@ export default function ClientDetail() {
   const [toggling, setToggling] = useState({});
   const [bulkLoading, setBulkLoading] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(false);
+  const [opening, setOpening] = useState(false);
   const [showBootstrapModal, setShowBootstrapModal] = useState(false);
   const [showBootstrapPassword, setShowBootstrapPassword] = useState(false);
   const [bootstrapForm, setBootstrapForm] = useState({
@@ -22,6 +23,9 @@ export default function ClientDetail() {
   });
   const [notification, setNotification] = useState(null);
   const [activeTab, setActiveTab] = useState('features');
+  const [editingName, setEditingName] = useState(false);
+  const [nameValue, setNameValue] = useState('');
+  const [savingName, setSavingName] = useState(false);
 
   useEffect(() => {
     loadClientData();
@@ -113,6 +117,18 @@ export default function ClientDetail() {
     await handleBulkToggle(featuresToChange, targetState, `${module} module`);
   };
 
+  const handleOpenClientERP = async () => {
+    setOpening(true);
+    try {
+      const result = await clientAPI.openSession(id);
+      window.open(result.session_url, '_blank');
+    } catch (err) {
+      showNotification(err.response?.data?.detail || 'Failed to open client ERP', 'error');
+    } finally {
+      setOpening(false);
+    }
+  };
+
   const openBootstrapModal = () => {
     setBootstrapForm({
       admin_email: client?.owner_email || '',
@@ -142,6 +158,32 @@ export default function ClientDetail() {
       showNotification(err.response?.data?.detail || 'Tenant bootstrap failed', 'error');
     } finally {
       setBootstrapping(false);
+    }
+  };
+
+  const startEditName = () => {
+    setNameValue(client.business_name);
+    setEditingName(true);
+  };
+
+  const cancelEditName = () => {
+    setEditingName(false);
+    setNameValue('');
+  };
+
+  const saveBusinessName = async () => {
+    const trimmed = nameValue.trim();
+    if (!trimmed || trimmed === client.business_name) { cancelEditName(); return; }
+    setSavingName(true);
+    try {
+      await clientAPI.updateClient(id, { business_name: trimmed });
+      setClient((prev) => ({ ...prev, business_name: trimmed }));
+      showNotification('Business name updated');
+      setEditingName(false);
+    } catch (err) {
+      showNotification(err.response?.data?.detail || 'Failed to update name', 'error');
+    } finally {
+      setSavingName(false);
     }
   };
 
@@ -269,7 +311,30 @@ export default function ClientDetail() {
               <Building2 className="h-8 w-8" />
             </div>
             <div className="ml-4">
-              <h1 className="text-3xl font-bold">{client.business_name}</h1>
+              {editingName ? (
+                <div className="flex items-center gap-2">
+                  <input
+                    autoFocus
+                    value={nameValue}
+                    onChange={(e) => setNameValue(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') saveBusinessName(); if (e.key === 'Escape') cancelEditName(); }}
+                    className="text-2xl font-bold bg-white/20 text-white placeholder-white/60 border border-white/40 rounded-lg px-3 py-1 focus:outline-none focus:border-white w-80"
+                  />
+                  <button onClick={saveBusinessName} disabled={savingName} className="p-1.5 rounded-lg bg-white/20 hover:bg-white/30 disabled:opacity-50">
+                    {savingName ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                  </button>
+                  <button onClick={cancelEditName} className="p-1.5 rounded-lg bg-white/20 hover:bg-white/30">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 group">
+                  <h1 className="text-3xl font-bold">{client.business_name}</h1>
+                  <button onClick={startEditName} className="p-1.5 rounded-lg opacity-0 group-hover:opacity-100 bg-white/20 hover:bg-white/30 transition-opacity">
+                    <Pencil className="h-4 w-4" />
+                  </button>
+                </div>
+              )}
               <div className="mt-3 flex items-center space-x-4 flex-wrap gap-2">
                 <span className="px-3 py-1 bg-white/20 rounded-full text-sm font-medium">
                   {client.tenant_id}
@@ -293,13 +358,21 @@ export default function ClientDetail() {
               </div>
             </div>
           </div>
-          <div className="ml-4">
+          <div className="ml-4 flex items-center gap-3">
+            <button
+              onClick={handleOpenClientERP}
+              disabled={opening}
+              className="px-4 py-2 rounded-lg bg-green-500 text-white font-medium hover:bg-green-400 disabled:opacity-60 flex items-center gap-2"
+            >
+              {opening ? <Loader2 className="h-4 w-4 animate-spin" /> : <ExternalLink className="h-4 w-4" />}
+              {opening ? 'Opening...' : 'Open Client ERP'}
+            </button>
             <button
               onClick={openBootstrapModal}
               disabled={bootstrapping}
               className="px-4 py-2 rounded-lg bg-white text-primary-700 font-medium hover:bg-primary-50 disabled:opacity-60"
             >
-              {bootstrapping ? 'Bootstrapping...' : 'Bootstrap Tenant'}
+              {bootstrapping ? 'Bootstrapping...' : 'Re-bootstrap / Reset DB'}
             </button>
           </div>
         </div>
@@ -314,9 +387,11 @@ export default function ClientDetail() {
             <p className="mt-1 text-sm font-medium truncate">{client.contact_email || 'Not set'}</p>
           </div>
           <div className="bg-white/10 rounded-lg p-4">
-            <p className="text-white/70 text-sm">Onboarded</p>
+            <p className="text-white/70 text-sm">Last Bootstrap</p>
             <p className="mt-1 text-sm font-medium">
-              {new Date(client.onboarded_at).toLocaleDateString()}
+              {client.bootstrapped_at
+                ? new Date(client.bootstrapped_at).toLocaleString()
+                : 'Auto-done on creation'}
             </p>
           </div>
           <div className="bg-white/10 rounded-lg p-4">
@@ -479,9 +554,9 @@ export default function ClientDetail() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-md rounded-lg bg-white shadow-xl">
             <div className="border-b px-5 py-4">
-              <h3 className="text-lg font-semibold text-gray-900">Bootstrap Tenant</h3>
+              <h3 className="text-lg font-semibold text-gray-900">Re-bootstrap / Reset DB</h3>
               <p className="mt-1 text-sm text-gray-600">
-                Initialize DB, flags, tenant config, and default admin.
+                Re-run provisioning: refreshes indexes, flags, and creates an admin user if one does not exist. Safe to run on an active tenant.
               </p>
             </div>
             <form onSubmit={handleBootstrapTenant} className="space-y-4 px-5 py-4">
@@ -538,7 +613,7 @@ export default function ClientDetail() {
                   disabled={bootstrapping}
                   className="rounded-md bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-60"
                 >
-                  {bootstrapping ? 'Bootstrapping...' : 'Run Bootstrap'}
+                  {bootstrapping ? 'Bootstrapping...' : 'Re-bootstrap'}
                 </button>
               </div>
             </form>

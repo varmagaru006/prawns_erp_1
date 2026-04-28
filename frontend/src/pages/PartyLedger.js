@@ -3,6 +3,7 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import { useSortableTable } from '../hooks/useSortableTable';
 import { API } from '../context/AuthContext';
+import { useAlert } from '../context/AlertContext';
 
 function getCurrentFinancialYear() {
   const now = new Date();
@@ -227,6 +228,7 @@ function LedgerPrintView({ party, fy, entries, opening, company }) {
 
 // ─── MAIN MODULE ─────────────────────────────────────────────────────────────
 export default function PartyLedgerModule() {
+  const { confirm, multiPrompt } = useAlert();
   const currentUser = useMemo(() => {
     try {
       return JSON.parse(localStorage.getItem("user") || "null");
@@ -485,7 +487,8 @@ export default function PartyLedgerModule() {
       toast.error("Please select a financial year first");
       return;
     }
-    if (!window.confirm(`Run carry forward from FY ${fromFY} to next FY?`)) return;
+    const ok = await confirm({ title: `Run FY carry forward?`, description: `This will carry forward opening balances from FY ${fromFY} to the next financial year.`, confirmLabel: 'Run', variant: 'warning' });
+    if (!ok) return;
 
     setCarryForwarding(true);
     try {
@@ -508,7 +511,8 @@ export default function PartyLedgerModule() {
 
   async function deleteLedgerEntry(entryId) {
     if (!entryId) return;
-    if (!window.confirm("Delete this ledger entry? This will recompute balances.")) return;
+    const ok = await confirm({ title: 'Delete ledger entry?', description: 'Balances will be recomputed after deletion.', confirmLabel: 'Delete', variant: 'destructive' });
+    if (!ok) return;
     try {
       await axios.delete(`${API}/party-ledger/entry/${entryId}`);
       toast.success("Ledger entry deleted");
@@ -523,23 +527,26 @@ export default function PartyLedgerModule() {
     const currentAmount = entry.entry_type === "manual_debit"
       ? (entry.total_bill || entry.tds_after_bill || 0)
       : (entry.payment_amount || 0);
-    const amountRaw = window.prompt("Amount", String(currentAmount ?? 0));
-    if (amountRaw == null) return;
-    const dateRaw = window.prompt("Entry date (YYYY-MM-DD)", String(entry.entry_date || "").split("T")[0]);
-    if (dateRaw == null) return;
-    const descriptionRaw = window.prompt("Description", entry.description || "");
-    if (descriptionRaw == null) return;
+
+    const isPayment = entry.entry_type === "payment";
+    const fields = [
+      { name: "amount", label: "Amount", type: "number", defaultValue: String(currentAmount ?? 0) },
+      { name: "entry_date", label: "Entry Date (YYYY-MM-DD)", defaultValue: String(entry.entry_date || "").split("T")[0] },
+      { name: "description", label: "Description", defaultValue: entry.description || "" },
+      ...(isPayment ? [{ name: "paid_to", label: "Paid To", defaultValue: entry.paid_to || "" }] : []),
+    ];
+
+    const values = await multiPrompt({ title: "Edit Ledger Entry", fields, confirmLabel: "Save", variant: "info" });
+    if (!values) return;
 
     const payload = {
-      amount: parseFloat(amountRaw || "0"),
-      entry_date: dateRaw,
-      description: descriptionRaw
+      amount: parseFloat(values.amount || "0"),
+      entry_date: values.entry_date,
+      description: values.description,
     };
-    if (entry.entry_type === "payment") {
-      const paidToRaw = window.prompt("Paid To", entry.paid_to || "");
-      if (paidToRaw == null) return;
-      payload.paid_to = paidToRaw;
-      payload.payment_date = dateRaw;
+    if (isPayment) {
+      payload.paid_to = values.paid_to;
+      payload.payment_date = values.entry_date;
     }
     try {
       await axios.put(`${API}/party-ledger/entry/${entry.id}`, payload);

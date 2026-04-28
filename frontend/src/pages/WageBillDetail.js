@@ -7,8 +7,10 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { toast } from 'sonner';
 import { ArrowLeft, CheckCircle, Download, Edit, Trash2, Calendar, DollarSign, Users } from 'lucide-react';
 import Attachments from '../components/Attachments';
+import { useAlert } from '../context/AlertContext';
 
 export default function WageBillDetail() {
+  const { confirm } = useAlert();
   const { billId } = useParams();
   const navigate = useNavigate();
   const [bill, setBill] = useState(null);
@@ -31,7 +33,8 @@ export default function WageBillDetail() {
   };
 
   const handleMarkPaid = async () => {
-    if (!window.confirm('Mark this wage bill as paid?')) return;
+    const ok = await confirm({ title: 'Mark wage bill as paid?', description: 'This will update the payment status to paid.', confirmLabel: 'Mark Paid', variant: 'success' });
+    if (!ok) return;
 
     try {
       await axios.post(`${API}/wage-bills/${billId}/mark-paid`);
@@ -43,7 +46,8 @@ export default function WageBillDetail() {
   };
 
   const handleDelete = async () => {
-    if (!window.confirm('Are you sure you want to delete this wage bill? This action cannot be undone.')) return;
+    const ok = await confirm({ title: 'Delete wage bill?', description: 'This action cannot be undone.', confirmLabel: 'Delete', variant: 'destructive' });
+    if (!ok) return;
 
     try {
       await axios.delete(`${API}/wage-bills/${billId}`);

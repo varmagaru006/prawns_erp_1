@@ -30,6 +30,8 @@ import hmac
 import base64
 import hashlib
 import re
+import aiohttp
+import xml.etree.ElementTree as ET
 
 # Multi-tenant services
 from services.multi_tenant import tenant_context, FeatureFlagService, tenant_middleware
@@ -106,6 +108,27 @@ feature_service = FeatureFlagService(db)
 _LOGIN_TENANT_CACHE_TTL_SEC = 300
 _login_tenant_cache: Dict[str, Dict[str, Any]] = {}
 
+# Short-lived cache for user document lookups (keyed by email_lower).
+# Eliminates a MongoDB round-trip on every API request for the same user
+# within the TTL window. Invalidated explicitly on password change / disable.
+_USER_CACHE_TTL_SEC = 30
+_user_doc_cache: Dict[str, tuple] = {}   # email -> (user_doc, expiry_ts)
+
+def _user_cache_get(email: str):
+    entry = _user_doc_cache.get(email)
+    if entry:
+        doc, expiry = entry
+        if time.time() < expiry:
+            return doc
+        del _user_doc_cache[email]
+    return None
+
+def _user_cache_set(email: str, doc: dict):
+    _user_doc_cache[email] = (doc, time.time() + _USER_CACHE_TTL_SEC)
+
+def _user_cache_invalidate(email: str):
+    _user_doc_cache.pop(email.strip().lower(), None)
+
 # Security
 SECRET_KEY = os.environ.get('SECRET_KEY', 'your-secret-key-change-in-production')
 ALGORITHM = "HS256"
@@ -134,6 +157,19 @@ security = HTTPBearer()
 # Create uploads directory
 UPLOADS_DIR = ROOT_DIR / 'uploads'
 UPLOADS_DIR.mkdir(exist_ok=True)
+
+
+def _tenant_upload_dir() -> Path:
+    """Return uploads/{tenant_id}/ — creates the subdirectory if it does not exist.
+    Falls back to UPLOADS_DIR itself when tenant context is unavailable (startup, tests)."""
+    try:
+        tid = tenant_context.tenant_id or "default"
+    except Exception:
+        tid = "default"
+    safe = "".join(ch for ch in str(tid) if ch.isalnum() or ch in ("_", "-")).strip() or "default"
+    d = UPLOADS_DIR / safe
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 app = FastAPI(title="Prawn ERP - Multi-Tenant")
 api_router = APIRouter(prefix="/api")
@@ -272,6 +308,8 @@ class User(BaseModel):
     is_active: bool = True
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     tenant_id: Optional[str] = None
+    # Per-user page-level permission overrides (list of page keys explicitly granted/denied)
+    page_permissions: Optional[List[str]] = None
     # Impersonation fields
     is_impersonated: bool = False
     impersonator: Optional[str] = None
@@ -284,6 +322,14 @@ class UserCreate(BaseModel):
     name: str
     role: UserRole
     phone: Optional[str] = None
+    page_permissions: Optional[List[str]] = None
+
+class UserUpdate(BaseModel):
+    name: Optional[str] = None
+    role: Optional[UserRole] = None
+    phone: Optional[str] = None
+    is_active: Optional[bool] = None
+    page_permissions: Optional[List[str]] = None
 
 class UserLogin(BaseModel):
     email: EmailStr
@@ -300,7 +346,7 @@ class Token(BaseModel):
 class Agent(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    agent_code: str
+    agent_code: Optional[str] = None
     name: str
     phone: str
     gst: Optional[str] = None
@@ -1487,18 +1533,23 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     # Regular token flow
     email_lookup = (email or "").strip().lower()
     _t_user = time.perf_counter()
-    user_doc = await db.users.find_one({"email": email_lookup}, {"_id": 0})
-    if not user_doc:
-        _m["regex_fallback_used"] = True
-        user_doc = await db.users.find_one(
-            {"email": {"$regex": f"^{re.escape((email or '').strip())}$", "$options": "i"}},
-            {"_id": 0},
-        )
+    # Fast path: serve from in-process cache (avoids DB round-trip)
+    user_doc = _user_cache_get(email_lookup)
     if user_doc is None:
-        try:
-            user_doc = await lookup_user_doc_cross_db(email_lookup)
-        except Exception as e:
-            logger.debug("get_current_user cross-db lookup failed for %s: %s", email_lookup, e)
+        user_doc = await db.users.find_one({"email": email_lookup}, {"_id": 0})
+        if not user_doc:
+            _m["regex_fallback_used"] = True
+            user_doc = await db.users.find_one(
+                {"email": {"$regex": f"^{re.escape((email or '').strip())}$", "$options": "i"}},
+                {"_id": 0},
+            )
+        if user_doc is None:
+            try:
+                user_doc = await lookup_user_doc_cross_db(email_lookup)
+            except Exception as e:
+                logger.debug("get_current_user cross-db lookup failed for %s: %s", email_lookup, e)
+        if user_doc is not None:
+            _user_cache_set(email_lookup, user_doc)
     _m["user_lookup_ms"] = round((time.perf_counter() - _t_user) * 1000, 1)
     if user_doc is None:
         _m["total_ms"] = round((time.perf_counter() - _t0) * 1000, 1)
@@ -2775,6 +2826,133 @@ async def validate_impersonation(token: str):
     except InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid impersonation token")
 
+class SessionTokenRequest(BaseModel):
+    token: str
+
+@api_router.post("/auth/exchange-token")
+async def exchange_session_token(body: SessionTokenRequest):
+    """Exchange a short-lived super-admin impersonation token for a full ERP session."""
+    shared_secret = os.environ.get("CLIENT_ERP_SECRET_KEY") or SECRET_KEY
+    try:
+        payload = jwt.decode(body.token, shared_secret, algorithms=[ALGORITHM])
+    except InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid or expired session token")
+
+    if not payload.get("is_impersonation"):
+        raise HTTPException(status_code=401, detail="Not an impersonation token")
+
+    email = payload.get("sub")
+    tenant_id = payload.get("tenant_id")
+    if not email or not tenant_id:
+        raise HTTPException(status_code=401, detail="Malformed session token")
+
+    tenant_context.set_tenant(tenant_id)
+    user_doc = await db.users.find_one({"email": email, "tenant_id": tenant_id, "is_active": True}, {"_id": 0})
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User not found in tenant")
+
+    access_token = create_access_token(data={
+        "sub": user_doc["email"],
+        "tenant_id": tenant_id,
+        "role": user_doc.get("role", "admin"),
+        "name": user_doc.get("name", ""),
+        "is_impersonated": True,
+        "impersonator": payload.get("impersonator"),
+    })
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": user_doc.get("id"),
+            "email": user_doc["email"],
+            "name": user_doc.get("name", ""),
+            "role": user_doc.get("role", "admin"),
+            "tenant_id": tenant_id,
+        }
+    }
+
+# ── USER MANAGEMENT (Admin-only CRUD) ────────────────────────────────────────
+
+@api_router.get("/users", response_model=List[User])
+async def list_users(current_user: User = Depends(get_current_user)):
+    """List all users in this tenant. Admin/owner only."""
+    if current_user.role not in [UserRole.admin, UserRole.owner]:
+        raise HTTPException(status_code=403, detail="Only admin can manage users")
+    users = await db.users.find({"tenant_id": current_user.tenant_id}, {"_id": 0, "password": 0}).to_list(500)
+    return [User(**u) for u in users]
+
+
+@api_router.post("/users", response_model=User)
+async def admin_create_user(user_data: UserCreate, current_user: User = Depends(get_current_user)):
+    """Create a user. Admin only — sets tenant_id automatically."""
+    if current_user.role != UserRole.admin:
+        raise HTTPException(status_code=403, detail="Only admin can create users")
+    email_key = user_data.email.strip().lower()
+    existing = await db.users.find_one({"email": email_key, "tenant_id": current_user.tenant_id})
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered in this tenant")
+    hashed_password = get_password_hash(user_data.password)
+    user = User(
+        email=email_key,
+        name=user_data.name,
+        role=user_data.role,
+        phone=user_data.phone,
+        tenant_id=current_user.tenant_id,
+        page_permissions=user_data.page_permissions,
+    )
+    user_dict = user.model_dump()
+    user_dict["password"] = hashed_password
+    user_dict["created_at"] = user_dict["created_at"].isoformat()
+    await db.users.insert_one(user_dict)
+    return user
+
+
+@api_router.put("/users/{user_id}", response_model=User)
+async def admin_update_user(user_id: str, payload: UserUpdate, current_user: User = Depends(get_current_user)):
+    """Update user role, status, or page permissions. Admin only."""
+    if current_user.role != UserRole.admin:
+        raise HTTPException(status_code=403, detail="Only admin can edit users")
+    existing = await db.users.find_one({"id": user_id, "tenant_id": current_user.tenant_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="User not found")
+    update_data = payload.model_dump(exclude_unset=True)
+    if not update_data:
+        return User(**existing)
+    await db.users.update_one({"id": user_id}, {"$set": update_data})
+    updated = await db.users.find_one({"id": user_id}, {"_id": 0, "password": 0})
+    return User(**updated)
+
+
+@api_router.delete("/users/{user_id}")
+async def admin_delete_user(user_id: str, current_user: User = Depends(get_current_user)):
+    """Deactivate a user. Admin only. Cannot deactivate self."""
+    if current_user.role != UserRole.admin:
+        raise HTTPException(status_code=403, detail="Only admin can delete users")
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Cannot deactivate your own account")
+    existing = await db.users.find_one({"id": user_id, "tenant_id": current_user.tenant_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="User not found")
+    await db.users.update_one({"id": user_id}, {"$set": {"is_active": False}})
+    return {"message": "User deactivated"}
+
+
+@api_router.put("/users/{user_id}/permissions")
+async def admin_update_user_permissions(user_id: str, payload: dict, current_user: User = Depends(get_current_user)):
+    """Set per-user page permission overrides. Admin only."""
+    if current_user.role != UserRole.admin:
+        raise HTTPException(status_code=403, detail="Only admin can set permissions")
+    page_permissions = payload.get("page_permissions")
+    if not isinstance(page_permissions, list):
+        raise HTTPException(status_code=400, detail="page_permissions must be a list")
+    existing = await db.users.find_one({"id": user_id, "tenant_id": current_user.tenant_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="User not found")
+    await db.users.update_one({"id": user_id}, {"$set": {"page_permissions": page_permissions}})
+    return {"message": "Permissions updated", "page_permissions": page_permissions}
+
+
 # Agents endpoints
 @api_router.post("/agents", response_model=Agent)
 async def create_agent(agent_data: AgentCreate, current_user: User = Depends(get_current_user)):
@@ -3023,7 +3201,8 @@ async def download_receipt(lot_id: str, current_user: User = Depends(get_current
     
     pdf_bytes = generate_procurement_receipt_pdf(lot_obj, agent_obj)
     
-    pdf_path = UPLOADS_DIR / f"receipt_{lot_id}.pdf"
+    tdir = _tenant_upload_dir()
+    pdf_path = tdir / f"receipt_{lot_id}.pdf"
     with open(pdf_path, 'wb') as f:
         f.write(pdf_bytes)
     
@@ -3070,6 +3249,7 @@ async def create_preprocessing_batch(batch_data: PreprocessingBatchCreate, curre
         batch_dict['end_time'] = batch_dict['end_time'].isoformat()
     
     await db.preprocessing_batches.insert_one(batch_dict)
+    _cache_invalidate("preprocessing_batches:")
     await create_audit_log(current_user.id, "CREATE_BATCH", "preprocessing", {"batch_id": batch.id})
     
     # Auto-create wastage record for this preprocessing stage
@@ -3092,6 +3272,10 @@ async def create_preprocessing_batch(batch_data: PreprocessingBatchCreate, curre
 
 @api_router.get("/preprocessing/batches", response_model=List[PreprocessingBatch])
 async def get_preprocessing_batches(current_user: User = Depends(get_current_user)):
+    cache_key = f"preprocessing_batches:{tenant_context.tenant_id}"
+    cached = _cache_get(cache_key, ttl_sec=30)
+    if cached is not None:
+        return cached
     batches = await db.preprocessing_batches.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
     for batch in batches:
         if isinstance(batch.get('created_at'), str):
@@ -3100,6 +3284,7 @@ async def get_preprocessing_batches(current_user: User = Depends(get_current_use
             batch['start_time'] = datetime.fromisoformat(batch['start_time'])
         if batch.get('end_time') and isinstance(batch['end_time'], str):
             batch['end_time'] = datetime.fromisoformat(batch['end_time'])
+    _cache_set(cache_key, batches, ttl_sec=30)
     return batches
 
 # Production endpoints
@@ -3150,14 +3335,23 @@ async def create_production_order(order_data: ProductionOrderCreate, current_use
             recorded_by=current_user.id
         )
     
+    _invalidate_production_orders_cache()
     return order
+
+def _invalidate_production_orders_cache():
+    _cache_invalidate("production_orders:")
 
 @api_router.get("/production/orders", response_model=List[ProductionOrder])
 async def get_production_orders(current_user: User = Depends(get_current_user)):
+    cache_key = f"production_orders:{tenant_context.tenant_id}"
+    cached = _cache_get(cache_key, ttl_sec=30)
+    if cached is not None:
+        return cached
     orders = await db.production_orders.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
     for order in orders:
         if isinstance(order.get('created_at'), str):
             order['created_at'] = datetime.fromisoformat(order['created_at'])
+    _cache_set(cache_key, orders, ttl_sec=30)
     return orders
 
 # Finished Goods endpoints
@@ -3364,12 +3558,26 @@ async def get_dashboard_overview(current_user: User = Depends(get_current_user))
         batch["created_at"] = _safe_parse_datetime(batch.get("created_at"))
         batch["start_time"] = _safe_parse_datetime(batch.get("start_time"))
         batch["end_time"] = _safe_parse_datetime(batch.get("end_time"))
-    live_prices = [
-        {"id": str(uuid.uuid4()), "category": "Vannamei 30/40", "price_per_kg": 420.0, "location": "Andhra Pradesh", "market": "Nellore", "date": datetime.now(timezone.utc), "source": "Market Data"},
-        {"id": str(uuid.uuid4()), "category": "Vannamei 40/60", "price_per_kg": 380.0, "location": "Andhra Pradesh", "market": "Kakinada", "date": datetime.now(timezone.utc), "source": "Market Data"},
-        {"id": str(uuid.uuid4()), "category": "Vannamei 60/80", "price_per_kg": 340.0, "location": "Andhra Pradesh", "market": "Bhimavaram", "date": datetime.now(timezone.utc), "source": "Market Data"},
-        {"id": str(uuid.uuid4()), "category": "Black Tiger 20/30", "price_per_kg": 650.0, "location": "Andhra Pradesh", "market": "Nellore", "date": datetime.now(timezone.utc), "source": "Market Data"},
-    ]
+    db_rates = await db.market_rates.find(
+        {"effective_to": None},
+        {"_id": 0, "species": 1, "product_form": 1, "size_value": 1, "rate_per_kg_inr": 1, "effective_from": 1}
+    ).sort("effective_from", -1).to_list(20)
+    if db_rates:
+        live_prices = [
+            {"id": str(uuid.uuid4()),
+             "category": f"{r.get('species', '?')} {r.get('size_value') or r.get('product_form') or 'raw'}",
+             "price_per_kg": r.get("rate_per_kg_inr", 0),
+             "location": "Andhra Pradesh", "market": "Market Data",
+             "date": r.get("effective_from") or datetime.now(timezone.utc), "source": "Market Rates"}
+            for r in db_rates
+        ]
+    else:
+        live_prices = [
+            {"id": str(uuid.uuid4()), "category": "Vannamei 30/40", "price_per_kg": 420.0, "location": "Andhra Pradesh", "market": "Nellore", "date": datetime.now(timezone.utc), "source": "Market Data"},
+            {"id": str(uuid.uuid4()), "category": "Vannamei 40/60", "price_per_kg": 380.0, "location": "Andhra Pradesh", "market": "Kakinada", "date": datetime.now(timezone.utc), "source": "Market Data"},
+            {"id": str(uuid.uuid4()), "category": "Vannamei 60/80", "price_per_kg": 340.0, "location": "Andhra Pradesh", "market": "Bhimavaram", "date": datetime.now(timezone.utc), "source": "Market Data"},
+            {"id": str(uuid.uuid4()), "category": "Black Tiger 20/30", "price_per_kg": 650.0, "location": "Andhra Pradesh", "market": "Nellore", "date": datetime.now(timezone.utc), "source": "Market Data"},
+        ]
     out = {"stats": stats, "lots": lots, "batches": batches, "live_prices": live_prices}
     _t_cache_set = time.perf_counter()
     _cache_set(cache_key, out, ttl_sec=30)
@@ -3387,6 +3595,676 @@ async def get_dashboard_overview(current_user: User = Depends(get_current_user))
     )
     return out
 
+
+# ─── Dashboard Analytics Helpers ──────────────────────────────────────────────
+
+def _month_start(offset_months: int = 0) -> datetime:
+    now = datetime.now(timezone.utc)
+    month, year = now.month - offset_months, now.year
+    while month <= 0:
+        month += 12
+        year -= 1
+    return datetime(year, month, 1, tzinfo=timezone.utc)
+
+def _zscore(value: float, mean: float, stddev: float) -> float:
+    return 0.0 if stddev == 0 else round((value - mean) / stddev, 2)
+
+
+# ─── GET /dashboard/kpis ──────────────────────────────────────────────────────
+
+@api_router.get("/dashboard/kpis")
+async def get_dashboard_kpis(current_user: User = Depends(get_current_user)):
+    """9 smart KPI cards with MoM deltas, RAG status, and 7-day sparkline."""
+    tid = tenant_context.get_tenant()
+    cache_key = f"dashboard_kpis:{tid}"
+    cached = _cache_get(cache_key, ttl_sec=30)
+    if cached is not None:
+        return cached
+
+    now = datetime.now(timezone.utc)
+    month_start_this = _month_start(0)
+    month_start_last = _month_start(1)
+    seven_days_ago = now - timedelta(days=7)
+
+    (
+        this_month_agg,
+        last_month_agg,
+        payables_agg,
+        usd_agg,
+        fg_agg,
+        fg_pending_qc,
+        prod_pending_qc,
+        chambers_agg,
+        risk_alerts_count,
+        temp_alerts_count,
+        yield_alerts_count,
+        yield_agg,
+        sparkline_raw,
+    ) = await asyncio.gather(
+        db.procurement_lots.aggregate([
+            {"$match": {"created_at": {"$gte": month_start_this}}},
+            {"$group": {"_id": None, "count": {"$sum": 1},
+                        "weight": {"$sum": {"$ifNull": ["$net_weight_kg", 0]}},
+                        "value": {"$sum": {"$ifNull": ["$total_amount", 0]}}}}
+        ]).to_list(1),
+        db.procurement_lots.aggregate([
+            {"$match": {"created_at": {"$gte": month_start_last, "$lt": month_start_this}}},
+            {"$group": {"_id": None, "count": {"$sum": 1},
+                        "weight": {"$sum": {"$ifNull": ["$net_weight_kg", 0]}},
+                        "value": {"$sum": {"$ifNull": ["$total_amount", 0]}}}}
+        ]).to_list(1),
+        db.purchase_invoices.aggregate([
+            {"$match": {"balance_due": {"$gt": 0}}},
+            {"$group": {"_id": None, "total": {"$sum": "$balance_due"}}}
+        ]).to_list(1),
+        db.sales_orders.aggregate([
+            {"$match": {"payment_status": {"$nin": ["paid", "cancelled"]}}},
+            {"$group": {"_id": None, "total_usd": {"$sum": {"$ifNull": ["$total_value_usd", 0]}}}}
+        ]).to_list(1),
+        db.finished_goods.aggregate([
+            {"$group": {"_id": None, "total_kg": {"$sum": "$weight_kg"}}}
+        ]).to_list(1),
+        db.finished_goods.count_documents({"qc_status": "pending"}),
+        db.production_orders.count_documents({"qc_status": "pending"}),
+        db.cold_storage_chambers.aggregate([
+            {"$group": {"_id": None, "total_capacity": {"$sum": "$capacity_kg"}}}
+        ]).to_list(1),
+        db.purchase_risk_alerts.count_documents({"is_active": True, "severity": "critical"}),
+        db.temperature_logs.count_documents({"alert": True, "recorded_at": {"$gte": now - timedelta(hours=24)}}),
+        db.lot_stage_wastage.count_documents({"threshold_status": "red", "alert_acknowledged": False}),
+        db.preprocessing_batches.aggregate([
+            {"$match": {"created_at": {"$gte": month_start_this}}},
+            {"$group": {"_id": None, "avg_yield": {"$avg": "$yield_pct"}}}
+        ]).to_list(1),
+        db.procurement_lots.aggregate([
+            {"$match": {"created_at": {"$gte": seven_days_ago}}},
+            {"$group": {"_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$created_at"}},
+                        "weight": {"$sum": {"$ifNull": ["$net_weight_kg", 0]}}}},
+            {"$sort": {"_id": 1}}
+        ]).to_list(7),
+    )
+
+    def mom_pct(current, prev):
+        if not prev:
+            return None
+        return round((current - prev) / prev * 100, 1) if prev != 0 else None
+
+    def rag_mom(pct):
+        if pct is None: return "info"
+        return "green" if pct >= 0 else ("amber" if pct >= -10 else "red")
+
+    tm = this_month_agg[0] if this_month_agg else {"count": 0, "weight": 0, "value": 0}
+    lm = last_month_agg[0] if last_month_agg else {"count": 0, "weight": 0, "value": 0}
+    payables = payables_agg[0]["total"] if payables_agg else 0
+    usd = usd_agg[0]["total_usd"] if usd_agg else 0
+    fg_kg = fg_agg[0]["total_kg"] if fg_agg else 0
+    total_cap = chambers_agg[0]["total_capacity"] if chambers_agg else 0
+
+    inv_agg = await db.cold_storage_inventory.aggregate([
+        {"$lookup": {"from": "finished_goods", "localField": "fg_id", "foreignField": "id", "as": "fg"}},
+        {"$unwind": {"path": "$fg", "preserveNullAndEmptyArrays": True}},
+        {"$group": {"_id": None, "total_weight": {"$sum": {"$ifNull": ["$fg.weight_kg", 0]}}}}
+    ]).to_list(1)
+    inv_weight = inv_agg[0]["total_weight"] if inv_agg else 0
+    occupancy_pct = round(inv_weight / total_cap * 100, 1) if total_cap > 0 else 0
+
+    active_alerts = risk_alerts_count + temp_alerts_count + yield_alerts_count
+    avg_yield = round(yield_agg[0]["avg_yield"], 1) if yield_agg and yield_agg[0].get("avg_yield") else 0
+    sparkline = [round(d.get("weight", 0), 1) for d in sparkline_raw]
+    count_pct = mom_pct(tm["count"], lm["count"])
+    weight_pct = mom_pct(tm["weight"], lm["weight"])
+    value_pct = mom_pct(tm["value"], lm["value"])
+
+    cards = [
+        {"key": "procurement_count", "title": "Procurement Lots", "value": tm["count"], "unit": "lots",
+         "mom_pct": count_pct, "rag": rag_mom(count_pct), "sparkline": sparkline,
+         "description": "Lots received this month"},
+        {"key": "weight_procured", "title": "Weight Procured", "value": round(tm["weight"], 0), "unit": "KG",
+         "mom_pct": weight_pct, "rag": rag_mom(weight_pct), "sparkline": sparkline,
+         "description": "Net weight this month"},
+        {"key": "procurement_value", "title": "Procurement Value",
+         "value": round(tm["value"] / 100000, 2), "unit": "L ₹",
+         "mom_pct": value_pct, "rag": rag_mom(value_pct), "sparkline": [],
+         "description": "Total value this month"},
+        {"key": "outstanding_payables", "title": "Outstanding Payables",
+         "value": round(payables / 100000, 2), "unit": "L ₹",
+         "mom_pct": None,
+         "rag": "green" if payables < 1000000 else ("amber" if payables < 2500000 else "red"),
+         "sparkline": [], "description": "Pending supplier payments"},
+        {"key": "usd_receivables", "title": "USD Receivables", "value": round(usd, 0), "unit": "USD",
+         "mom_pct": None, "rag": "info", "sparkline": [], "description": "Pending buyer payments"},
+        {"key": "fg_inventory", "title": "FG Inventory", "value": round(fg_kg, 0), "unit": "KG",
+         "mom_pct": None,
+         "rag": "green" if fg_kg > 0 else "amber",
+         "sparkline": [], "description": "Ready for dispatch"},
+        {"key": "cold_storage", "title": "Cold Storage", "value": occupancy_pct, "unit": "%",
+         "mom_pct": None,
+         "rag": "green" if occupancy_pct < 70 else ("amber" if occupancy_pct < 90 else "red"),
+         "sparkline": [], "description": "Storage utilization"},
+        {"key": "active_alerts", "title": "Active Alerts", "value": active_alerts, "unit": "",
+         "mom_pct": None,
+         "rag": "green" if active_alerts == 0 else ("amber" if active_alerts <= 3 else "red"),
+         "sparkline": [], "description": "Issues requiring attention"},
+        {"key": "avg_yield", "title": "Avg Yield", "value": avg_yield, "unit": "%",
+         "mom_pct": None,
+         "rag": "green" if avg_yield >= 85 else ("amber" if avg_yield >= 75 else "red"),
+         "sparkline": [], "description": "Processing yield this month"},
+    ]
+    pending_qc = fg_pending_qc + prod_pending_qc
+    out = {"cards": cards, "pending_qc": pending_qc, "computed_at": now.isoformat()}
+    _cache_set(cache_key, out, ttl_sec=30)
+    return out
+
+
+# ─── GET /dashboard/alerts ────────────────────────────────────────────────────
+
+@api_router.get("/dashboard/alerts")
+async def get_dashboard_alerts(current_user: User = Depends(get_current_user)):
+    """Business alert feed computed from existing data, sorted by severity."""
+    tid = tenant_context.get_tenant()
+    cache_key = f"dashboard_alerts:{tid}"
+    cached = _cache_get(cache_key, ttl_sec=60)
+    if cached is not None:
+        return cached
+
+    now = datetime.now(timezone.utc)
+    alerts = []
+
+    # Overdue payments from party ledger
+    try:
+        ledger_accounts = await db.party_ledger_accounts.find(
+            {"closing_balance": {"$gt": 0}},
+            {"_id": 0, "party_id": 1, "closing_balance": 1}
+        ).limit(30).to_list(30)
+        for acct in ledger_accounts:
+            party_id = acct.get("party_id")
+            balance = acct.get("closing_balance", 0)
+            if balance <= 0:
+                continue
+            last_payment = await db.party_ledger_entries.find_one(
+                {"party_id": party_id, "entry_type": "payment"},
+                sort=[("entry_date", -1)]
+            )
+            party = await db.parties.find_one({"id": party_id}, {"_id": 0, "party_name": 1})
+            party_name = (party or {}).get("party_name", "Unknown Party")
+            if last_payment:
+                last_date = last_payment.get("entry_date")
+                if isinstance(last_date, str):
+                    try:
+                        last_date = date.fromisoformat(str(last_date)[:10])
+                    except Exception:
+                        last_date = None
+                if last_date:
+                    days_since = (date.today() - last_date).days
+                    if days_since > 30:
+                        alerts.append({"id": str(uuid.uuid4()), "severity": "critical",
+                                       "category": "overdue_payment",
+                                       "title": f"{party_name} — overdue > 30 days",
+                                       "detail": f"Outstanding: ₹{balance:,.0f} | Last payment: {days_since} days ago",
+                                       "action_url": "/parties"})
+                    elif days_since > 15:
+                        alerts.append({"id": str(uuid.uuid4()), "severity": "warning",
+                                       "category": "overdue_payment",
+                                       "title": f"{party_name} — overdue {days_since} days",
+                                       "detail": f"Outstanding: ₹{balance:,.0f}",
+                                       "action_url": "/parties"})
+            else:
+                alerts.append({"id": str(uuid.uuid4()), "severity": "warning",
+                               "category": "overdue_payment",
+                               "title": f"{party_name} — no payment recorded",
+                               "detail": f"Outstanding: ₹{balance:,.0f}",
+                               "action_url": "/parties"})
+    except Exception:
+        pass
+
+    # Cold storage temperature deviations (last 24h)
+    try:
+        temp_alerts = await db.temperature_logs.find(
+            {"alert": True, "recorded_at": {"$gte": now - timedelta(hours=24)}},
+            {"_id": 0, "chamber_id": 1, "temperature_c": 1, "alert_reason": 1}
+        ).sort("recorded_at", -1).limit(5).to_list(5)
+        for ta in temp_alerts:
+            chamber = await db.cold_storage_chambers.find_one(
+                {"id": ta.get("chamber_id")}, {"_id": 0, "name": 1})
+            chamber_name = (chamber or {}).get("name", "Chamber")
+            alerts.append({"id": str(uuid.uuid4()), "severity": "critical",
+                           "category": "temperature_deviation",
+                           "title": f"Temp alert — {chamber_name}",
+                           "detail": ta.get("alert_reason") or f"{ta.get('temperature_c', '?')}°C",
+                           "action_url": "/cold-storage"})
+    except Exception:
+        pass
+
+    # Unacknowledged red yield alerts
+    try:
+        red_alerts = await db.lot_stage_wastage.find(
+            {"threshold_status": "red", "alert_acknowledged": False},
+            {"_id": 0, "lot_id": 1, "stage_name": 1, "yield_pct": 1, "min_yield_pct": 1, "net_loss_inr": 1}
+        ).sort("created_at", -1).limit(5).to_list(5)
+        for ra in red_alerts:
+            alerts.append({"id": str(uuid.uuid4()), "severity": "critical",
+                           "category": "yield_breach",
+                           "title": f"Yield breach — {ra.get('stage_name', 'stage')}",
+                           "detail": f"Yield: {ra.get('yield_pct', 0):.1f}% (min: {ra.get('min_yield_pct', 0):.1f}%) | Loss: ₹{ra.get('net_loss_inr', 0):,.0f}",
+                           "action_url": "/lot-waterfall"})
+    except Exception:
+        pass
+
+    # Active critical risk alerts
+    try:
+        risk_alerts = await db.purchase_risk_alerts.find(
+            {"is_active": True, "severity": "critical"},
+            {"_id": 0, "farmer_name": 1, "party_name": 1, "agent_name": 1, "note_text": 1}
+        ).sort("created_at", -1).limit(5).to_list(5)
+        for ra in risk_alerts:
+            entity = ra.get("farmer_name") or ra.get("party_name") or ra.get("agent_name") or "Unknown"
+            alerts.append({"id": str(uuid.uuid4()), "severity": "critical",
+                           "category": "risk_alert",
+                           "title": f"Risk alert — {entity}",
+                           "detail": (ra.get("note_text") or "")[:120],
+                           "action_url": "/procurement"})
+    except Exception:
+        pass
+
+    # QC holds blocking dispatch
+    try:
+        on_hold_count = await db.finished_goods.count_documents({"qc_status": "on_hold"})
+        if on_hold_count > 0:
+            alerts.append({"id": str(uuid.uuid4()), "severity": "warning",
+                           "category": "qc_hold",
+                           "title": f"{on_hold_count} finished goods on QC hold",
+                           "detail": "These items are blocking dispatch",
+                           "action_url": "/finished-goods"})
+    except Exception:
+        pass
+
+    # FG expiring within 14 days
+    try:
+        expiry_cutoff = now + timedelta(days=14)
+        expiring_count = await db.finished_goods.count_documents({
+            "expiry_date": {"$lte": expiry_cutoff, "$gte": now}
+        })
+        if expiring_count > 0:
+            alerts.append({"id": str(uuid.uuid4()), "severity": "warning",
+                           "category": "expiry_risk",
+                           "title": f"{expiring_count} items expiring within 14 days",
+                           "detail": "Review cold storage inventory immediately",
+                           "action_url": "/cold-storage"})
+    except Exception:
+        pass
+
+    # Pending lot approvals > 48h
+    try:
+        stale_cutoff = now - timedelta(hours=48)
+        stale_count = await db.procurement_lots.count_documents({
+            "approval_status": "pending",
+            "created_at": {"$lte": stale_cutoff}
+        })
+        if stale_count > 0:
+            alerts.append({"id": str(uuid.uuid4()), "severity": "warning",
+                           "category": "pending_approval",
+                           "title": f"{stale_count} lots awaiting approval > 48h",
+                           "detail": "Lot approvals are delayed",
+                           "action_url": "/procurement"})
+    except Exception:
+        pass
+
+    severity_order = {"critical": 0, "warning": 1, "info": 2}
+    alerts.sort(key=lambda a: severity_order.get(a["severity"], 3))
+    counts = {
+        "critical": sum(1 for a in alerts if a["severity"] == "critical"),
+        "warning": sum(1 for a in alerts if a["severity"] == "warning"),
+        "info": sum(1 for a in alerts if a["severity"] == "info"),
+    }
+    out = {"alerts": alerts[:20], "counts": counts, "computed_at": now.isoformat()}
+    _cache_set(cache_key, out, ttl_sec=60)
+    return out
+
+
+# ─── GET /dashboard/fraud-signals ────────────────────────────────────────────
+
+@api_router.get("/dashboard/fraud-signals")
+async def get_dashboard_fraud_signals(current_user: User = Depends(get_current_user)):
+    """Statistical anomaly detection: ice fraud, rate outliers, agent concentration."""
+    tid = tenant_context.get_tenant()
+    cache_key = f"dashboard_fraud:{tid}"
+    cached = _cache_get(cache_key, ttl_sec=300)
+    if cached is not None:
+        return cached
+
+    now = datetime.now(timezone.utc)
+    ninety_days_ago = now - timedelta(days=90)
+    thirty_days_ago = now - timedelta(days=30)
+    seven_days_ago = now - timedelta(days=7)
+    signals = []
+
+    # Signal 1: Ice Weight Fraud
+    try:
+        ice_agg = await db.procurement_lots.aggregate([
+            {"$match": {"created_at": {"$gte": ninety_days_ago}, "gross_weight_kg": {"$gt": 0}}},
+            {"$project": {
+                "agent_id": 1, "agent_name": 1, "lot_number": 1, "created_at": 1,
+                "ice_ratio": {"$multiply": [
+                    {"$divide": [{"$ifNull": ["$ice_weight_kg", 0]}, "$gross_weight_kg"]}, 100]}
+            }},
+            {"$group": {
+                "_id": "$agent_id",
+                "agent_name": {"$last": "$agent_name"},
+                "avg_ice": {"$avg": "$ice_ratio"},
+                "stddev_ice": {"$stdDevPop": "$ice_ratio"},
+                "recent_lots": {"$push": {
+                    "$cond": [{"$gte": ["$created_at", seven_days_ago]},
+                              {"lot": "$lot_number", "ratio": "$ice_ratio"},
+                              "$$REMOVE"]
+                }}
+            }}
+        ]).to_list(100)
+        for agent in ice_agg:
+            mean = agent.get("avg_ice") or 0
+            stddev = agent.get("stddev_ice") or 0
+            flagged = [l for l in (agent.get("recent_lots") or [])
+                       if l and _zscore(l.get("ratio", 0), mean, stddev) > 2.0]
+            if flagged:
+                worst = max(flagged, key=lambda l: l.get("ratio", 0))
+                z = _zscore(worst.get("ratio", 0), mean, stddev)
+                signals.append({
+                    "signal_type": "ice_fraud",
+                    "severity": "critical" if z > 3 else "warning",
+                    "title": f"Unusual ice ratio — {agent.get('agent_name', 'Unknown Agent')}",
+                    "detail": f"Ice {worst.get('ratio', 0):.1f}% vs 90-day avg {mean:.1f}% (σ={stddev:.1f})",
+                    "affected_lots": [l.get("lot") for l in flagged if l.get("lot")],
+                    "stats": {"mean": round(mean, 1), "stddev": round(stddev, 1),
+                              "current": round(worst.get("ratio", 0), 1), "zscore": z}
+                })
+    except Exception:
+        pass
+
+    # Signal 2: Rate Outlier
+    try:
+        rate_agg = await db.procurement_lots.aggregate([
+            {"$match": {"created_at": {"$gte": thirty_days_ago}, "rate_per_kg": {"$gt": 0}}},
+            {"$group": {
+                "_id": {"species": "$species", "grade": "$freshness_grade"},
+                "avg_rate": {"$avg": "$rate_per_kg"},
+                "stddev_rate": {"$stdDevPop": "$rate_per_kg"},
+                "lots": {"$push": {"lot": "$lot_number", "rate": "$rate_per_kg", "agent": "$agent_name"}}
+            }}
+        ]).to_list(50)
+        for group in rate_agg:
+            mean = group.get("avg_rate") or 0
+            if mean == 0 or len(group.get("lots") or []) < 3:
+                continue
+            for fl in (group.get("lots") or []):
+                dev_pct = abs(fl.get("rate", 0) - mean) / mean * 100 if mean else 0
+                if dev_pct > 20:
+                    dev_signed = (fl.get("rate", 0) - mean) / mean * 100
+                    signals.append({
+                        "signal_type": "rate_outlier",
+                        "severity": "warning",
+                        "title": f"Rate outlier — {group['_id'].get('species','?')} {group['_id'].get('grade','?')}",
+                        "detail": f"₹{fl.get('rate',0):.0f}/kg vs avg ₹{mean:.0f}/kg ({dev_signed:+.1f}%) — Agent: {fl.get('agent','?')}",
+                        "affected_lots": [fl.get("lot")],
+                        "stats": {"mean": round(mean, 0), "current": fl.get("rate", 0),
+                                  "deviation_pct": round(dev_signed, 1)}
+                    })
+                    break  # one signal per group max
+    except Exception:
+        pass
+
+    # Signal 3: Agent Concentration Risk
+    try:
+        agent_agg = await db.procurement_lots.aggregate([
+            {"$match": {"created_at": {"$gte": thirty_days_ago}}},
+            {"$group": {"_id": "$agent_id",
+                        "agent_name": {"$last": "$agent_name"},
+                        "total_value": {"$sum": {"$ifNull": ["$total_amount", 0]}}}}
+        ]).to_list(100)
+        total_month = sum(a.get("total_value", 0) for a in agent_agg)
+        if total_month > 0:
+            for agent in agent_agg:
+                share = agent.get("total_value", 0) / total_month * 100
+                if share > 40:
+                    signals.append({
+                        "signal_type": "agent_concentration",
+                        "severity": "warning",
+                        "title": f"Agent concentration — {agent.get('agent_name', 'Unknown')}",
+                        "detail": f"This agent sources {share:.1f}% of this month's procurement value",
+                        "affected_lots": [],
+                        "stats": {"share_pct": round(share, 1), "value_inr": round(agent.get("total_value", 0), 0)}
+                    })
+    except Exception:
+        pass
+
+    severity_order = {"critical": 0, "warning": 1, "info": 2}
+    signals.sort(key=lambda s: severity_order.get(s["severity"], 3))
+    out = {"signals": signals, "total_signals": len(signals), "computed_at": now.isoformat()}
+    _cache_set(cache_key, out, ttl_sec=300)
+    return out
+
+
+# ─── GET /dashboard/bi-charts ─────────────────────────────────────────────────
+
+@api_router.get("/dashboard/bi-charts")
+async def get_dashboard_bi_charts(months: int = 6, current_user: User = Depends(get_current_user)):
+    """BI charts: MoM comparison, species trend, party balances, processing efficiency."""
+    if not 1 <= months <= 24:
+        months = 6
+    tid = tenant_context.get_tenant()
+    cache_key = f"dashboard_bi:{tid}:{months}"
+    cached = _cache_get(cache_key, ttl_sec=300)
+    if cached is not None:
+        return cached
+
+    now = datetime.now(timezone.utc)
+    cutoff = _month_start(months)
+    cutoff_12 = _month_start(12)
+
+    (
+        mom_lots,
+        mom_fg,
+        mom_sales,
+        species_raw,
+        party_balances,
+        yield_efficiency,
+        wastage_by_month,
+    ) = await asyncio.gather(
+        db.procurement_lots.aggregate([
+            {"$match": {"created_at": {"$gte": cutoff}}},
+            {"$group": {"_id": {"$dateToString": {"format": "%Y-%m", "date": "$created_at"}},
+                        "weight_kg": {"$sum": {"$ifNull": ["$net_weight_kg", 0]}},
+                        "value_inr": {"$sum": {"$ifNull": ["$total_amount", 0]}},
+                        "count": {"$sum": 1}}},
+            {"$sort": {"_id": 1}}
+        ]).to_list(24),
+        db.finished_goods.aggregate([
+            {"$match": {"manufactured_date": {"$gte": cutoff}}},
+            {"$group": {"_id": {"$dateToString": {"format": "%Y-%m", "date": "$manufactured_date"}},
+                        "output_kg": {"$sum": {"$ifNull": ["$weight_kg", 0]}}}},
+            {"$sort": {"_id": 1}}
+        ]).to_list(24),
+        db.sales_orders.aggregate([
+            {"$match": {"created_at": {"$gte": cutoff}}},
+            {"$group": {"_id": {"$dateToString": {"format": "%Y-%m", "date": "$created_at"}},
+                        "value_usd": {"$sum": {"$ifNull": ["$total_value_usd", 0]}}}},
+            {"$sort": {"_id": 1}}
+        ]).to_list(24),
+        db.procurement_lots.aggregate([
+            {"$match": {"created_at": {"$gte": cutoff_12}}},
+            {"$group": {"_id": {"month": {"$dateToString": {"format": "%Y-%m", "date": "$created_at"}},
+                                "species": "$species"},
+                        "weight_kg": {"$sum": {"$ifNull": ["$net_weight_kg", 0]}}}},
+            {"$sort": {"_id.month": 1}}
+        ]).to_list(500),
+        db.party_ledger_accounts.aggregate([
+            {"$match": {"closing_balance": {"$gt": 0}}},
+            {"$lookup": {"from": "parties", "localField": "party_id", "foreignField": "id", "as": "party"}},
+            {"$unwind": {"path": "$party", "preserveNullAndEmptyArrays": True}},
+            {"$group": {"_id": "$party_id",
+                        "party_name": {"$first": {"$ifNull": ["$party.party_name", "Unknown"]}},
+                        "balance": {"$sum": "$closing_balance"}}},
+            {"$sort": {"balance": -1}},
+            {"$limit": 8}
+        ]).to_list(8),
+        db.preprocessing_batches.aggregate([
+            {"$match": {"created_at": {"$gte": cutoff}}},
+            {"$group": {"_id": {"$dateToString": {"format": "%Y-%m", "date": "$created_at"}},
+                        "avg_yield": {"$avg": "$yield_pct"}}},
+            {"$sort": {"_id": 1}}
+        ]).to_list(24),
+        db.lot_stage_wastage.aggregate([
+            {"$match": {"created_at": {"$gte": cutoff}}},
+            {"$group": {"_id": {"$dateToString": {"format": "%Y-%m", "date": "$created_at"}},
+                        "stage_losses_inr": {"$sum": {"$ifNull": ["$net_loss_inr", 0]}}}},
+            {"$sort": {"_id": 1}}
+        ]).to_list(24),
+    )
+
+    fg_map = {d["_id"]: d.get("output_kg", 0) for d in mom_fg}
+    sales_map = {d["_id"]: d.get("value_usd", 0) for d in mom_sales}
+    wastage_map = {d["_id"]: d.get("stage_losses_inr", 0) for d in wastage_by_month}
+    mom_comparison = [
+        {"month": d["_id"],
+         "procurement_weight_kg": round(d.get("weight_kg", 0), 0),
+         "procurement_value_inr": round(d.get("value_inr", 0), 0),
+         "fg_output_kg": round(fg_map.get(d["_id"], 0), 0),
+         "sales_value_usd": round(sales_map.get(d["_id"], 0), 0),
+         "stage_losses_inr": round(wastage_map.get(d["_id"], 0), 0),
+         "count": d.get("count", 0)}
+        for d in mom_lots
+    ]
+
+    species_pivot: Dict[str, Any] = {}
+    for d in species_raw:
+        month = d["_id"]["month"]
+        species = d["_id"].get("species") or "Unknown"
+        if month not in species_pivot:
+            species_pivot[month] = {"month": month}
+        species_pivot[month][species] = round(d.get("weight_kg", 0), 0)
+    species_trend = sorted(species_pivot.values(), key=lambda x: x["month"])
+
+    top_party_balances = [
+        {"party_name": p.get("party_name", "Unknown"), "balance_inr": round(p.get("balance", 0), 0)}
+        for p in party_balances
+    ]
+
+    prod_agg = await db.production_orders.aggregate([
+        {"$match": {"created_at": {"$gte": cutoff}}},
+        {"$group": {"_id": {"$dateToString": {"format": "%Y-%m", "date": "$created_at"}},
+                    "avg_conversion": {"$avg": "$conversion_rate_pct"}}},
+        {"$sort": {"_id": 1}}
+    ]).to_list(24)
+    prod_map = {d["_id"]: round(d.get("avg_conversion") or 0, 1) for d in prod_agg}
+    processing_efficiency = [
+        {"month": d["_id"],
+         "preprocessing_yield_pct": round(d.get("avg_yield") or 0, 1),
+         "production_conversion_pct": prod_map.get(d["_id"], 0)}
+        for d in yield_efficiency
+    ]
+
+    out = {
+        "mom_comparison": mom_comparison,
+        "species_trend": species_trend,
+        "top_party_balances": top_party_balances,
+        "processing_efficiency": processing_efficiency,
+        "computed_at": now.isoformat(),
+    }
+    _cache_set(cache_key, out, ttl_sec=300)
+    return out
+
+
+# ─── GET /dashboard/market-intelligence ──────────────────────────────────────
+
+@api_router.get("/dashboard/market-intelligence")
+async def get_dashboard_market_intelligence(current_user: User = Depends(get_current_user)):
+    """Market rate trends + external seafood news feed (RSS, cached 1h)."""
+    tid = tenant_context.get_tenant()
+    cache_key = f"dashboard_market:{tid}"
+    cached = _cache_get(cache_key, ttl_sec=3600)
+    if cached is not None:
+        return cached
+
+    now = datetime.now(timezone.utc)
+    twelve_months_ago = _month_start(12)
+
+    rate_history_raw, active_rates, recent_procurement = await asyncio.gather(
+        db.market_rates.aggregate([
+            {"$match": {"effective_from": {"$gte": twelve_months_ago}}},
+            {"$sort": {"effective_from": 1}},
+            {"$project": {"_id": 0, "species": 1, "product_form": 1, "size_value": 1,
+                          "rate_per_kg_inr": 1, "rate_per_kg_usd": 1, "effective_from": 1}}
+        ]).to_list(200),
+        db.market_rates.find({"effective_to": None},
+                             {"_id": 0, "species": 1, "product_form": 1, "rate_per_kg_inr": 1, "rate_per_kg_usd": 1}).to_list(20),
+        db.procurement_lots.aggregate([
+            {"$match": {"created_at": {"$gte": now - timedelta(days=7)}, "rate_per_kg": {"$gt": 0}}},
+            {"$group": {"_id": "$species", "avg_rate": {"$avg": "$rate_per_kg"}}}
+        ]).to_list(10),
+    )
+
+    proc_rates = {r["_id"]: round(r["avg_rate"], 0) for r in recent_procurement}
+    price_vs_cost = []
+    for rate in active_rates:
+        species = rate.get("species")
+        market_rate = rate.get("rate_per_kg_inr") or 0
+        proc_rate = proc_rates.get(species)
+        if proc_rate and market_rate:
+            price_vs_cost.append({
+                "species": species,
+                "product_form": rate.get("product_form"),
+                "market_rate_inr": market_rate,
+                "avg_procurement_rate_inr": proc_rate,
+                "margin_pct": round((market_rate - proc_rate) / proc_rate * 100, 1),
+            })
+
+    async def _fetch_rss(session, source_name: str, url: str):
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=5), ssl=False) as resp:
+                text = await resp.text()
+            root = ET.fromstring(text)
+            items = []
+            for item in root.findall(".//item")[:4]:
+                title = (item.findtext("title") or "").strip()
+                link = (item.findtext("link") or "").strip()
+                pub_date = (item.findtext("pubDate") or "").strip()
+                desc = re.sub(r"<[^>]+>", "", (item.findtext("description") or ""))[:200].strip()
+                if title:
+                    items.append({"source": source_name, "title": title, "url": link,
+                                  "published_at": pub_date, "summary": desc})
+            return items
+        except Exception:
+            return []
+
+    RSS_FEEDS = [
+        ("Seafood Source", "https://www.seafoodsource.com/rss"),
+        ("The Fish Site", "https://thefishsite.com/feed"),
+    ]
+    news = []
+    try:
+        async with aiohttp.ClientSession() as session:
+            results = await asyncio.gather(*[_fetch_rss(session, n, u) for n, u in RSS_FEEDS])
+        news = sorted([item for sub in results for item in sub],
+                      key=lambda x: x.get("published_at", ""), reverse=True)[:6]
+    except Exception:
+        news = []
+
+    rate_history_grouped: Dict[str, list] = {}
+    for r in rate_history_raw:
+        key = f"{r.get('species', '?')}/{r.get('product_form') or 'raw'}"
+        eff = r.get("effective_from")
+        date_str = eff.strftime("%Y-%m-%d") if hasattr(eff, "strftime") else str(eff)[:10]
+        rate_history_grouped.setdefault(key, []).append({
+            "date": date_str, "rate_inr": r.get("rate_per_kg_inr"), "rate_usd": r.get("rate_per_kg_usd")
+        })
+
+    out = {
+        "rate_trends": [{"label": k, "history": v} for k, v in rate_history_grouped.items()],
+        "price_vs_cost": price_vs_cost,
+        "news": news,
+        "news_fetched_at": now.isoformat(),
+        "computed_at": now.isoformat(),
+    }
+    _cache_set(cache_key, out, ttl_sec=3600)
+    return out
 
 
 # QC Module endpoints
@@ -4337,11 +5215,13 @@ async def upload_purchase_invoice_weighment_slip(
         raise HTTPException(status_code=400, detail="Could not read or compress image")
 
     fname = f"weighment_slip_{uuid.uuid4().hex}.jpg"
-    dest = UPLOADS_DIR / fname
+    tdir = _tenant_upload_dir()
+    dest = tdir / fname
     with open(dest, "wb") as out:
         out.write(jpeg_bytes)
 
-    public_url = f"/uploads/{fname}"
+    tid_slug = tdir.name  # e.g. "cli_002"
+    public_url = f"/uploads/{tid_slug}/{fname}"
     size_kb = round(len(jpeg_bytes) / 1024.0, 2)
     await create_audit_log(
         current_user.id,
@@ -4533,10 +5413,9 @@ async def push_invoice_to_procurement(
     payload: Optional[PushInvoiceRequest] = None,
     current_user: User = Depends(get_current_user)
 ):
-    """Push approved invoice to procurement (creates procurement lot)"""
-    # Check role permission
-    if current_user.role not in ['admin', 'owner', 'procurement_manager']:
-        raise HTTPException(status_code=403, detail="Not authorized to push invoices")
+    """Push approved invoice to procurement (creates procurement lot). Admin only."""
+    if current_user.role != UserRole.admin:
+        raise HTTPException(status_code=403, detail="Only admin can push invoices to procurement")
     
     invoice = await db.purchase_invoices.find_one({"id": invoice_id}, {"_id": 0})
     if not invoice:
@@ -5003,42 +5882,55 @@ def _maybe_sign_purchase_invoice_pdf(pdf_bytes: bytes, invoice: dict) -> bytes:
 
 def _signature_path_from_config_value(raw: Optional[Any]) -> Optional[Path]:
     """
-    Resolve tenant_config invoice_signature_image to a file under UPLOADS_DIR.
-    Accepts '/uploads/name.ext' or a full URL containing '/uploads/...'.
+    Resolve a stored /uploads/[tenant/]filename path to an absolute Path under UPLOADS_DIR.
+    Handles both legacy flat layout (/uploads/file.ext) and new per-tenant layout (/uploads/tid/file.ext).
     """
     if raw is None:
         return None
     s = str(raw).strip()
-    if not s:
+    if not s or s.startswith("data:"):
         return None
-    # Normalize separators so we accept values stored with backslashes too.
-    s = s.replace("\\", "/")
-    # Remove query/fragment early so basename is clean.
-    s = s.split("?")[0].split("#")[0]
+    s = s.replace("\\", "/").split("?")[0].split("#")[0]
 
-    # Accept any string that contains "/uploads/" (including full URLs),
-    # or a value stored as "uploads/..." (no leading slash).
     low = s.lower()
     uploads_idx = low.find("/uploads/")
     if uploads_idx != -1:
-        s = s[uploads_idx:]  # now starts with "/uploads/..."
+        rel = s[uploads_idx + len("/uploads/"):]  # strip leading /uploads/
     elif low.startswith("uploads/"):
-        s = "/" + s  # "uploads/..." -> "/uploads/..."
+        rel = s[len("uploads/"):]
     else:
         return None
 
-    base_name = os.path.basename(s)
-    if not base_name or base_name in (".", "..") or ".." in s:
+    # rel is now either "filename.ext" (flat) or "tenant_id/filename.ext" (per-tenant)
+    if not rel or ".." in rel:
         return None
     try:
         uploads_root = UPLOADS_DIR.resolve()
-        full = (UPLOADS_DIR / base_name).resolve()
-        full.relative_to(uploads_root)
+        full = (UPLOADS_DIR / rel).resolve()
+        full.relative_to(uploads_root)  # security: must stay inside UPLOADS_DIR
     except (OSError, ValueError):
         return None
     if not full.is_file():
         return None
     return full
+
+
+def _decode_signature_to_bytes(raw: Optional[Any]) -> Optional[bytes]:
+    """Return raw image bytes from a base64 data URL OR a legacy /uploads/ path."""
+    if not raw:
+        return None
+    s = str(raw).strip()
+    if s.startswith("data:"):
+        try:
+            _b64 = s.split(",", 1)[1]
+            return base64.b64decode(_b64)
+        except Exception:
+            return None
+    # Legacy: /uploads/ filesystem path
+    path = _signature_path_from_config_value(s)
+    if path and path.is_file():
+        return path.read_bytes()
+    return None
 
 
 def generate_purchase_invoice_pdf(
@@ -5328,19 +6220,16 @@ def generate_purchase_invoice_pdf(
     # otherwise the footer should stay visually empty of signature artwork (HMAC/PDF-CMS are already off).
     sig_image_holder = None
     _sig_raw = tenant_config.get("invoice_signature_image")
-    _sig_path = _signature_path_from_config_value(_sig_raw)
-    if _sig_raw and _sig_path is None:
+    _sig_bytes = _decode_signature_to_bytes(_sig_raw)
+    if _sig_raw and _sig_bytes is None:
         logging.getLogger(__name__).warning(
-            "Purchase invoice PDF: invoice_signature_image is set (%r) but no matching file under %s. "
-            "Re-upload from Company Settings or ensure backend/uploads is persisted (Docker volume).",
+            "Purchase invoice PDF: invoice_signature_image is set but could not be decoded. "
+            "Re-upload from Company Settings.",
             _sig_raw,
-            UPLOADS_DIR,
         )
     _embed_company_signature_stamp = bool(invoice.get("apply_digital_signature"))
-    if _sig_path is not None and _embed_company_signature_stamp:
+    if _sig_bytes is not None and _embed_company_signature_stamp:
         try:
-            with open(_sig_path, "rb") as _sig_f:
-                _sig_bytes = _sig_f.read()
             rl_sig = RLImage(io.BytesIO(_sig_bytes))
             _max_w = 1.45 * inch
             if rl_sig.drawWidth > _max_w:
@@ -5574,7 +6463,7 @@ async def upload_invoice_signature_image(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
 ):
-    """Upload PNG/JPEG/WebP/GIF used on purchase invoice PDFs (admin or owner only)."""
+    """Upload PNG/JPEG/WebP/GIF for invoice PDFs. Stored as base64 data URL in tenant_config (per-tenant, no filesystem)."""
     if current_user.role not in ['admin', 'owner']:
         raise HTTPException(status_code=403, detail="Not authorized")
     raw_name = file.filename or ""
@@ -5584,14 +6473,12 @@ async def upload_invoice_signature_image(
     content = await file.read()
     if len(content) > 2_000_000:
         raise HTTPException(status_code=400, detail="Image too large (max 2 MB)")
-    fname = f"invoice_signature_{uuid.uuid4().hex[:16]}.{ext}"
-    dest = UPLOADS_DIR / fname
-    with open(dest, "wb") as out:
-        out.write(content)
-    public_url = f"/uploads/{fname}"
+    content_type_map = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                        "gif": "image/gif", "webp": "image/webp"}
+    data_url = f"data:{content_type_map.get(ext, 'image/png')};base64,{base64.b64encode(content).decode('ascii')}"
     await db.tenant_config.update_one(
         {"key": "invoice_signature_image"},
-        {"$set": {"key": "invoice_signature_image", "value": public_url}},
+        {"$set": {"key": "invoice_signature_image", "value": data_url}},
         upsert=True,
     )
     try:
@@ -5605,22 +6492,24 @@ async def upload_invoice_signature_image(
         "admin",
         {"key": "invoice_signature_image", "action": "upload"},
     )
-    return {"url": public_url, "message": "Signature image saved"}
+    return {"url": data_url, "message": "Signature image saved"}
 
 
 @api_router.delete("/tenant-config/signature-image")
 async def delete_invoice_signature_image(current_user: User = Depends(get_current_user)):
-    """Remove uploaded invoice signature image from config and delete file from disk."""
+    """Remove invoice signature image from tenant config."""
     if current_user.role not in ['admin', 'owner']:
         raise HTTPException(status_code=403, detail="Not authorized")
     doc = await db.tenant_config.find_one({"key": "invoice_signature_image"}, {"_id": 0})
     old_val = (doc or {}).get("value") or ""
-    old_path = _signature_path_from_config_value(old_val)
-    if old_path and old_path.is_file():
-        try:
-            old_path.unlink()
-        except OSError:
-            pass
+    # Clean up legacy filesystem file if this was stored as a path (not a data URL)
+    if old_val and not old_val.startswith("data:"):
+        old_path = _signature_path_from_config_value(old_val)
+        if old_path and old_path.is_file():
+            try:
+                old_path.unlink()
+            except OSError:
+                pass
     await db.tenant_config.update_one(
         {"key": "invoice_signature_image"},
         {"$set": {"key": "invoice_signature_image", "value": ""}},
@@ -6047,18 +6936,19 @@ async def upload_attachment(
     # Generate unique filename
     file_ext = Path(file.filename).suffix
     unique_filename = f"{uuid.uuid4()}{file_ext}"
-    file_path = UPLOADS_DIR / unique_filename
-    
+    tdir = _tenant_upload_dir()
+    file_path = tdir / unique_filename
+
     # Save file
     with open(file_path, "wb") as f:
         f.write(contents)
-    
+
     # Create attachment record
     attachment = Attachment(
         entity_type=entity_type,
         entity_id=entity_id,
         file_name=file.filename,
-        file_url=f"/uploads/{unique_filename}",
+        file_url=f"/uploads/{tdir.name}/{unique_filename}",
         file_size_kb=round(file_size_kb, 2),
         mime_type=file.content_type or "application/octet-stream",
         category=category,
@@ -6350,15 +7240,16 @@ async def upload_file(
     # Generate unique filename
     file_extension = file.filename.split('.')[-1]
     unique_filename = f"{entity_type}_{entity_id}_{uuid.uuid4()}.{file_extension}"
-    file_path = UPLOADS_DIR / unique_filename
-    
+    tdir = _tenant_upload_dir()
+    file_path = tdir / unique_filename
+
     # Save file
     with open(file_path, "wb") as buffer:
         content = await file.read()
         buffer.write(content)
-    
+
     # Create photo tracker record
-    photo_url = f"/uploads/{unique_filename}"
+    photo_url = f"/uploads/{tdir.name}/{unique_filename}"
     tray_count = int(tray_count_visible) if tray_count_visible and tray_count_visible.isdigit() else None
     
     photo = PhotoTracker(
@@ -6626,6 +7517,32 @@ async def create_lot_stage_wastage(
         await db.notifications.insert_one(notif_dict)
     
     return wastage
+
+@api_router.get("/lot-stage-wastage/batch")
+async def get_lot_wastage_batch(
+    lot_ids: str,   # comma-separated list of lot / order IDs
+    stage_name: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+):
+    """Fetch wastage records for multiple lot/order IDs in a single query.
+
+    Returns a dict keyed by lot_id so callers can build a lookup map without
+    making N individual requests.  Optionally filter to a single stage_name
+    (e.g. stage_name=production) so only the relevant rows are returned.
+    """
+    id_list = [lid.strip() for lid in lot_ids.split(",") if lid.strip()]
+    if not id_list:
+        return {}
+    query: dict = {"lot_id": {"$in": id_list}}
+    if stage_name:
+        query["stage_name"] = stage_name
+    records = await db.lot_stage_wastage.find(query, {"_id": 0}).sort("stage_sequence", 1).to_list(5000)
+    # Group by lot_id for easy client-side lookup
+    result: dict = {}
+    for r in records:
+        lid = r.get("lot_id")
+        result.setdefault(lid, []).append(r)
+    return result
 
 @api_router.get("/lot-stage-wastage/{lot_id}", response_model=List[LotStageWastage])
 async def get_lot_wastage(lot_id: str, current_user: User = Depends(get_current_user)):
@@ -7377,7 +8294,9 @@ async def get_party(party_id: str, current_user: User = Depends(get_current_user
 
 @api_router.put("/parties/{party_id}", response_model=Party)
 async def update_party(party_id: str, party: PartyCreate, current_user: User = Depends(get_current_user)):
-    """Update a party"""
+    """Update a party. Admin/owner only."""
+    if current_user.role not in [UserRole.admin, UserRole.owner]:
+        raise HTTPException(status_code=403, detail="Only admin can edit party information")
     existing = await db.parties.find_one({"id": party_id})
     if not existing:
         raise HTTPException(status_code=404, detail="Party not found")
@@ -7397,7 +8316,9 @@ async def update_party(party_id: str, party: PartyCreate, current_user: User = D
 
 @api_router.delete("/parties/{party_id}")
 async def delete_party(party_id: str, current_user: User = Depends(get_current_user)):
-    """Soft delete a party (set is_active = False)"""
+    """Soft delete a party. Admin/owner only."""
+    if current_user.role not in [UserRole.admin, UserRole.owner]:
+        raise HTTPException(status_code=403, detail="Only admin can delete party information")
     existing = await db.parties.find_one({"id": party_id})
     if not existing:
         raise HTTPException(status_code=404, detail="Party not found")
@@ -9295,35 +10216,34 @@ async def saas_handshake(request: Request, body: dict):
 
 @internal_router.post("/features")
 async def saas_push_features(request: Request, body: dict, _=Depends(verify_saas_api_key)):
-    """Receive feature flags push from super admin"""
+    """Receive feature flags push from super admin.
+    Uses upsert-per-flag (no delete) so partial pushes never leave the tenant in a broken state.
+    The X-Tenant-ID header (sent by super-admin-api) routes TenantAwareDatabase to the right DB.
+    """
     features = body.get("features", {})
-    # Use tenant_id from body if provided (so Super Admin can push without prior link); else from config
     tenant_id = body.get("tenant_id")
     if not tenant_id:
         config = await db.tenant_config.find_one({"key": "tenant_id"})
         tenant_id = config.get("value") if config else "default"
-    
-    # Clear existing flags and insert new ones
-    await db.feature_flags.delete_many({"tenant_id": tenant_id})
-    
+
+    synced_at = datetime.utcnow().isoformat()
     count = 0
     for feature_code, is_enabled in features.items():
-        await db.feature_flags.insert_one({
-            "tenant_id": tenant_id,
-            "feature_code": feature_code,
-            "is_enabled": bool(is_enabled),
-            "synced_at": datetime.utcnow().isoformat()
-        })
+        await db.feature_flags.update_one(
+            {"tenant_id": tenant_id, "feature_code": feature_code},
+            {"$set": {
+                "tenant_id": tenant_id,
+                "feature_code": feature_code,
+                "is_enabled": bool(is_enabled),
+                "synced_at": synced_at,
+            }},
+            upsert=True,
+        )
         count += 1
-    
-    # Invalidate Redis cache
-    try:
-        import redis
-        redis_client = redis.Redis(host='localhost', port=6379, db=0)
-        redis_client.delete(f"flags:{tenant_id}")
-    except:
-        pass
-    
+
+    # Invalidate cache via the shared service (uses REDIS_HOST env var, not hardcoded localhost)
+    feature_service.invalidate_cache(tenant_id)
+
     return {"synced": count}
 
 @internal_router.post("/branding")
@@ -9371,6 +10291,7 @@ async def saas_provision_user(request: Request, body: dict, _=Depends(verify_saa
                 "updated_at": datetime.utcnow().isoformat()
             }}
         )
+        _user_cache_invalidate(email)
         status = "updated"
     else:
         # Create new user
@@ -9416,19 +10337,26 @@ async def saas_update_user(request: Request, body: dict, _=Depends(verify_saas_a
             {"id": user_id},
             {"$set": update_fields}
         )
-    
+        # Invalidate cached user so role/active changes take effect immediately
+        user_record = await db.users.find_one({"id": user_id}, {"email": 1, "_id": 0})
+        if user_record:
+            _user_cache_invalidate(user_record.get("email", ""))
+
     return {"updated": True}
 
 @internal_router.delete("/delete-user")
 async def saas_delete_user(request: Request, body: dict, _=Depends(verify_saas_api_key)):
     """Soft delete a user from super admin"""
     user_id = body.get("user_id")
-    
+
+    user_record = await db.users.find_one({"id": user_id}, {"email": 1, "_id": 0})
     await db.users.update_one(
         {"id": user_id},
         {"$set": {"is_active": False, "deactivated_at": datetime.utcnow().isoformat()}}
     )
-    
+    if user_record:
+        _user_cache_invalidate(user_record.get("email", ""))
+
     return {"deactivated": True}
 
 @internal_router.get("/health")
@@ -9552,6 +10480,12 @@ async def get_tenant_config_dict(use_cache: bool = True) -> Dict[str, Any]:
 async def ensure_erp_indexes():
     """Create indexes on hot-path collections for faster queries."""
     try:
+        # Users — index email so auth lookup is O(log n) not O(n).
+        # create_index is idempotent; safe to call on every startup.
+        await db.users.create_index([("email", 1)], unique=False)  # unique per-tenant but not globally
+        await db.users.create_index([("email", 1), ("tenant_id", 1)], unique=False)
+        await db.users.create_index([("tenant_id", 1), ("is_active", 1)])
+
         # Core master data
         await db.agents.create_index("id", unique=True)
         await db.agents.create_index("name")
@@ -9568,13 +10502,21 @@ async def ensure_erp_indexes():
         await db.procurement_lots.create_index("agent_id")
         await db.procurement_lots.create_index("tenant_id")
         await db.procurement_lots.create_index("id", unique=True)
+        # Composite: list page filters by tenant_id then sorts by created_at
+        await db.procurement_lots.create_index([("tenant_id", 1), ("created_at", -1)])
+        await db.procurement_lots.create_index([("tenant_id", 1), ("agent_id", 1), ("created_at", -1)])
 
         await db.preprocessing_batches.create_index("created_at")
         await db.preprocessing_batches.create_index([("end_time", 1)])
         await db.preprocessing_batches.create_index("procurement_lot_id")  # traceability
+        await db.preprocessing_batches.create_index([("tenant_id", 1), ("created_at", -1)])
 
         await db.production_orders.create_index("created_at")
         await db.production_orders.create_index("start_date")  # reports sort
+        # Composite for list + qc filter
+        await db.production_orders.create_index([("tenant_id", 1), ("created_at", -1)])
+        await db.production_orders.create_index([("tenant_id", 1), ("qc_status", 1), ("created_at", -1)])
+
         await db.party_ledger_entries.create_index([("ledger_id", 1), ("entry_order", 1)])
         await db.party_ledger_entries.create_index([("invoice_id", 1), ("entry_type", 1)])
         await db.party_ledger_accounts.create_index([("party_id", 1), ("financial_year", 1)], unique=True)
@@ -9587,10 +10529,15 @@ async def ensure_erp_indexes():
         await db.purchase_invoices.create_index("party_id")
         # List endpoint: filter by date + status + payment_status, sort by invoice_date
         await db.purchase_invoices.create_index([("invoice_date", 1), ("status", 1), ("payment_status", 1)])
+        # Tenant-scoped list (most common query pattern)
+        await db.purchase_invoices.create_index([("tenant_id", 1), ("invoice_date", -1)])
+        await db.purchase_invoices.create_index([("tenant_id", 1), ("status", 1), ("invoice_date", -1)])
 
         # Finished goods / QC
         await db.finished_goods.create_index("qc_status")
         await db.finished_goods.create_index("created_at")
+        await db.finished_goods.create_index([("tenant_id", 1), ("created_at", -1)])
+        await db.finished_goods.create_index([("tenant_id", 1), ("qc_status", 1), ("created_at", -1)])
         await db.production_orders.create_index("qc_status")
 
         await db.qc_inspections.create_index("created_at")
@@ -9631,9 +10578,21 @@ async def ensure_erp_indexes():
         # Tenant config
         await db.tenant_config.create_index("key")
 
+        # Dashboard analytics indexes
+        await db.lot_stage_wastage.create_index([("threshold_status", 1), ("alert_acknowledged", 1)])
+        await db.party_ledger_accounts.create_index([("closing_balance", 1)])
+        await db.party_ledger_entries.create_index([("party_id", 1), ("entry_type", 1), ("entry_date", -1)])
+        await db.temperature_logs.create_index([("alert", 1), ("recorded_at", -1)])
+        await db.market_rates.create_index([("effective_to", 1), ("species", 1)])
+        await db.sales_orders.create_index([("payment_status", 1), ("created_at", -1)])
+        await db.purchase_invoices.create_index([("balance_due", 1)])
+        await db.cold_storage_inventory.create_index("fg_id")
+        await db.procurement_lots.create_index([("approval_status", 1), ("created_at", -1)])
+
         # Wastage / traceability
         await db.lot_stage_wastage.create_index("lot_id")
         await db.lot_stage_wastage.create_index([("lot_id", 1), ("stage_sequence", 1)])
+        await db.lot_stage_wastage.create_index([("lot_id", 1), ("stage_name", 1)])  # batch + filter
         await db.lot_stage_wastage.create_index("created_at")
 
         # Audit logs (list sorted by timestamp)

@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { linkingAPI } from '../api/auth';
-import { Link2, RefreshCw, Key, AlertTriangle, Check, Loader2, Eye, Palette, Globe, Zap } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { linkingAPI, clientAPI } from '../api/auth';
+import { Link2, RefreshCw, Key, AlertTriangle, Check, Loader2, Eye, Palette, Globe, Zap, Upload, X } from 'lucide-react';
 
 export default function LinkBrandingTab({ client, onUpdate }) {
   const [linking, setLinking] = useState(false);
@@ -19,6 +19,8 @@ export default function LinkBrandingTab({ client, onUpdate }) {
   });
   const [showPreview, setShowPreview] = useState(false);
   const [launchProgress, setLaunchProgress] = useState(null);
+  const logoInputRef = useRef(null);
+  const faviconInputRef = useRef(null);
 
   useEffect(() => {
     if (client?.branding) {
@@ -79,18 +81,23 @@ export default function LinkBrandingTab({ client, onUpdate }) {
     }
   };
 
+  const handleImageUpload = (field, file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => setBranding(prev => ({ ...prev, [field]: e.target.result }));
+    reader.readAsDataURL(file);
+  };
+
   const handleLaunch = async () => {
-    setLaunchProgress({ steps: [], status: 'running' });
+    setLaunchProgress({ status: 'running' });
     try {
-      const result = await linkingAPI.launchClient(client.id);
-      setLaunchProgress(result);
-      if (result.launch_url) {
-        window.open(result.launch_url, '_blank');
-      }
-      showNotif('Client launched successfully!');
+      const result = await clientAPI.openSession(client.id);
+      window.open(result.session_url, '_blank');
+      setLaunchProgress({ status: 'launched' });
+      showNotif('Client ERP opened successfully!');
     } catch (err) {
-      setLaunchProgress({ status: 'error', error: err.message });
-      showNotif('Launch failed', 'error');
+      setLaunchProgress({ status: 'error', error: err.response?.data?.detail || err.message });
+      showNotif(err.response?.data?.detail || 'Launch failed', 'error');
     }
   };
 
@@ -298,24 +305,76 @@ export default function LinkBrandingTab({ client, onUpdate }) {
             </div>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Logo URL</label>
-            <input
-              type="url"
-              value={branding.logo_url}
-              onChange={(e) => setBranding({ ...branding, logo_url: e.target.value })}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
-              placeholder="https://cdn.example.com/logo.png"
-            />
+            <label className="block text-sm font-medium text-gray-700 mb-1">Logo</label>
+            <div className="flex items-center gap-3">
+              {branding.logo_url ? (
+                <div className="relative">
+                  <img src={branding.logo_url} alt="Logo" className="h-12 w-12 object-contain rounded border border-gray-200 bg-gray-50" />
+                  <button
+                    onClick={() => setBranding(prev => ({ ...prev, logo_url: '' }))}
+                    className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center hover:bg-red-600"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ) : (
+                <div className="h-12 w-12 rounded border-2 border-dashed border-gray-300 flex items-center justify-center bg-gray-50">
+                  <Upload className="h-5 w-5 text-gray-400" />
+                </div>
+              )}
+              <div className="flex-1">
+                <input
+                  ref={logoInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => handleImageUpload('logo_url', e.target.files[0])}
+                />
+                <button
+                  onClick={() => logoInputRef.current?.click()}
+                  className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50"
+                >
+                  {branding.logo_url ? 'Change Logo' : 'Upload Logo'}
+                </button>
+                <p className="text-xs text-gray-400 mt-1">PNG, JPG, SVG · stored in DB</p>
+              </div>
+            </div>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Favicon URL</label>
-            <input
-              type="url"
-              value={branding.favicon_url}
-              onChange={(e) => setBranding({ ...branding, favicon_url: e.target.value })}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
-              placeholder="https://cdn.example.com/favicon.ico"
-            />
+            <label className="block text-sm font-medium text-gray-700 mb-1">Favicon</label>
+            <div className="flex items-center gap-3">
+              {branding.favicon_url ? (
+                <div className="relative">
+                  <img src={branding.favicon_url} alt="Favicon" className="h-12 w-12 object-contain rounded border border-gray-200 bg-gray-50" />
+                  <button
+                    onClick={() => setBranding(prev => ({ ...prev, favicon_url: '' }))}
+                    className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center hover:bg-red-600"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ) : (
+                <div className="h-12 w-12 rounded border-2 border-dashed border-gray-300 flex items-center justify-center bg-gray-50">
+                  <Upload className="h-5 w-5 text-gray-400" />
+                </div>
+              )}
+              <div className="flex-1">
+                <input
+                  ref={faviconInputRef}
+                  type="file"
+                  accept="image/*,.ico"
+                  className="hidden"
+                  onChange={(e) => handleImageUpload('favicon_url', e.target.files[0])}
+                />
+                <button
+                  onClick={() => faviconInputRef.current?.click()}
+                  className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50"
+                >
+                  {branding.favicon_url ? 'Change Favicon' : 'Upload Favicon'}
+                </button>
+                <p className="text-xs text-gray-400 mt-1">ICO, PNG · shown in browser tab</p>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -329,7 +388,7 @@ export default function LinkBrandingTab({ client, onUpdate }) {
           </button>
           <button
             onClick={handlePushBranding}
-            disabled={pushing || !isLinked}
+            disabled={pushing}
             className="inline-flex items-center px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50"
             data-testid="push-branding-btn"
           >

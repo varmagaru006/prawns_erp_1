@@ -6,10 +6,10 @@ import { Input } from '../components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { toast } from 'sonner';
 import { Save, Building2, PenLine, Trash2, Upload } from 'lucide-react';
-
-const BACKEND_BASE = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
+import { useAlert } from '../context/AlertContext';
 
 const CompanySettings = () => {
+  const { confirm } = useAlert();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [sigUploading, setSigUploading] = useState(false);
@@ -74,7 +74,8 @@ const CompanySettings = () => {
 
   const handleRemoveSignature = async () => {
     if (!signatureImageUrl) return;
-    if (!window.confirm('Remove the signature image from invoice PDFs?')) return;
+    const ok = await confirm({ title: 'Remove signature image?', description: 'The signature will no longer appear on invoice PDFs.', confirmLabel: 'Remove', variant: 'destructive' });
+    if (!ok) return;
     setSigUploading(true);
     try {
       await axios.delete(`${API}/tenant-config/signature-image`);
@@ -208,7 +209,7 @@ const CompanySettings = () => {
                 <div className="flex flex-wrap items-end gap-4">
                   <div className="rounded-lg border border-slate-200 bg-white p-3 inline-block">
                     <img
-                      src={`${BACKEND_BASE}${signatureImageUrl}`}
+                      src={signatureImageUrl}
                       alt="Saved signature"
                       className="max-h-24 object-contain"
                     />

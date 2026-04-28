@@ -3,6 +3,7 @@ Multi-Tenant Service Layer
 Handles tenant context and feature flag resolution with Redis caching
 """
 from typing import Optional, Dict
+from contextvars import ContextVar
 from fastapi import HTTPException, Request
 import jwt
 import os
@@ -30,24 +31,36 @@ try:
 except Exception:
     redis_client = None
 
+# Per-request context variables — each async task (request) gets its own isolated copy.
+# Using plain instance attributes on a shared object causes cross-request data leakage
+# under concurrent async requests (race condition in the event loop).
+_tenant_id_var: ContextVar[Optional[str]] = ContextVar("tenant_id", default=None)
+_lot_prefix_var: ContextVar[str] = ContextVar("lot_prefix", default="PRW")
+
+
 class TenantContext:
-    """Manages tenant context for the current request"""
-    
-    def __init__(self):
-        self.tenant_id: Optional[str] = None
-        self.lot_number_prefix: str = "PRW"
-    
+    """Manages tenant context for the current request (async-safe via ContextVar)."""
+
     def set_tenant(self, tenant_id: str, lot_prefix: str = "PRW"):
-        self.tenant_id = tenant_id
-        self.lot_number_prefix = lot_prefix
-    
+        _tenant_id_var.set(tenant_id)
+        _lot_prefix_var.set(lot_prefix)
+
     def get_tenant(self) -> str:
-        if not self.tenant_id:
+        tenant_id = _tenant_id_var.get()
+        if not tenant_id:
             raise HTTPException(status_code=401, detail="No tenant context")
-        return self.tenant_id
+        return tenant_id
+
+    @property
+    def tenant_id(self) -> Optional[str]:
+        return _tenant_id_var.get()
+
+    @property
+    def lot_number_prefix(self) -> str:
+        return _lot_prefix_var.get()
 
 
-# Global tenant context (will be set per request via middleware)
+# Singleton wrapper — all code that does `tenant_context.set_tenant(...)` keeps working.
 tenant_context = TenantContext()
 
 

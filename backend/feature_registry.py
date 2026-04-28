@@ -27,6 +27,10 @@ FEATURE_REGISTRY: List[Dict[str, Any]] = [
     {"code": "admin", "name": "Admin Panel", "description": "Company settings, audit trail, attachments", "module": "Admin", "default_enabled": True},
     {"code": "notifications", "name": "Notifications", "description": "System notifications", "module": "Core", "default_enabled": True},
     {"code": "superAdmin", "name": "Super Admin", "description": "Platform-wide tenant and feature management", "module": "Admin", "default_enabled": False},
+    {"code": "dashboardAlerts", "name": "Dashboard: Business Alerts", "description": "Real-time alert feed — overdue payments, cold storage temp deviations, QC holds, yield breaches", "module": "Dashboard", "default_enabled": True},
+    {"code": "dashboardBICharts", "name": "Dashboard: BI Charts", "description": "Month-over-month comparison, species trend, revenue waterfall, top party balances, processing efficiency", "module": "Dashboard", "default_enabled": True},
+    {"code": "dashboardFraudSignals", "name": "Dashboard: Fraud Signals", "description": "Statistical anomaly detection — ice weight fraud, rate outliers, agent concentration risk", "module": "Dashboard", "default_enabled": False},
+    {"code": "dashboardMarketIntelligence", "name": "Dashboard: Market Intelligence", "description": "Internal rate trends, price vs cost margins, and external seafood news feed", "module": "Dashboard", "default_enabled": False},
 ]
 
 

@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { toast } from 'sonner';
 import { Plus, Users, Phone, CreditCard } from 'lucide-react';
 import RiskTimelinePanel from '../components/RiskTimelinePanel';
+import { isRequestCanceled } from '../utils/apiError';
 
 const Agents = () => {
   const [agents, setAgents] = useState([]);
@@ -51,7 +52,7 @@ const Agents = () => {
       });
       setRiskByAgent(map);
     } catch (error) {
-      toast.error('Failed to load agents');
+      if (!isRequestCanceled(error)) toast.error('Failed to load agents');
     } finally {
       setLoading(false);
     }

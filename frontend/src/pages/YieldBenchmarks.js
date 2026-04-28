@@ -9,8 +9,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { toast } from 'sonner';
 import { Plus, Edit2, Trash2, TrendingUp } from 'lucide-react';
+import { useAlert } from '../context/AlertContext';
 
 const YieldBenchmarks = () => {
+  const { confirm } = useAlert();
   const [benchmarks, setBenchmarks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
@@ -100,7 +102,8 @@ const YieldBenchmarks = () => {
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm('Are you sure you want to delete this benchmark?')) return;
+    const ok = await confirm({ title: 'Delete benchmark?', description: 'This yield benchmark will be permanently removed.', confirmLabel: 'Delete', variant: 'destructive' });
+    if (!ok) return;
     
     try {
       await axios.delete(`${API}/yield-benchmarks/${id}`);

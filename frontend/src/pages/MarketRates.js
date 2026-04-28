@@ -9,8 +9,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { toast } from 'sonner';
 import { Plus, Edit, Trash2, DollarSign } from 'lucide-react';
+import { useAlert } from '../context/AlertContext';
 
 const MarketRates = () => {
+  const { confirm } = useAlert();
   const [rates, setRates] = useState([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
@@ -73,7 +75,8 @@ const MarketRates = () => {
   };
 
   const handleDelete = async (rateId) => {
-    if (!window.confirm('Are you sure you want to delete this market rate?')) return;
+    const ok = await confirm({ title: 'Delete market rate?', description: 'This cannot be undone.', confirmLabel: 'Delete', variant: 'destructive' });
+    if (!ok) return;
     try {
       await axios.delete(`${API}/market-rates/${rateId}`);
       toast.success('Market rate deleted');

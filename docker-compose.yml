@@ -1,4 +1,4 @@
-# Prawn ERP - Full stack (MongoDB + Backend + Frontend)
+# Prawn ERP - Full stack (MongoDB + Backend + Frontend + Super Admin)
 # See DOCKER.md for step-by-step instructions.
 
 services:
@@ -29,6 +29,9 @@ services:
       MONGO_URL: mongodb://prawn_erp_user:prawn_erp_dev_password@mongo:27017
       DB_NAME: prawn_erp
       SECRET_KEY: dev-secret-key-change-me
+      CLIENT_ERP_SECRET_KEY: dev-secret-key-change-me
+      ENABLE_MULTI_DB_ROUTING: "true"
+      SUPER_ADMIN_DB_NAME: prawn_erp_super_admin
     volumes:
       - backend_uploads:/app/uploads
     depends_on:
@@ -56,6 +59,48 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  super-admin-api:
+    build:
+      context: .
+      dockerfile: super-admin-api/Dockerfile
+    container_name: prawns_erp_super_admin_api
+    ports:
+      - "8002:8002"
+    environment:
+      MONGO_URL: mongodb://prawn_erp_user:prawn_erp_dev_password@mongo:27017
+      MONGO_DB_NAME: prawn_erp
+      SECRET_KEY: super-admin-secret-key-change-in-production
+      CLIENT_ERP_SECRET_KEY: dev-secret-key-change-me
+      ENABLE_MULTI_DB_ROUTING: "true"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  super-admin-frontend:
+    build:
+      context: ./super-admin-frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: http://localhost:8002
+    container_name: prawns_erp_super_admin_frontend
+    ports:
+      - "3001:3001"
+    depends_on:
+      super-admin-api:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/super-admin/login >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 6

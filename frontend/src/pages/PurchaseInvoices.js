@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { toast } from 'sonner';
 import { Plus, Download, Eye, Check, Trash2, Send, FileText, X, FileSpreadsheet, Lock, RotateCcw } from 'lucide-react';
+import { useAlert } from '../context/AlertContext';
 import { useNavigate } from 'react-router-dom';
 import { useSortableTable } from '../hooks/useSortableTable';
 import SortableTableHead from '../components/SortableTableHead';
@@ -49,6 +50,7 @@ const DEFAULT_PURCHASE_INVOICE_FILTERS = {
 };
 
 const PurchaseInvoices = () => {
+  const { confirm } = useAlert();
   const navigate = useNavigate();
   const { user } = useAuth();
   const { isEnabled, loading: featureLoading } = useFeatureFlags();
@@ -219,7 +221,8 @@ const PurchaseInvoices = () => {
   };
 
   const handleDelete = async (invoiceId) => {
-    if (!window.confirm('Delete this draft invoice?')) return;
+    const ok = await confirm({ title: 'Delete draft invoice?', description: 'This draft will be permanently deleted.', confirmLabel: 'Delete', variant: 'destructive' });
+    if (!ok) return;
     
     try {
       await axios.delete(`${API}/purchase-invoices/${invoiceId}`);
@@ -231,7 +234,8 @@ const PurchaseInvoices = () => {
   };
 
   const handleApprove = async (invoiceId) => {
-    if (!window.confirm('Approve and lock this invoice?')) return;
+    const ok = await confirm({ title: 'Approve and lock invoice?', description: 'Once approved, this invoice cannot be edited.', confirmLabel: 'Approve', variant: 'warning' });
+    if (!ok) return;
     
     try {
       await axios.post(`${API}/purchase-invoices/${invoiceId}/approve`);
